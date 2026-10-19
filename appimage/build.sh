@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
+mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)"  # make it absolute
 VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$ROOT/deckport.py")"
 WORK="$(mktemp -d)"
 APPDIR="$WORK/DeckPort.AppDir"

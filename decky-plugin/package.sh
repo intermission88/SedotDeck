@@ -5,6 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 OUT="${1:-$HERE/out}"
+mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)"  # absolute: the script changes directory
 VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$ROOT/deckport.py")"
 
 cd "$HERE"
