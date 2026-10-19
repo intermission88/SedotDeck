@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DeckPort
+Comment=Update AppImages and PC ports from GitHub, GitLab, Codeberg and more
+Exec=AppRun
+Icon=deckport
+Terminal=false
+Categories=Utility;Game;

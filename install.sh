@@ -11,14 +11,17 @@ mkdir -p "$DEST" "$BIN" "$APPS"
 cp "$SRC/deckport.py" "$DEST/deckport.py"
 chmod +x "$DEST/deckport.py"
 ln -sf "$DEST/deckport.py" "$BIN/deckport"
+ICONS="$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$ICONS"
+cp "$SRC/assets/icon.svg" "$ICONS/deckport.svg"
 
 cat > "$APPS/deckport.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=DeckPort
 Comment=Update AppImages and PC ports from GitHub Releases
-Exec=python3 $DEST/deckport.py serve
-Icon=system-software-update
+Exec=python3 $DEST/deckport.py serve --window --exit-when-closed
+Icon=deckport
 Terminal=false
 Categories=Utility;
 EOF

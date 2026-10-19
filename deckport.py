@@ -36,7 +36,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
@@ -729,14 +729,37 @@ class Jobs:
             return {k: dict(v) for k, v in self.items.items()}
 
 
+def _config_mtime():
+    try:
+        return CONFIG_FILE.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 class Server:
+    """App state + actions shared by the web UI and the Decky plugin."""
+
     def __init__(self):
         self.cfg = load_config()
+        self._mtime = _config_mtime()
         self.jobs = Jobs()
         self.token = secrets.token_urlsafe(24)
+        self.last_seen = time.time()
 
     def save(self):
         save_config(self.cfg)
+        self._mtime = _config_mtime()
+
+    def busy(self):
+        return any(j["state"] == "running" for j in self.jobs.snapshot().values())
+
+    def sync(self):
+        """Pick up changes saved by another DeckPort (desktop UI, CLI, Decky plugin) while idle."""
+        with _lock:
+            m = _config_mtime()
+            if m != self._mtime and not self.busy():
+                self.cfg = load_config()
+                self._mtime = m
 
     def gh_token(self):
         return self.cfg["settings"].get("github_token", "")
@@ -783,6 +806,7 @@ class Server:
         return self.jobs.start(app["id"], "Downloading", fn)
 
     def handle(self, path, body):
+        self.sync()
         cfg = self.cfg
         if path == "/api/state":
             return self.state()
@@ -922,6 +946,7 @@ def make_handler(srv, httpd_ref):
             self.wfile.write(raw)
 
         def do_GET(self):
+            srv.last_seen = time.time()
             if self.path in ("/", "/index.html"):
                 html = INDEX_HTML.replace("__TOKEN__", srv.token).replace("__VERSION__", VERSION)
                 self._send(200, html.encode(), "text/html; charset=utf-8")
@@ -929,6 +954,7 @@ def make_handler(srv, httpd_ref):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):
+            srv.last_seen = time.time()
             # Token blocks other websites in the browser from driving this local server.
             if self.headers.get("X-DeckPort-Token") != srv.token:
                 return self._send(403, {"error": "bad token, reload the page"})
@@ -948,6 +974,34 @@ def make_handler(srv, httpd_ref):
     return Handler
 
 
+CHROMIUM_EXES = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
+                 "brave", "brave-browser", "microsoft-edge", "microsoft-edge-stable")
+CHROMIUM_FLATPAKS = ("com.google.Chrome", "org.chromium.Chromium", "com.brave.Browser", "com.microsoft.Edge")
+
+
+def open_window(url, window=True):
+    """Show the UI. With window=True, try a Chromium-based browser's app mode (its own window,
+    no tabs or address bar); Chrome from Flatpak is the usual one on a Steam Deck."""
+    def spawn(cmd):
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    if window and sys.platform.startswith("linux"):
+        flags = ["--app=" + url, "--class=DeckPort", "--window-size=1100,760"]
+        for exe in CHROMIUM_EXES:
+            path = shutil.which(exe)
+            if path:
+                return spawn([path] + flags)
+        if shutil.which("flatpak"):
+            for app_id in CHROMIUM_FLATPAKS:
+                if subprocess.run(["flatpak", "info", app_id], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0:
+                    return spawn(["flatpak", "run", app_id] + flags)
+    webbrowser.open(url)
+
+
+IDLE_EXIT_SECONDS = 150  # the page polls at least once a minute, even as a background tab
+
+
 def cmd_serve(args):
     url = "http://127.0.0.1:%d/" % args.port
     srv = Server()
@@ -958,12 +1012,21 @@ def cmd_serve(args):
         # Already running: just open the existing window.
         print("DeckPort is already running at", url)
         if not args.no_browser:
-            webbrowser.open(url)
+            open_window(url, args.window)
         return
     httpd_ref[0] = httpd
     print("DeckPort running at", url, "(Ctrl+C to stop)")
     if not args.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.5, lambda: open_window(url, args.window)).start()
+    if args.exit_when_closed:
+        def watch():
+            while True:
+                time.sleep(10)
+                if time.time() - srv.last_seen > IDLE_EXIT_SECONDS and not srv.busy():
+                    print("Window closed, exiting.")
+                    httpd.shutdown()
+                    return
+        threading.Thread(target=watch, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1093,6 +1156,8 @@ def main():
     s = sub.add_parser("serve", help="open the web UI (default)")
     s.add_argument("--port", type=int, default=DEFAULT_PORT)
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--window", action="store_true", help="open in its own window (Chrome/Chromium app mode) if possible")
+    s.add_argument("--exit-when-closed", action="store_true", help="quit a while after the page is closed")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("add", help="track a GitHub, GitLab, Codeberg, Gitea or Forgejo repo")

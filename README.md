@@ -15,15 +15,50 @@ Obtainium-style updater for Steam Deck. Kamu tambahkan link rilis dari PC port a
 
 ## Install di Steam Deck
 
-1. Masuk **Desktop Mode**.
-2. Copy folder ini ke Deck (misalnya ke `~/deckport`).
-3. Buka **Konsole** dan jalankan:
+DeckPort tersedia dalam tiga bentuk. Ketiganya memakai daftar app dan folder `~/Applications` yang sama, jadi boleh dipasang bersamaan.
+
+| Bentuk | Dipakai di | Kelebihan |
+|---|---|---|
+| **AppImage** (`DeckPort-x.y.z-x86_64.AppImage`) | Desktop Mode | Satu file, punya jendela sendiri |
+| **Plugin Decky** (`DeckPort-decky-x.y.z.zip`) | Game Mode (menu ⋯) | Update tanpa pindah ke Desktop, cek otomatis tiap 6 jam dengan notifikasi |
+| **Script** (`install.sh`) | Desktop Mode | Tanpa build, langsung dari source |
+
+File AppImage dan ZIP Decky ada di halaman **Releases** repo ini, atau di artifact **deckport-builds** di tab **Actions**.
+
+### AppImage
+1. Masuk **Desktop Mode**, lalu download `DeckPort-…-x86_64.AppImage` dari Releases.
+2. Klik kanan file-nya, pilih **Properties** → **Permissions**, lalu centang **Is executable**.
+3. Klik dua kali untuk membuka.
+
+Kalau ada Chrome/Chromium/Brave/Edge (termasuk versi Flatpak), DeckPort terbuka di jendelanya sendiri. Kalau tidak ada, terbuka di browser biasa. DeckPort berhenti otomatis sekitar 2 menit setelah jendelanya ditutup.
+
+AppImage ini juga bisa dipakai sebagai CLI, misalnya `./DeckPort-…AppImage update`.
+
+### Plugin Decky (Game Mode)
+Butuh [Decky Loader](https://decky.xyz) yang sudah terpasang.
+1. Download `DeckPort-decky-….zip` ke Deck.
+2. Di Game Mode, buka menu **⋯** → **Decky** → ⚙ **Settings** → **Developer**, lalu aktifkan **Developer mode**.
+3. Di menu **Developer**, pilih **Install Plugin from ZIP File** dan pilih file ZIP tadi.
+4. DeckPort muncul di daftar plugin Decky. Isinya **Update all**, **Check for updates**, daftar app (tekan sebuah app untuk Check/Rollback/Remove), dan kolom **Add app**.
+
+Pengaturan seperti asset pattern dan GitHub token diatur dari versi Desktop, lalu otomatis ikut terpakai di plugin.
+
+### Script
+Masuk **Desktop Mode**, copy folder ini ke Deck (misalnya ke `~/deckport`), lalu jalankan di **Konsole**:
 
 ```bash
 bash ~/deckport/install.sh
 ```
 
-Setelah itu buka **DeckPort** dari menu aplikasi (Utilities) atau dari ikon di Desktop. Halamannya akan terbuka di browser.
+Setelah itu buka **DeckPort** dari menu aplikasi (Utilities) atau dari ikon di Desktop.
+
+## Build sendiri
+
+- **AppImage** (di Linux x86_64): jalankan `appimage/build.sh`. Butuh `python3`, `rsvg-convert`, dan `curl`.
+- **Plugin Decky**: jalankan `decky-plugin/package.sh`. Butuh Node.js 20+ dan `zip`.
+- **Tes**: jalankan `python3 -I tests/test_deckport.py deckport.py`.
+
+GitHub Actions mem-build keduanya setiap ada push ke `main`. Kalau yang di-push tag `v*`, hasilnya juga dipublish sebagai Release.
 
 ## Cara pakai
 

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e2a38"/>
+      <stop offset="1" stop-color="#0e141b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#2a3a4d" stroke-width="4"/>
+  <!-- circular update arrows -->
+  <path d="M128 52a76 76 0 0 1 70 46" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round"/>
+  <path d="M206 70l-6 34-33-10" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M128 204a76 76 0 0 1-70-46" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round"/>
+  <path d="M50 186l6-34 33 10" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- download arrow into a tray -->
+  <path d="M128 92v58" stroke="#e6edf3" stroke-width="16" stroke-linecap="round"/>
+  <path d="M104 128l24 24 24-24" fill="none" stroke="#e6edf3" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M98 168h60" stroke="#4cc38a" stroke-width="12" stroke-linecap="round"/>
+</svg>

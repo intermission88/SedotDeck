@@ -1,0 +1,11 @@
+{
+  "name": "DeckPort",
+  "author": "intermission88",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["updater", "appimage", "ports"],
+    "description": "Update AppImages and PC ports from GitHub, GitLab, Codeberg, Gitea and Forgejo releases, right from Game Mode.",
+    "image": "https://opengraph.githubassets.com/1/intermission88/deckport"
+  }
+}
