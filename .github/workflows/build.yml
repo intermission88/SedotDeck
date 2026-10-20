@@ -73,8 +73,23 @@ jobs:
           chmod +x dist/*.AppImage
           ls -la dist
 
-      - name: Smoke test AppImage (CLI mode, no GUI)
+      - name: Smoke test AppImage (CLI mode)
         run: APPIMAGE_EXTRACT_AND_RUN=1 dist/DeckPort-*-x86_64.AppImage --version
+
+      - name: Smoke test AppImage (window starts its backend)
+        run: |
+          sudo apt-get install -y xvfb
+          export APPIMAGE_EXTRACT_AND_RUN=1 HOME="$(mktemp -d)"
+          xvfb-run -a dist/DeckPort-*-x86_64.AppImage > app.log 2>&1 &
+          for i in $(seq 40); do
+            ADDR="$(ss -ltnp | grep '"python3"' | grep -o '127\.0\.0\.1:[0-9]*' | head -1)"
+            [ -n "$ADDR" ] && break
+            sleep 1
+          done
+          [ -n "$ADDR" ] || { echo "backend never started"; cat app.log; exit 1; }
+          curl -fsS "http://$ADDR/?app=1" | grep -q "<title>DeckPort</title>"
+          echo "Backend up at $ADDR and serving the UI"
+          pkill -f "deckport.py serve" || true
 
       - uses: actions/upload-artifact@v4
         with:

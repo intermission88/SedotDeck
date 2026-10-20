@@ -47,13 +47,39 @@ fn find_script(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
     script_candidates().into_iter().find(|p| p.is_file())
 }
 
+/// Variables an AppImage's AppRun (and its GTK hook) point into the bundle. Inherited as-is they
+/// make the system python3 load the wrong stdlib, and they would leak into games DeckPort launches.
+const APPIMAGE_VARS: &[&str] = &[
+    "PYTHONHOME", "PYTHONPATH", "PERLLIB", "LD_LIBRARY_PATH", "QT_PLUGIN_PATH", "GSETTINGS_SCHEMA_DIR",
+    "GTK_DATA_PREFIX", "GTK_EXE_PREFIX", "GTK_PATH", "GTK_IM_MODULE_FILE", "GTK_THEME", "GDK_BACKEND",
+    "GDK_PIXBUF_MODULE_FILE", "GDK_PIXBUF_MODULEDIR", "GIO_EXTRA_MODULES", "GIO_MODULE_DIR", "GI_TYPELIB_PATH",
+];
+
+/// A `python3` command with the environment the user had before the AppImage started.
+fn python_command() -> Command {
+    let mut cmd = Command::new("python3");
+    if let Ok(appdir) = std::env::var("APPDIR") {
+        for var in APPIMAGE_VARS {
+            cmd.env_remove(var);
+        }
+        // PATH / XDG_DATA_DIRS get bundle paths prepended: keep only the user's own entries.
+        for var in ["PATH", "XDG_DATA_DIRS"] {
+            if let Ok(value) = std::env::var(var) {
+                let kept: Vec<&str> = value.split(':').filter(|p| !p.is_empty() && !p.starts_with(&appdir)).collect();
+                cmd.env(var, kept.join(":"));
+            }
+        }
+    }
+    cmd
+}
+
 /// CLI mode: hand everything to `python3 deckport.py <args>`.
 fn run_cli(args: Vec<String>) -> ! {
     let Some(script) = find_script(None) else {
         eprintln!("DeckPort: bundled deckport.py not found");
         std::process::exit(1);
     };
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command();
     cmd.arg(script).args(args);
     #[cfg(unix)]
     {
@@ -88,7 +114,7 @@ fn start_backend(app: tauri::AppHandle, origin: Arc<Mutex<Option<String>>>) {
     let Some(script) = find_script(Some(&app)) else {
         return fail(&app, "DeckPort is damaged: the bundled deckport.py is missing.");
     };
-    let spawned = Command::new("python3")
+    let spawned = python_command()
         .arg(&script)
         .args(["serve", "--no-browser", "--port", "0", "--exit-on-stdin-close"])
         .stdin(Stdio::piped()) // closing this tells the server to quit
