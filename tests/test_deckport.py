@@ -143,6 +143,64 @@ other["apps"].append(dict(other["apps"][0], id="y", name="FromPlugin"))
 dp.save_config(other)
 eq([a["name"] for a in srv.handle("/api/state", {})["apps"]], ["Old", "FromPlugin"], "server reloads changed config")
 
+# --- adopting an AppImage the user already has (versioned name, Steam shortcut pointing at it)
+eq(dp.stem_of("Game-v1.1-x86_64.AppImage"), dp.stem_of("Game-v1.2-x86_64.AppImage"), "stem ignores version/arch")
+eq(dp.stem_of("Game-v1.1-x86_64.AppImage"), "game", "stem value")
+eq(dp.stem_of("Zelda64Recompiled-v1.2.2-Linux-X64.AppImage"), "zelda64recompiled", "stem keeps digits in names")
+eq(dp.stem_of("OtherGame.AppImage") == "game", False, "different game")
+
+adir = tempfile.mkdtemp()
+for f in ("Game-v1.1-x86_64.AppImage", "Game-v1.1-x86_64.AppImage.old", "Other.AppImage", "Taken.AppImage", "notes.txt"):
+    Path(adir, f).write_bytes(appimage)
+os.symlink(os.path.join(adir, "Other.AppImage"), os.path.join(adir, "Link.AppImage"))
+acfg = {"settings": {"install_dir": adir, "keep_backup": True},
+        "apps": [{"id": "t", "name": "Taken", "repo": "x/taken", "installed": {"path": os.path.join(adir, "Taken.AppImage")}}]}
+cands = dp.find_adopt_candidates(acfg, "Game", "someone/game", "Game-v1.2-x86_64.AppImage")
+eq([c["name"] for c in cands], ["Game-v1.1-x86_64.AppImage", "Other.AppImage"], "candidates skip .old, symlinks, tracked")
+eq([c["suggested"] for c in cands], [True, False], "best match suggested")
+eq(dp.find_adopt_candidates(acfg, "Nope", "a/nope", "")[0]["suggested"], False, "no false suggestion")
+for bad, why in ((os.path.join(adir, "Link.AppImage"), "symlink"), (os.path.join(adir, "notes.txt"), "not appimage"),
+                 (os.path.join(adir, "Taken.AppImage"), "tracked"), (path, "outside install dir")):
+    try:
+        dp.validate_adopt_path(acfg, bad); raise AssertionError("adopt should reject " + why)
+    except ValueError:
+        ok += 1
+old_file = os.path.join(adir, "Game-v1.1-x86_64.AppImage")
+eq(dp.validate_adopt_path(acfg, old_file), os.path.realpath(old_file), "valid adopt path")
+
+# same bytes as the latest release -> already current, verified, nothing to download
+FILES["https://x/Game-v1.2-x86_64.AppImage"] = b"new release bytes" + appimage
+def gapp(sha):
+    return {"id": "g", "name": "Game", "latest": {"tag": "v1.2", "asset": {
+        "id": 42, "name": "Game-v1.2-x86_64.AppImage", "size": 1, "updated_at": "u",
+        "download_url": "https://x/Game-v1.2-x86_64.AppImage", "sha256": sha}}}
+g = gapp(hashlib.sha256(appimage).hexdigest())
+eq(dp.adopt_app(g, old_file), True, "adopt: hash matches latest")
+eq((dp.has_update(g), g["installed"]["verified"], g["installed"]["tag"]), (False, True, "v1.2"), "adopted file up to date")
+# older file -> update offered, and the update overwrites the SAME versioned path
+g = gapp(hashlib.sha256(FILES["https://x/Game-v1.2-x86_64.AppImage"]).hexdigest())
+eq(dp.adopt_app(g, old_file), False, "adopt: older file")
+eq((dp.has_update(g), g["installed"]["tag"]), (True, "unknown"), "adopted old file needs update")
+acfg["settings"]["install_dir"] = adir
+eq(dp.install_app(g, acfg["settings"]), old_file, "update written to the adopted path")
+eq(Path(old_file).read_bytes(), FILES["https://x/Game-v1.2-x86_64.AppImage"], "adopted file replaced in place")
+eq(os.path.exists(old_file + ".old") and not os.path.exists(os.path.join(adir, "Game.AppImage")), True,
+   "backup kept, no second Game.AppImage")
+
+# --- no re-installing something that is already current
+srv2 = dp.Server()
+srv2.cfg = {"settings": acfg["settings"], "apps": [g]}
+srv2.save = lambda: None
+try:
+    srv2.handle("/api/update", {"id": "g"}); raise AssertionError("re-install of current app should be refused")
+except ValueError as e:
+    eq("already up to date" in str(e), True, "reinstall refused")
+os.remove(old_file)  # user deleted the file -> installing again is allowed
+eq(srv2.handle("/api/update", {"id": "g"})["count"], 1, "missing file can be installed again")
+while srv2.busy():
+    time.sleep(0.05)
+eq(os.path.exists(old_file), True, "reinstalled to the same path")
+
 # --- desktop-app mode: the way the Tauri shell runs the server
 import re, subprocess, urllib.error, urllib.request
 home = tempfile.mkdtemp()

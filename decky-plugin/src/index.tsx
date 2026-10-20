@@ -61,9 +61,9 @@ function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, b
     showContextMenu(
       <Menu label={app.name}>
         <MenuItem onSelected={() => act("/api/check", { id: app.id })}>Check for updates</MenuItem>
-        {app.latest?.asset && (
+        {app.latest?.asset && (!installed || app.has_update) && (
           <MenuItem onSelected={() => act("/api/update", { id: app.id })}>
-            {installed ? "Reinstall latest" : "Install"}
+            {installed ? `Update to ${app.latest.tag}` : "Install"}
           </MenuItem>
         )}
         {app.has_backup && (

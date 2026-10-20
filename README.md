@@ -2,10 +2,15 @@
 
 Obtainium-style updater for Steam Deck. Kamu tambahkan link rilis dari PC port atau AppImage (GitHub, GitLab, Codeberg, Gitea, atau Forgejo), lalu DeckPort yang cek update, download, dan ganti file lamanya. Semua dikelola dari satu tempat.
 
+![DeckPort: daftar app dengan status update, up to date, belum terpasang, dan error](docs/screenshots/overview.jpg)
+
 - Cuma butuh Python bawaan SteamOS, tidak perlu `pip install` atau `sudo`.
 - Web UI yang ramah touchscreen dan trackpad, plus CLI.
 - Otomatis memilih asset Linux yang benar (AppImage dulu, lalu build `linux`/`steamdeck` dalam zip/tar). Bisa diganti dengan regex.
 - **Nama file tetap** (`~/Applications/NamaGame.AppImage`), jadi shortcut Steam (non-Steam game) tidak rusak setelah update.
+- **Pakai file yang sudah ada**: kalau kamu sudah punya `Game-v1.1-x86_64.AppImage` hasil download manual, DeckPort mengenalinya dan meng-update file itu juga, dengan nama yang sama. Shortcut Steam-mu tetap jalan.
+- Status per app jelas terlihat dari ikon dan warnanya (biru = ada update, hijau = up to date, kuning = belum terpasang, merah = error). App yang butuh update selalu tampil paling atas.
+- App yang sudah versi terbaru tidak bisa di-install ulang tanpa sengaja.
 - Mendeteksi rilis "nightly"/"continuous" yang tag-nya sama tapi file-nya diganti.
 - **Verifikasi SHA-256**: setiap download dicek dengan checksum dari GitHub, atau dari file checksum di rilis (`SHA256SUMS`, `*.sha256`). Kalau tidak cocok, file dihapus dan versi lama tetap dipakai.
 - **GitHub, GitLab, Codeberg, Gitea, Forgejo**: untuk server self-hosted, jenisnya dideteksi otomatis.
@@ -59,6 +64,22 @@ Setelah itu buka **DeckPort** dari menu aplikasi (Utilities) atau dari ikon di D
 - **Tes**: jalankan `python3 -I tests/test_deckport.py deckport.py`.
 
 GitHub Actions mem-build keduanya setiap ada push ke `main`. Kalau yang di-push tag `v*`, hasilnya juga dipublish sebagai Release.
+
+## Sudah punya AppImage-nya?
+
+Banyak rilis memakai nama file yang berisi versi. Kalau di `~/Applications` sudah ada file seperti `pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage` dan file itu sudah kamu jadikan shortcut Steam, caranya:
+
+1. **＋ Add app**, paste link repo-nya, lalu klik **Preview assets**.
+2. Di bagian **"Already have this AppImage?"**, DeckPort menunjukkan file yang cocok dan otomatis mencentangnya.
+3. Klik **Add**. Kalau file lamanya ternyata sudah versi terbaru (dicek lewat SHA-256), statusnya langsung *Up to date*. Kalau belum, klik **Update**: versi baru ditulis ke **path dan nama file yang sama**, dan versi lama disimpan sebagai `.old`.
+
+![Dialog Add dengan saran file yang sudah ada](docs/screenshots/adopt.jpg)
+
+Lewat CLI: `deckport add https://github.com/PCSX2/pcsx2 --adopt ~/Applications/pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage`
+
+| Sedang download | Sudah terpasang |
+|---|---|
+| ![Download berjalan](docs/screenshots/downloading.jpg) | ![Terpasang dan terverifikasi](docs/screenshots/installed.jpg) |
 
 ## Cara pakai
 

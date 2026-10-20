@@ -78,9 +78,9 @@ jobs:
 
       - name: Smoke test AppImage (window starts its backend)
         run: |
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y xvfb imagemagick
           export APPIMAGE_EXTRACT_AND_RUN=1 HOME="$(mktemp -d)"
-          xvfb-run -a dist/DeckPort-*-x86_64.AppImage > app.log 2>&1 &
+          xvfb-run -a -s "-screen 0 1100x760x24" dist/DeckPort-*-x86_64.AppImage > app.log 2>&1 &
           for i in $(seq 40); do
             ADDR="$(ss -ltnp | grep '"python3"' | grep -o '127\.0\.0\.1:[0-9]*' | head -1)"
             [ -n "$ADDR" ] && break
@@ -89,7 +89,16 @@ jobs:
           [ -n "$ADDR" ] || { echo "backend never started"; cat app.log; exit 1; }
           curl -fsS "http://$ADDR/?app=1" | grep -q "<title>DeckPort</title>"
           echo "Backend up at $ADDR and serving the UI"
+          # Screenshot of the real app window (Xvfb has no window manager, so no title bar).
+          sleep 6
+          mkdir -p shots
+          DISPLAY="$(ls /tmp/.X11-unix | sed -n 's/^X/:/p' | head -1)" import -window root shots/app-window.png
           pkill -f "deckport.py serve" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: shots/*
 
       - uses: actions/upload-artifact@v4
         with:

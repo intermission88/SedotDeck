@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
@@ -552,6 +553,8 @@ def install_app(app, settings, progress=None, phase=None):
         if kind in ("appimage", "file"):
             suffix = ".AppImage" if kind == "appimage" else ""
             dest = install_dir / (base + suffix)
+            if kind == "appimage" and app.get("target_path"):
+                dest = Path(app["target_path"])  # an adopted file keeps its exact name and Steam shortcut
             make_executable(dl)
             if dest.exists() and settings.get("keep_backup", True):
                 os.replace(dest, str(dest) + ".old")
@@ -574,6 +577,108 @@ def install_app(app, settings, progress=None, phase=None):
     }
     app["error"] = ""
     return path
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+_STEM_NOISE = re.compile(
+    r"(?<![a-z])v?\d+([._-]\d+)+[a-z0-9]*"            # versions: v1.2, 1.2.3-rc1, 2024.10.01
+    r"|(?<![a-z0-9])\d{6,}(?![a-z0-9])"                 # build numbers / dates
+    r"|(?<![a-z])(x86[_-]?64|amd64|x64|linux(64)?|appimage|portable|release|nightly|latest|stable)(?![a-z])")
+
+
+def stem_of(name):
+    """A file name without version, arch and extension: Game-v1.1-x86_64.AppImage -> "game"."""
+    n = re.sub(r"\.appimage$", "", name.lower())
+    return re.sub(r"[^a-z0-9]+", "", _STEM_NOISE.sub(" ", n))
+
+
+def tracked_paths(cfg, except_id=None):
+    out = set()
+    for a in cfg["apps"]:
+        if a["id"] == except_id:
+            continue
+        for p in ((a.get("installed") or {}).get("path"), a.get("target_path")):
+            if p:
+                out.add(os.path.realpath(p))
+    return out
+
+
+def find_adopt_candidates(cfg, name, repo, asset_name="", except_id=None):
+    """AppImages already in the install folder that DeckPort doesn't manage yet, best match first."""
+    folder = os.path.expanduser(cfg["settings"]["install_dir"])
+    if not os.path.isdir(folder):
+        return []
+    taken = tracked_paths(cfg, except_id)
+    want_asset = stem_of(asset_name) if asset_name else ""
+    want_names = {t for t in (stem_of(name or ""), stem_of(repo.split("/")[-1])) if len(t) >= 3}
+    out = []
+    for f in sorted(os.listdir(folder), key=str.lower):
+        p = os.path.join(folder, f)
+        if not f.lower().endswith(".appimage") or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        if os.path.realpath(p) in taken:
+            continue
+        st = stem_of(f)
+        score = 0
+        if want_asset and st == want_asset:
+            score = 2
+        elif len(st) >= 3 and any(st == t or st.startswith(t) or t.startswith(st) for t in want_names):
+            score = 1
+        out.append({"path": p, "name": f, "size": os.path.getsize(p), "score": score})
+    out.sort(key=lambda c: -c["score"])
+    for i, c in enumerate(out):
+        c["suggested"] = i == 0 and c["score"] > 0
+    return out
+
+
+def validate_adopt_path(cfg, path, except_id=None):
+    folder = os.path.realpath(os.path.expanduser(cfg["settings"]["install_dir"]))
+    p = os.path.expanduser(str(path or ""))
+    if os.path.islink(p):
+        raise ValueError("%s is a symlink; pick the real AppImage file" % os.path.basename(p))
+    rp = os.path.realpath(p)
+    if os.path.dirname(rp) != folder:
+        raise ValueError("Pick an AppImage directly inside %s" % folder)
+    if not rp.lower().endswith(".appimage") or not os.path.isfile(rp):
+        raise ValueError("%s is not an AppImage file" % os.path.basename(rp))
+    if rp in tracked_paths(cfg, except_id):
+        raise ValueError("%s is already managed by another app" % os.path.basename(rp))
+    return rp
+
+
+def adopt_app(app, path):
+    """Manage an AppImage the user already has: future updates overwrite this exact path, so
+    a Steam shortcut to it keeps working. Run check_app first so the latest release is known."""
+    latest = app.get("latest") or {}
+    asset = latest.get("asset")
+    actual = file_sha256(path)
+    expected, source = expected_sha256(asset) if asset else ("", "")
+    if asset and expected:
+        current, verified = expected == actual, expected == actual
+    else:
+        current, verified = bool(asset) and os.path.basename(path) == asset["name"], False
+    app["target_path"] = path
+    app["installed"] = {
+        "tag": latest.get("tag", "") if current else "unknown",
+        "asset": os.path.basename(path),
+        "asset_id": asset["id"] if current else None,  # unknown version -> has_update() offers the update
+        "updated_at": asset["updated_at"] if current else "",
+        "kind": "appimage",
+        "path": path,
+        "date": time.time(),
+        "sha256": actual,
+        "verified": verified,
+        "verified_by": source if verified else "",
+        "adopted": True,
+    }
+    return current
 
 
 def rollback_app(app):
@@ -775,6 +880,7 @@ class Server:
                 inst = a.get("installed") or {}
                 d["has_backup"] = bool(inst.get("path") and os.path.exists(inst["path"] + ".old"))
                 d["exists"] = bool(inst.get("path") and os.path.exists(inst["path"]))
+                d["file_name"] = os.path.basename(inst.get("path") or a.get("target_path") or "")
                 apps.append(d)
             s = dict(self.cfg["settings"])
             s["has_token"] = bool(s.pop("github_token", ""))
@@ -786,6 +892,15 @@ class Server:
             self.save()
             if app.get("error"):
                 raise RuntimeError(app["error"])
+        return self.jobs.start(app["id"], "Checking", fn)
+
+    def adopt(self, app, path):
+        def fn(job):
+            check_app(app, self.gh_token())
+            if app.get("error"):
+                raise RuntimeError(app["error"])
+            adopt_app(app, path)
+            self.save()
         return self.jobs.start(app["id"], "Checking", fn)
 
     def install(self, app):
@@ -826,15 +941,43 @@ class Server:
                 "picked": picked["name"] if picked else None,
             }
 
+        if path == "/api/adopt_candidates":
+            if body.get("id"):
+                app = self._app(body)
+                name, repo, except_id = app["name"], app["repo"], app["id"]
+                asset = ((app.get("latest") or {}).get("asset") or {}).get("name", "")
+            else:
+                src = resolve_source(body.get("repo", ""))
+                name, repo, except_id, asset = body.get("name", ""), src["repo"], None, ""
+                try:
+                    rel = fetch_release(src, body.get("prerelease", False),
+                                        self.gh_token() if src["provider"] == "github" else "")
+                    picked = pick_asset(rel.get("assets", []), body.get("pattern", ""))
+                    asset = picked["name"] if picked else ""
+                except Exception:
+                    pass  # still useful: match on the app/repo name alone
+            with _lock:
+                cands = find_adopt_candidates(cfg, name, repo, asset, except_id)
+            folder = os.path.expanduser(cfg["settings"]["install_dir"])
+            home = str(Path.home())
+            if folder == home or folder.startswith(home + os.sep):
+                folder = "~" + folder[len(home):]
+            default = safe_name(name or repo.split("/")[-1]) + ".AppImage"
+            return {"candidates": cands, "folder": folder, "default_name": default}
+
         if path == "/api/add":
             app = new_app(body.get("repo", ""), body.get("name", ""), body.get("pattern", ""),
                           body.get("prerelease", False))
             with _lock:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
+                adopt = validate_adopt_path(cfg, body["adopt_path"]) if body.get("adopt_path") else None
                 cfg["apps"].append(app)
                 self.save()
-            self.check(app)
+            if adopt:
+                self.adopt(app, adopt)
+            else:
+                self.check(app)
             return {"ok": True, "id": app["id"]}
 
         if path == "/api/edit":
@@ -848,9 +991,13 @@ class Server:
                     app["pattern"] = body["pattern"]
                 if "prerelease" in body:
                     app["prerelease"] = bool(body["prerelease"])
+                adopt = validate_adopt_path(cfg, body["adopt_path"], app["id"]) if body.get("adopt_path") else None
                 app["latest"] = None
                 self.save()
-            self.check(app)
+            if adopt:
+                self.adopt(app, adopt)
+            else:
+                self.check(app)
             return {"ok": True}
 
         if path == "/api/check":
@@ -861,7 +1008,12 @@ class Server:
 
         if path == "/api/update":
             if body.get("id"):
-                targets = [self._app(body)]
+                app = self._app(body)
+                inst = app.get("installed") or {}
+                if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app):
+                    # Installed and current: don't download the same release again.
+                    raise ValueError("%s is already up to date" % app["name"])
+                targets = [app]
             else:
                 targets = [a for a in cfg["apps"] if has_update(a)]
             for a in targets:
@@ -870,6 +1022,8 @@ class Server:
 
         if path == "/api/rollback":
             app = self._app(body)
+            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+                raise ValueError("Wait for %s to finish first" % app["name"])
             rollback_app(app)
             self.save()
             return {"ok": True}
@@ -1081,15 +1235,36 @@ def cmd_add(args):
     app = new_app(args.repo, args.name or "", args.pattern or "", args.pre)
     if any(same_source(a, app) for a in cfg["apps"]):
         sys.exit("%s is already tracked" % display_repo(app))
+    try:
+        adopt = validate_adopt_path(cfg, args.adopt) if args.adopt else None
+    except ValueError as e:
+        sys.exit("Can't adopt: %s" % e)
     cfg["apps"].append(app)
     print("Checking %s ..." % display_repo(app))
     check_app(app, cfg["settings"]["github_token"])
-    save_config(cfg)
     if app["error"]:
+        save_config(cfg)
         print("Added, but:", app["error"])
-    else:
-        print("Added %s, latest %s (%s)" % (app["name"], app["latest"]["tag"], app["latest"]["asset"]["name"]))
-        print("Run: deckport.py update %s" % safe_name(app["name"]))
+        return
+    asset = app["latest"]["asset"]["name"]
+    print("Added %s, latest %s (%s)" % (app["name"], app["latest"]["tag"], asset))
+    if adopt:
+        current = adopt_app(app, adopt)
+        save_config(cfg)
+        if current:
+            print("Using your existing %s, already the latest version." % os.path.basename(adopt))
+        else:
+            print("Using your existing %s. Updates will overwrite it in place." % os.path.basename(adopt))
+            print("Run: deckport.py update %s" % safe_name(app["name"]))
+        return
+    save_config(cfg)
+    found = [c for c in find_adopt_candidates(cfg, app["name"], app["repo"], asset, app["id"]) if c["suggested"]]
+    if found:
+        print("You already have %s. To update that file instead of creating %s.AppImage:"
+              % (found[0]["name"], safe_name(app["name"])))
+        print("  deckport.py remove %s && deckport.py add %s --adopt %s"
+              % (safe_name(app["name"]), args.repo, shlex.quote(found[0]["path"])))
+    print("Run: deckport.py update %s" % safe_name(app["name"]))
 
 
 def cmd_list(args):
@@ -1201,6 +1376,7 @@ def main():
     s.add_argument("--name")
     s.add_argument("--pattern", help="regex to choose the release asset, e.g. 'linux.*\\.AppImage$'")
     s.add_argument("--pre", action="store_true", help="include pre-releases")
+    s.add_argument("--adopt", metavar="FILE", help="update this AppImage you already have (keeps its name and Steam shortcut)")
     s.set_defaults(fn=cmd_add)
 
     sub.add_parser("list", help="list tracked apps").set_defaults(fn=cmd_list)
@@ -1365,13 +1541,73 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
   opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw;z-index:20}
 #toast.show{opacity:1;transform:translate(-50%,0)} #toast.bad{border-color:rgba(252,165,165,.5)}
 
+/* ---- status: icon + colour per state, so "needs update" vs "up to date" reads at a glance */
+.card{--st:var(--blue-300);--st-bg:rgba(147,197,253,.10);--st-edge:rgba(147,197,253,.32)}
+.card.st-update{--st:var(--blue-300);--st-bg:rgba(59,130,246,.22);--st-edge:rgba(96,165,250,.6)}
+.card.st-ok{--st:var(--good);--st-bg:rgba(134,239,172,.10);--st-edge:rgba(134,239,172,.35)}
+.card.st-new{--st:var(--warn);--st-bg:rgba(252,211,77,.10);--st-edge:rgba(252,211,77,.35)}
+.card.st-err{--st:var(--bad);--st-bg:rgba(252,165,165,.10);--st-edge:rgba(252,165,165,.38)}
+.card.st-update::after{content:"";position:absolute;left:-1px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;
+  background:linear-gradient(180deg,var(--blue-300),var(--blue-600));box-shadow:0 0 12px rgba(96,165,250,.7)}
+.avatar{position:relative}
+.avatar .st{position:absolute;right:-6px;bottom:-6px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  background:#0a1430;border:1.5px solid var(--st);color:var(--st);box-shadow:0 0 0 2px var(--bg)}
+.avatar .st svg{width:12px;height:12px}
+.badge svg{width:14px;height:14px;flex:none}
+.badge::before{display:none}
+.badge{color:var(--st);border-color:var(--st-edge);background:var(--st-bg)}
+button svg{width:16px;height:16px;vertical-align:-3px}
+.card.st-update .badge{font-weight:600;position:relative}
+/* the update badge pulses three times when it first appears, then stays still */
+.card.st-update .badge.pulse::after{content:"";position:absolute;inset:-1px;border-radius:inherit;
+  border:1px solid var(--blue-400);animation:ring 1.5s ease-out .35s 3;opacity:0}
+@keyframes ring{0%{transform:scale(1);opacity:.8}100%{transform:scale(1.35);opacity:0}}
+.spin{animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.file{display:flex;gap:6px;align-items:center;min-width:0}
+.file .tag{font-size:10.5px;padding:1px 6px;border-radius:99px;color:var(--blue-200);border:1px solid var(--edge);white-space:nowrap}
+
+/* ---- filter chips */
+.summary button{min-height:32px;padding:4px 12px;border-radius:99px;font-size:13px;color:var(--dim);
+  background:rgba(23,37,84,.35);box-shadow:none;display:inline-flex;gap:6px;align-items:center}
+.summary button b{color:var(--text);font-weight:600}
+.summary button.on{color:#fff;border-color:rgba(96,165,250,.6);background:rgba(37,99,235,.32)}
+.summary button i{width:7px;height:7px;border-radius:50%;background:var(--c,var(--blue-300))}
+
+/* ---- motion: transform/opacity only, each plays once */
+.enter{animation:enter .38s cubic-bezier(.2,.8,.2,1) both}
+@keyframes enter{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+.bar.dl i{position:relative;overflow:hidden}
+.bar.dl i::after{content:"";position:absolute;inset:0;width:40%;
+  background:linear-gradient(90deg,transparent,rgba(239,246,255,.45),transparent);animation:shimmer 1.2s linear infinite}
+@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+.done-check{display:flex;align-items:center;gap:8px;color:var(--good);font-size:13px;font-weight:600}
+.done-check svg{width:22px;height:22px}
+.done-check path{stroke-dasharray:24;stroke-dashoffset:24;animation:draw .5s .1s ease-out forwards}
+.done-check circle{transform-origin:center;animation:enter .3s both}
+@keyframes draw{to{stroke-dashoffset:0}}
+
+/* ---- adopt an existing file */
+.adopt{border-radius:14px;border:1px solid var(--edge);background:rgba(5,8,20,.4);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.adopt-title{font-weight:600;font-size:14px}
+.adopt label{flex-direction:row;align-items:flex-start;gap:10px;color:var(--text);padding:8px 10px;border-radius:10px;cursor:pointer;
+  border:1px solid transparent;transition:background .15s,border-color .15s}
+.adopt label:hover{background:rgba(59,130,246,.10)}
+.adopt label.sel{border-color:rgba(96,165,250,.5);background:rgba(37,99,235,.16)}
+.adopt input[type=radio]{margin-top:3px;accent-color:var(--blue-500);width:16px;height:16px;flex:none}
+.adopt small{display:block;color:var(--faint);font-size:12px}
+.adopt .more{max-height:150px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+
 @media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
 /* Users who turn transparency off get solid panels and no blur at all. */
 @media (prefers-reduced-transparency:reduce){
   .glass,.frost,dialog,#toast{background:#0b1638;-webkit-backdrop-filter:none;backdrop-filter:none}
   .glass::before{display:none}
 }
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}
+  .done-check path{stroke-dashoffset:0}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <symbol id="logo" viewBox="0 0 256 256">
@@ -1383,6 +1619,11 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
   </symbol>
   <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V6M6.5 11.5 12 6l5.5 5.5"/></g></symbol>
+  <symbol id="i-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-get" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></g></symbol>
+  <symbol id="i-err" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.8 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0z"/></g></symbol>
+  <symbol id="i-busy" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-9 9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
 </defs></svg>
 
 <header class="frost">
@@ -1404,6 +1645,7 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
   <div class="btns" style="justify-content:flex-start;align-items:center"><button type="button" id="aPrev">Preview assets</button><span class="hint" id="aInfo"></span></div>
   <div class="assets" id="aAssets" hidden></div>
   <div class="hint">Tip: click an asset to auto-fill a pattern for it.</div>
+  <div class="adopt" id="aAdopt" hidden></div>
   <div class="btns"><button type="button" class="ghost" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
 </form></dialog>
 
@@ -1469,57 +1711,98 @@ function ask({title,text="",ok="OK",danger=false,check=""}){
   });
 }
 
-function card(a){
-  const job=S.jobs[a.id], inst=a.installed, L=a.latest||{};
-  let badge;
-  if(a.error) badge='<span class="badge b-err">Error</span>';
-  else if(!inst||!a.exists) badge='<span class="badge b-new">Not installed</span>';
-  else if(a.has_update) badge='<span class="badge b-up">Update</span>';
-  else if(L.tag) badge='<span class="badge b-ok">Up to date</span>';
-  else badge='<span class="badge">Checking</span>';
+const ICON=(id,cls="")=>`<svg class="${cls}"><use href="#${id}"/></svg>`;
+const seen=new Set(), doneAt={}; let prevJobs={}, FILTER="all";
+try{FILTER=localStorage.getItem("deckport.filter")||"all"}catch(e){}
+
+// One status per card; it drives the icon, colour, badge text, sort order and filter.
+function status(a){
+  const job=S.jobs[a.id], inst=a.installed&&a.exists;
+  if(job&&job.state=="running") return "busy";
+  if(a.error) return "err";
+  if(!inst) return "new";
+  if(a.has_update) return "update";
+  return a.latest&&a.latest.tag?"ok":"busy";
+}
+const ORDER={update:0,busy:1,err:2,new:3,ok:4};
+const BADGE={update:["i-up","st-update"],ok:["i-ok","st-ok"],new:["i-get","st-new"],err:["i-err","st-err"],busy:["i-busy",""]};
+
+function card(a,i){
+  const job=S.jobs[a.id], inst=a.installed, L=a.latest||{}, st=status(a), [icon,cls]=BADGE[st];
   const running=job&&job.state=="running";
+  let label={update:`Update → ${esc(L.tag||"")}`,ok:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
+  if(running) label=job.label=="Downloading"&&job.progress?`Downloading ${Math.round(job.progress*100)}%`:esc(job.label)+"…";
+  const badge=`<span class="badge ${st=="update"&&!seen.has(a.id)?"pulse":""}">${ICON(icon,st=="busy"?"spin":"")}${label}</span>`;
   let jobHtml="";
   if(job){
-    if(job.state=="running"){
+    if(running){
       const dl=job.label=="Downloading"&&job.progress;
-      jobHtml=`<div class="bar ${dl?"":"wait"}"><i style="transform:scaleX(${dl?job.progress.toFixed(3):1})"></i></div><div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
+      jobHtml=`<div class="bar ${dl?"dl":"wait"}"><i style="transform:scaleX(${dl?job.progress.toFixed(3):1})"></i></div><div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
     }
     else if(job.state=="error") jobHtml=`<div class="err">${esc(job.message)}</div>`;
-    else jobHtml=`<div class="jobtxt" style="color:var(--good)">✓ ${job.label=="Checking"?"Checked":"Installed"}</div>`;
   }
+  if(doneAt[a.id]&&Date.now()-doneAt[a.id]<4000&&!running)
+    jobHtml=`<div class="done-check"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="rgba(134,239,172,.12)" stroke="currentColor" stroke-width="1.5"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Installed ${esc(inst&&inst.tag||"")}</div>`;
   const mainBtn=(!inst||!a.exists)?"Install":(a.has_update?"Update":null);
-  return `<div class="card glass ${a.has_update&&inst?"upd":""}">
-   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}</div>
+  const isNew=!seen.has(a.id);
+  const fileRow=a.file_name?`<span>File</span><span class="file"><span class="mono">${esc(a.file_name)}</span>${a.target_path?'<span class="tag">your file</span>':""}</span>`:"";
+  return `<div class="card glass st-${st} ${isNew?"enter":""}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}">
+   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}<span class="st">${ICON(icon,st=="busy"?"spin":"")}</span></div>
      <div style="min-width:0"><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>${badge}</div>
    <div class="vers">
-     <span>Installed</span><span class="mono">${esc(inst?inst.tag:"-")}</span>
+     <span>Installed</span><span class="mono">${inst?(inst.tag=="unknown"?'<span class="dim">unknown version</span>':esc(inst.tag)):"-"}</span>
      <span>Latest</span><span class="mono">${L.url?`<a href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}</span>
      <span>Asset</span><span class="mono">${esc(L.asset?L.asset.name:"-")} ${L.asset&&L.asset.size?"· "+mb(L.asset.size):""}</span>
+     ${fileRow}
      <span>Checked</span><span>${ago(a.checked_at)}</span>
-     ${inst&&a.exists?`<span>Integrity</span><span>${inst.verified?`<span class="ok" title="${esc(inst.sha256)}">✓ SHA-256 verified</span> <span class="dim">(${esc(inst.verified_by)})</span>`:`<span class="dim" title="${esc(inst.sha256||"")}">Not verified, no checksum published</span>`}</span>`:""}
+     ${inst&&a.exists?`<span>Integrity</span><span>${inst.verified?`<span class="ok" title="${esc(inst.sha256)}">✓ SHA-256 verified</span> <span class="dim">(${esc(inst.verified_by)})</span>`:
+        inst.tag=="unknown"?`<span class="dim">Older copy you downloaded yourself. Update to get a verified one.</span>`:
+        `<span class="dim" title="${esc(inst.sha256||"")}">Not verified, no checksum published</span>`}</span>`:""}
    </div>
    ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
    ${jobHtml}
    <div class="actions">
-     ${mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${mainBtn}</button>`:""}
+     ${mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
      <button data-a="check" data-id="${a.id}" ${running?"disabled":""}>Check</button>
-     ${inst&&a.exists?`<button data-a="launch" data-id="${a.id}">${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
-     ${a.has_backup?`<button data-a="rollback" data-id="${a.id}" title="Restore previous version">Rollback</button>`:""}
+     ${inst&&a.exists?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
+     ${a.has_backup?`<button data-a="rollback" data-id="${a.id}" title="Restore previous version" ${running?"disabled":""}>Rollback</button>`:""}
      <button class="ghost" data-a="edit" data-id="${a.id}">Edit</button>
      <button class="ghost danger" data-a="remove" data-id="${a.id}">Remove</button>
    </div></div>`;
 }
 
 function render(){
-  const L=$("#list");
-  if(!S.apps.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to a PC port or AppImage release.</div>'}
-  else L.innerHTML=S.apps.map(card).join("");
-  const n=S.apps.filter(a=>a.has_update&&!(S.jobs[a.id]&&S.jobs[a.id].state=="running")).length;
-  const inst=S.apps.filter(a=>a.installed&&a.exists).length;
-  $("#summary").innerHTML=S.apps.length?`<span><b>${S.apps.length}</b> tracked</span><span><b>${inst}</b> installed</span><span><b>${n}</b> update${n==1?"":"s"}</span>`:"";
+  // Remember installs that just finished, for the check-mark animation.
+  for(const [id,p] of Object.entries(prevJobs)){
+    const j=S.jobs[id];
+    if(p.state=="running"&&p.label!="Checking"&&j&&j.state=="done") doneAt[id]=Date.now();
+  }
+  prevJobs=S.jobs||{};
+  const L=$("#list"), apps=[...S.apps].sort((x,y)=>ORDER[status(x)]-ORDER[status(y)]||x.name.localeCompare(y.name));
+  const count=k=>apps.filter(a=>status(a)==k).length;
+  const chips=[["all","All",apps.length,"var(--blue-300)"],["update","Updates",count("update"),"var(--blue-400)"],
+               ["ok","Up to date",count("ok"),"var(--good)"],["new","Not installed",count("new"),"var(--warn)"]];
+  if(count("err")) chips.push(["err","Errors",count("err"),"var(--bad)"]);
+  if(!chips.some(c=>c[0]==FILTER)) FILTER="all";
+  $("#summary").innerHTML=apps.length?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
+  const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
+  if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to a PC port or AppImage release.</div>'}
+  else if(!shown.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No apps match this filter.</div>'}
+  else L.innerHTML=shown.map(card).join("");
+  shown.forEach(a=>seen.add(a.id));
+  // Safety net: if the webview pauses animations (hidden/occluded window), still show the cards.
+  setTimeout(()=>L.querySelectorAll(".enter").forEach(el=>el.classList.remove("enter")),1500);
+  const n=count("update");
   const b=$("#btnUpdAll");b.disabled=!n;b.textContent=n?`Update all (${n})`:"Update all";
 }
+// Drop the entrance class once it has played so a card can never stay mid-animation.
+$("#list").addEventListener("animationend",e=>{if(e.target.classList.contains("enter")&&e.animationName=="enter")e.target.classList.remove("enter")});
+$("#summary").addEventListener("click",e=>{
+  const c=e.target.closest("button[data-f]");if(!c)return;
+  FILTER=c.dataset.f;try{localStorage.setItem("deckport.filter",FILTER)}catch(err){}
+  render();
+});
 async function refresh(){
   try{S=await api("/api/state");render()}catch(e){$("#list").innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
   clearTimeout(timer);
@@ -1530,6 +1813,7 @@ async function refresh(){
 $("#list").addEventListener("click",async e=>{
   const b=e.target.closest("button[data-a]");if(!b)return;
   const id=b.dataset.id,a=S.apps.find(x=>x.id==id),k=b.dataset.a;
+  if(k=="update"||k=="check")b.disabled=true;
   if(k=="update")act("/api/update",{id});
   else if(k=="check")act("/api/check",{id});
   else if(k=="launch")act("/api/launch",{id},"Launching "+a.name);
@@ -1557,7 +1841,7 @@ function openAdd(a){
   $("#aSave").textContent=a?"Save":"Add";
   $("#aRepo").value=a?a.repo:"";$("#aRepo").disabled=!!a;
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
-  $("#aAssets").hidden=true;$("#aInfo").textContent="";
+  $("#aAssets").hidden=true;$("#aInfo").textContent="";$("#aAdopt").hidden=true;$("#aAdopt").innerHTML="";
   dAdd.showModal(); if(a)preview();
 }
 $("#btnAdd").onclick=()=>openAdd(null);
@@ -1573,17 +1857,41 @@ async function preview(){
     $("#aInfo").textContent=`${r.repo} · ${r.tag} · ${r.picked?"will download: "+r.picked:"⚠ no match"}`;
     box.innerHTML=r.assets.map(x=>`<div class="${x.name==r.picked?"pick":""}" data-n="${esc(x.name)}">${esc(x.name)}<small>${mb(x.size)}</small></div>`).join("")||"<div>No assets in this release</div>";
     box.hidden=false;
+    loadAdopt();
   }catch(e){$("#aInfo").textContent="⚠ "+e.message;box.hidden=true}
+}
+// "Already have this AppImage?": offer to update a file the user downloaded by hand,
+// keeping its exact (often versioned) name so their Steam shortcut keeps working.
+async function loadAdopt(){
+  const box=$("#aAdopt"), app=editId&&S.apps.find(x=>x.id==editId);
+  if(app&&app.installed&&app.exists){box.hidden=true;return}
+  try{
+    const r=await api("/api/adopt_candidates",editId?{id:editId}:{repo:$("#aRepo").value,name:$("#aName").value,
+                       pattern:$("#aPat").value,prerelease:$("#aPre").checked});
+    if(!r.candidates.length){box.hidden=true;return}
+    const sug=r.candidates.find(c=>c.suggested), others=r.candidates.filter(c=>!c.suggested);
+    const opt=(c,sel)=>`<label class="${sel?"sel":""}"><input type="radio" name="adopt" value="${esc(c.path)}" ${sel?"checked":""}>
+      <span><span class="mono">${esc(c.name)}</span><small>${sel?"Found in your Applications folder. DeckPort will update this file, so your Steam shortcut keeps working.":mb(c.size)}</small></span></label>`;
+    box.innerHTML=`<div class="adopt-title">Already have this AppImage?</div>
+      ${sug?opt(sug,true):""}
+      <label class="${sug?"":"sel"}"><input type="radio" name="adopt" value="" ${sug?"":"checked"}>
+        <span>No, save a new file<small>as <span class="mono">${esc(r.default_name)}</span> in ${esc(r.folder)}</small></span></label>
+      ${others.length?`<div class="hint">Or pick another file you already have:</div><div class="more">${others.map(c=>opt(c,false)).join("")}</div>`:""}`;
+    box.hidden=false;
+    box.onchange=()=>box.querySelectorAll("label").forEach(l=>l.classList.toggle("sel",l.querySelector("input").checked));
+  }catch(e){box.hidden=true}
 }
 $("#aPrev").onclick=preview;
 $("#aAssets").onclick=e=>{const d=e.target.closest("[data-n]");if(!d)return;$("#aPat").value=patternFor(d.dataset.n);preview()};
 $("#fAdd").onsubmit=async e=>{
   e.preventDefault();
-  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked};
+  const pick=document.querySelector('#aAdopt input[name=adopt]:checked');
+  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,
+              adopt_path:!$("#aAdopt").hidden&&pick?pick.value:""};
   try{
     if(editId)await api("/api/edit",{id:editId,...body});
     else await api("/api/add",{repo:$("#aRepo").value,...body});
-    dAdd.close();toast(editId?"Saved":"Added, checking…");refresh();
+    dAdd.close();toast(body.adopt_path?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
   }catch(err){toast(err.message,true)}
 };
 
