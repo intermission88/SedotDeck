@@ -35,6 +35,8 @@ File AppImage dan ZIP Decky ada di halaman **Releases** repo ini, atau di artifa
 2. Klik kanan file-nya, pilih **Properties** → **Permissions**, lalu centang **Is executable**.
 3. Klik dua kali untuk membuka.
 
+![Jendela AppImage DeckPort (di-capture otomatis oleh CI di Linux)](docs/screenshots/app-window.png)
+
 DeckPort terbuka sebagai aplikasi sendiri (dibuat dengan Tauri), jadi tidak butuh browser apa pun. Ukuran AppImage sekitar 70–90 MB karena mesin tampilannya ikut dibundel. Satu-satunya yang dibutuhkan adalah `python3`, yang sudah ada di SteamOS. Begitu jendelanya ditutup, DeckPort langsung berhenti. Kalau saat itu sedang ada download, download-nya diselesaikan dulu.
 
 AppImage ini juga bisa dipakai sebagai CLI, misalnya `./DeckPort-…AppImage update`.
