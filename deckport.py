@@ -1623,15 +1623,17 @@ dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
   <symbol id="i-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-get" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></g></symbol>
   <symbol id="i-err" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.8 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0z"/></g></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9M4 13a8 8 0 0 0 14.3 4.9"/><path d="M5 3v4h4M19 21v-4h-4"/></g></symbol>
   <symbol id="i-busy" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-9 9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
 </defs></svg>
 
 <header class="frost">
   <div class="brand"><svg><use href="#logo"/></svg>
     <div><h1>DeckPort<span class="pill">v__VERSION__</span></h1><div class="sub">AppImages &amp; PC ports, always up to date</div></div></div>
-  <button id="btnCheck">⟳ Check all</button>
+  <button id="btnCheck"><svg><use href="#i-sync"/></svg> Check all</button>
   <button id="btnUpdAll" class="primary" disabled>Update all</button>
-  <button id="btnAdd" class="primary">＋ Add app</button>
+  <button id="btnAdd" class="primary"><svg><use href="#i-plus"/></svg> Add app</button>
   <button id="btnSet" class="icon ghost" title="Settings" aria-label="Settings"><svg><use href="#gear"/></svg></button>
 </header>
 <main><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
