@@ -36,7 +36,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
@@ -900,6 +900,26 @@ class Server:
             with _lock:
                 return export_apps(cfg)
 
+        if path == "/api/export_save":
+            # The desktop app's webview can't save blob downloads, so write the file here.
+            with _lock:
+                data = export_apps(cfg)
+            folder = Path.home() / "Downloads"
+            folder.mkdir(parents=True, exist_ok=True)
+            stem = "deckport-apps-" + data["exported_at"][:10]
+            dest, n = folder / (stem + ".json"), 2
+            while dest.exists():
+                dest, n = folder / ("%s-%d.json" % (stem, n)), n + 1
+            dest.write_text(json.dumps(data, indent=2))
+            return {"ok": True, "path": str(dest), "count": len(data["apps"])}
+
+        if path == "/api/open_url":
+            url = body.get("url", "")
+            if not isinstance(url, str) or not re.match(r"^https://[^\s/]+", url):
+                raise ValueError("Only https:// links can be opened")
+            open_path(url)
+            return {"ok": True}
+
         if path == "/api/import":
             with _lock:
                 added, skipped = import_apps(cfg, body.get("data"))
@@ -947,7 +967,7 @@ def make_handler(srv, httpd_ref):
 
         def do_GET(self):
             srv.last_seen = time.time()
-            if self.path in ("/", "/index.html"):
+            if urllib.parse.urlsplit(self.path).path in ("/", "/index.html"):
                 html = INDEX_HTML.replace("__TOKEN__", srv.token).replace("__VERSION__", VERSION)
                 self._send(200, html.encode(), "text/html; charset=utf-8")
             else:
@@ -1008,6 +1028,7 @@ def cmd_serve(args):
     httpd_ref = [None]
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(srv, httpd_ref))
+        url = "http://127.0.0.1:%d/" % httpd.server_address[1]  # real port when --port 0
     except OSError:
         # Already running: just open the existing window.
         print("DeckPort is already running at", url)
@@ -1015,7 +1036,9 @@ def cmd_serve(args):
             open_window(url, args.window)
         return
     httpd_ref[0] = httpd
-    print("DeckPort running at", url, "(Ctrl+C to stop)")
+    # The desktop app (Tauri) waits for this exact line to learn the URL.
+    print("DECKPORT_READY " + url, flush=True)
+    print("DeckPort running at", url, "(Ctrl+C to stop)", flush=True)
     if not args.no_browser:
         threading.Timer(0.5, lambda: open_window(url, args.window)).start()
     if args.exit_when_closed:
@@ -1027,6 +1050,18 @@ def cmd_serve(args):
                     httpd.shutdown()
                     return
         threading.Thread(target=watch, daemon=True).start()
+    if args.exit_on_stdin_close:
+        def wait_parent():
+            # The desktop app holds our stdin open; EOF means its window closed (or it crashed).
+            try:
+                while sys.stdin.buffer.read(4096):
+                    pass
+            except (OSError, ValueError):
+                pass
+            while srv.busy():  # let a running download finish instead of leaving a half file
+                time.sleep(1)
+            httpd.shutdown()
+        threading.Thread(target=wait_parent, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1158,6 +1193,7 @@ def main():
     s.add_argument("--no-browser", action="store_true")
     s.add_argument("--window", action="store_true", help="open in its own window (Chrome/Chromium app mode) if possible")
     s.add_argument("--exit-when-closed", action="store_true", help="quit a while after the page is closed")
+    s.add_argument("--exit-on-stdin-close", action="store_true", help=argparse.SUPPRESS)  # used by the desktop app
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("add", help="track a GitHub, GitLab, Codeberg, Gitea or Forgejo repo")
@@ -1198,71 +1234,166 @@ def main():
 INDEX_HTML = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>DeckPort</title>
 <style>
-:root{--bg:#0e141b;--panel:#17202b;--panel2:#1e2a38;--line:#2a3a4d;--text:#e6edf3;--dim:#8b9bb0;
---accent:#1a9fff;--accent2:#0d7fd6;--good:#4cc38a;--warn:#f5b041;--bad:#ef5f5f;--r:12px}
+:root{
+  --blue-50:#eff6ff;--blue-100:#dbeafe;--blue-200:#bfdbfe;--blue-300:#93c5fd;--blue-400:#60a5fa;--blue-500:#3b82f6;
+  --blue-600:#2563eb;--blue-700:#1d4ed8;--blue-800:#1e40af;--blue-900:#1e3a8a;--blue-950:#172554;
+  --bg:#050814;--text:var(--blue-50);--dim:rgba(147,197,253,.72);--faint:rgba(147,197,253,.5);
+  --glass:rgba(23,37,84,.38);--glass-hi:rgba(59,130,246,.10);--edge:rgba(147,197,253,.14);--edge-hi:rgba(147,197,253,.30);
+  --shine:rgba(239,246,255,.08);
+  /* status colours stay semantic, muted to sit on blue */
+  --good:#86efac;--warn:#fcd34d;--bad:#fca5a5;
+  --r:20px;--r-sm:12px;--blur:blur(20px) saturate(140%);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,#0e141b 70%,#0e141bcc);padding:16px 20px;
-display:flex;gap:12px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line)}
-h1{font-size:20px;margin:0 auto 0 0;letter-spacing:.3px}
-h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:6px}
-button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:10px;
-padding:10px 16px;cursor:pointer;min-height:44px}
-button:hover{border-color:var(--accent)} button:disabled{opacity:.45;cursor:default}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-button.primary:hover{background:var(--accent2)}
-button.danger{color:var(--bad)} button.ghost{background:transparent}
-main{padding:20px;max-width:1100px;margin:0 auto}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:10px}
-.card.upd{border-color:#1a9fff88;box-shadow:0 0 0 1px #1a9fff33 inset}
-.top{display:flex;align-items:flex-start;gap:10px}
-.name{font-weight:700;font-size:17px;word-break:break-word}
-.repo{color:var(--dim);font-size:13px;text-decoration:none} .repo:hover{color:var(--accent)}
-.badge{margin-left:auto;font-size:12px;padding:3px 9px;border-radius:99px;white-space:nowrap;border:1px solid}
-.b-ok{color:var(--good);border-color:#4cc38a55}.b-up{color:var(--accent);border-color:#1a9fff66}
-.b-new{color:var(--warn);border-color:#f5b04155}.b-err{color:var(--bad);border-color:#ef5f5f55}
-.vers{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:13px}
-.vers span:nth-child(odd){color:var(--dim)} .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
-.err{color:var(--bad);font-size:13px} .ok{color:var(--good)} .dim{color:var(--dim)}
+html{background:var(--bg)}
+body{margin:0;min-height:100vh;color:var(--text);background:var(--bg);
+  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;-webkit-font-smoothing:antialiased}
+/* Static ambient light behind the glass: painted once, never animated. */
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(50% 45% at 8% -8%,rgba(37,99,235,.42),transparent 72%),
+    radial-gradient(40% 38% at 96% 6%,rgba(59,130,246,.22),transparent 72%),
+    radial-gradient(65% 55% at 60% 112%,rgba(30,64,175,.50),transparent 72%),
+    radial-gradient(35% 30% at 25% 70%,rgba(23,37,84,.55),transparent 75%)}
+a{color:var(--blue-300);text-decoration:none} a:hover{color:var(--blue-200)}
+.mono{font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;font-size:12.5px;word-break:break-all}
+
+/* ---- glass surfaces: cards use layered gradients only; blur is reserved for header, dialogs, toast */
+.glass{position:relative;background:linear-gradient(180deg,var(--glass-hi),rgba(30,58,138,.04)),var(--glass);
+  border:1px solid var(--edge);border-radius:var(--r);
+  box-shadow:inset 0 1px 0 var(--shine),0 12px 32px -16px rgba(0,0,0,.7)}
+.glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(135deg,rgba(239,246,255,.09),rgba(239,246,255,0) 38%)}
+.frost{background:rgba(10,18,44,.62);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
+
+header{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  padding:14px 22px;border-bottom:1px solid var(--edge);box-shadow:inset 0 -1px 0 rgba(239,246,255,.03)}
+.brand{display:flex;align-items:center;gap:12px;margin-right:auto;min-width:0}
+.brand svg{width:34px;height:34px;flex:none;filter:drop-shadow(0 4px 10px rgba(37,99,235,.45))}
+.brand h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.2px}
+.brand .sub{font-size:12px;color:var(--dim)}
+.pill{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--edge);color:var(--blue-300);
+  background:rgba(59,130,246,.10);margin-left:6px;vertical-align:2px;font-weight:500}
+
+/* ---- buttons */
+button{font:inherit;font-size:14px;font-weight:500;color:var(--blue-100);cursor:pointer;min-height:42px;padding:9px 16px;
+  border-radius:var(--r-sm);border:1px solid var(--edge);background:rgba(147,197,253,.07);
+  box-shadow:inset 0 1px 0 var(--shine);transition:background .15s,border-color .15s,transform .15s,box-shadow .15s}
+button:hover:not(:disabled){background:rgba(147,197,253,.13);border-color:var(--edge-hi)}
+button:active:not(:disabled){transform:scale(.97)}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--blue-400);outline-offset:2px}
+button:disabled{opacity:.42;cursor:default}
+button.primary{color:#fff;border-color:rgba(191,219,254,.38);
+  background:linear-gradient(180deg,var(--blue-500),var(--blue-600));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 8px 20px -8px rgba(37,99,235,.8)}
+button.primary:hover:not(:disabled){background:linear-gradient(180deg,#4b8ef8,var(--blue-500));border-color:rgba(219,234,254,.5)}
+button.ghost{background:transparent;border-color:transparent;box-shadow:none}
+button.ghost:hover:not(:disabled){background:rgba(147,197,253,.09);border-color:var(--edge)}
+button.danger{color:var(--bad)}
+button.icon{width:42px;padding:0;display:grid;place-items:center}
+button.icon svg{width:19px;height:19px}
+
+/* ---- layout */
+main{padding:22px;max-width:1180px;margin:0 auto}
+.summary{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px;color:var(--dim);font-size:13px}
+.summary span{padding:5px 12px;border-radius:99px;border:1px solid var(--edge);background:rgba(23,37,84,.35)}
+.summary b{color:var(--text);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}
+
+/* ---- app cards */
+.card{padding:18px;display:flex;flex-direction:column;gap:12px}
+.card.upd{border-color:rgba(96,165,250,.55);
+  box-shadow:inset 0 1px 0 var(--shine),0 0 0 1px rgba(59,130,246,.25),0 14px 36px -14px rgba(37,99,235,.55)}
+.top{display:flex;align-items:flex-start;gap:12px}
+.avatar{width:40px;height:40px;flex:none;border-radius:12px;display:grid;place-items:center;font-weight:700;font-size:16px;
+  color:var(--blue-50);background:linear-gradient(160deg,var(--blue-600),var(--blue-900));
+  border:1px solid rgba(191,219,254,.22);box-shadow:inset 0 1px 0 rgba(255,255,255,.2)}
+.name{font-weight:650;font-size:16.5px;word-break:break-word;line-height:1.25}
+.repo{color:var(--dim);font-size:12.5px}
+.badge{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:99px;
+  white-space:nowrap;border:1px solid var(--edge);background:rgba(5,8,20,.35);color:var(--blue-200)}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+.b-ok{color:var(--good)} .b-up{color:var(--blue-300);border-color:rgba(96,165,250,.45)} .b-new{color:var(--warn)} .b-err{color:var(--bad)}
+.vers{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;padding:12px 14px;border-radius:14px;
+  background:rgba(5,8,20,.32);border:1px solid rgba(147,197,253,.08)}
+.vers>span:nth-child(odd){color:var(--faint)}
+.ok{color:var(--good)} .dim{color:var(--faint)} .err{color:var(--bad);font-size:13px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
-.actions button{padding:8px 12px;min-height:40px}
-.bar{height:6px;background:var(--panel2);border-radius:9px;overflow:hidden}
-.bar i{display:block;height:100%;background:var(--accent);transition:width .3s}
-.jobtxt{font-size:12px;color:var(--dim)}
-.empty{text-align:center;color:var(--dim);padding:60px 20px}
-.empty b{display:block;color:var(--text);font-size:18px;margin-bottom:6px}
-dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:16px;padding:0;width:min(560px,94vw)}
-dialog::backdrop{background:#000a}
-.dlg{padding:20px;display:flex;flex-direction:column;gap:12px}
-.dlg h2{margin:0;font-size:18px}
-label{font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:5px}
-label.row{flex-direction:row;align-items:center;gap:8px;color:var(--text)}
-input[type=text],input[type=password]{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);
-border-radius:10px;padding:10px 12px;min-height:44px}
-input:focus{outline:2px solid var(--accent);outline-offset:-1px}
-input[type=checkbox]{width:20px;height:20px}
-.assets{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:10px;font-size:13px}
-.assets div{padding:7px 10px;border-bottom:1px solid var(--line);display:flex;gap:8px;cursor:pointer}
-.assets div:last-child{border:0} .assets div:hover{background:var(--panel2)}
-.assets .pick{background:#1a9fff22;color:#fff} .assets .pick::before{content:"✓";color:var(--accent)}
-.assets small{margin-left:auto;color:var(--dim)}
-.hint{font-size:12px;color:var(--dim)}
+.actions{gap:6px}
+.actions button{min-height:38px;padding:7px 12px;font-size:13.5px}
+.actions button.ghost{padding:7px 9px}
+.bar{height:6px;border-radius:99px;overflow:hidden;background:rgba(147,197,253,.12)}
+.bar i{display:block;height:100%;width:100%;transform-origin:left;border-radius:inherit;
+  background:linear-gradient(90deg,var(--blue-600),var(--blue-400));transition:transform .3s ease-out}
+.bar.wait i{opacity:.45}
+.jobtxt{font-size:12.5px;color:var(--dim)}
+.empty{text-align:center;color:var(--dim);padding:56px 24px}
+.empty b{display:block;color:var(--text);font-size:18px;margin:10px 0 6px}
+.empty svg{width:56px;height:56px;opacity:.9}
+
+/* ---- dialogs & toast (the only other blurred surfaces) */
+dialog{color:var(--text);padding:0;width:min(580px,94vw);border-radius:24px;border:1px solid var(--edge-hi);
+  background:rgba(13,24,58,.72);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  box-shadow:inset 0 1px 0 rgba(239,246,255,.10),0 30px 80px -20px rgba(0,0,0,.8)}
+dialog::backdrop{background:rgba(5,8,20,.62)}
+.dlg{padding:22px;display:flex;flex-direction:column;gap:13px}
+.dlg h2{margin:0 0 2px;font-size:18px;font-weight:650}
+.dlg p{margin:0;color:var(--dim)}
+label{font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:6px}
+label.row{flex-direction:row;align-items:center;gap:10px;color:var(--text)}
+input[type=text],input[type=password]{font:inherit;color:var(--text);min-height:44px;padding:10px 13px;border-radius:var(--r-sm);
+  background:rgba(5,8,20,.55);border:1px solid rgba(147,197,253,.18);box-shadow:inset 0 1px 2px rgba(0,0,0,.35);
+  transition:border-color .15s,box-shadow .15s}
+input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(--blue-400);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.35),0 0 0 3px rgba(59,130,246,.25)}
+input::placeholder{color:rgba(147,197,253,.38)}
+input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
+.assets{max-height:210px;overflow:auto;border-radius:14px;font-size:13px;background:rgba(5,8,20,.4);border:1px solid var(--edge)}
+.assets div{padding:8px 12px;border-bottom:1px solid rgba(147,197,253,.07);display:flex;gap:8px;cursor:pointer;transition:background .15s}
+.assets div:last-child{border:0} .assets div:hover{background:rgba(59,130,246,.12)}
+.assets .pick{background:rgba(59,130,246,.22);color:#fff} .assets .pick::before{content:"✓";color:var(--blue-300)}
+.assets small{margin-left:auto;color:var(--faint)}
+.hint{font-size:12.5px;color:var(--faint)}
 .dlg .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
-#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);
-padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:none;max-width:90vw}
-#toast.show{opacity:1} #toast.bad{border-color:var(--bad)}
+.sep{height:1px;background:var(--edge);margin:4px 0}
+#toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,8px);padding:12px 18px;border-radius:14px;
+  border:1px solid var(--edge-hi);background:rgba(13,24,58,.78);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  box-shadow:inset 0 1px 0 var(--shine),0 16px 40px -12px rgba(0,0,0,.7);
+  opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw;z-index:20}
+#toast.show{opacity:1;transform:translate(-50%,0)} #toast.bad{border-color:rgba(252,165,165,.5)}
+
+@media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
+/* Users who turn transparency off get solid panels and no blur at all. */
+@media (prefers-reduced-transparency:reduce){
+  .glass,.frost,dialog,#toast{background:#0b1638;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .glass::before{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
-<header>
-  <h1>DeckPort<small>v__VERSION__</small></h1>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="logo" viewBox="0 0 256 256">
+    <rect x="8" y="8" width="240" height="240" rx="56" fill="#172554"/>
+    <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1e40af" stroke-width="6"/>
+    <path d="M128 52a76 76 0 0 1 70 46M206 70l-6 34-33-10M128 204a76 76 0 0 1-70-46M50 186l6-34 33 10" fill="none" stroke="#3b82f6" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M128 92v58M104 128l24 24 24-24" fill="none" stroke="#eff6ff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M98 168h60" stroke="#93c5fd" stroke-width="12" stroke-linecap="round"/>
+  </symbol>
+  <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
+</defs></svg>
+
+<header class="frost">
+  <div class="brand"><svg><use href="#logo"/></svg>
+    <div><h1>DeckPort<span class="pill">v__VERSION__</span></h1><div class="sub">AppImages &amp; PC ports, always up to date</div></div></div>
   <button id="btnCheck">⟳ Check all</button>
   <button id="btnUpdAll" class="primary" disabled>Update all</button>
   <button id="btnAdd" class="primary">＋ Add app</button>
-  <button id="btnSet" class="ghost" title="Settings">⚙</button>
+  <button id="btnSet" class="icon ghost" title="Settings" aria-label="Settings"><svg><use href="#gear"/></svg></button>
 </header>
-<main><div id="list" class="grid"></div></main>
+<main><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
 
 <dialog id="dAdd"><form class="dlg" method="dialog" id="fAdd">
   <h2 id="addTitle">Add app</h2>
@@ -1270,10 +1401,10 @@ padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:no
   <label>Name (optional)<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
   <label>Asset pattern (optional regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
   <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
-  <div class="btns" style="justify-content:flex-start"><button type="button" id="aPrev">Preview assets</button><span class="hint" id="aInfo"></span></div>
+  <div class="btns" style="justify-content:flex-start;align-items:center"><button type="button" id="aPrev">Preview assets</button><span class="hint" id="aInfo"></span></div>
   <div class="assets" id="aAssets" hidden></div>
   <div class="hint">Tip: click an asset to auto-fill a pattern for it.</div>
-  <div class="btns"><button type="button" value="cancel" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
+  <div class="btns"><button type="button" class="ghost" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
 </form></dialog>
 
 <dialog id="dSet"><form class="dlg" method="dialog" id="fSet">
@@ -1283,6 +1414,7 @@ padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:no
   <label class="row"><input type="checkbox" id="sBak"> Keep previous version as <span class="mono">.old</span> (enables rollback)</label>
   <label>GitHub token (optional, raises rate limit from 60 to 5000 requests/hour)<input type="password" id="sTok" placeholder="ghp_… (leave empty to keep current)"></label>
   <div class="hint" id="sTokInfo"></div>
+  <div class="sep"></div>
   <label>App list</label>
   <div class="btns" style="justify-content:flex-start;margin-top:-6px">
     <button type="button" id="sExport">Export list</button>
@@ -1291,14 +1423,22 @@ padding:12px 18px;border-radius:12px;opacity:0;transition:.25s;pointer-events:no
   </div>
   <div class="hint">The export contains only repos, names and asset patterns. No token, no files, no paths. Use it as a backup or to share your list.</div>
   <div class="btns" style="justify-content:space-between">
-    <span><button type="button" id="sOpen">Open folder</button> <button type="button" class="danger" id="sQuit">Quit DeckPort</button></span>
-    <span><button type="button" onclick="dSet.close()">Cancel</button> <button class="primary" type="submit">Save</button></span>
+    <span><button type="button" id="sOpen">Open folder</button> <button type="button" class="danger ghost" id="sQuit">Quit DeckPort</button></span>
+    <span><button type="button" class="ghost" onclick="dSet.close()">Cancel</button> <button class="primary" type="submit">Save</button></span>
   </div>
+</form></dialog>
+
+<dialog id="dAsk"><form class="dlg" method="dialog">
+  <h2 id="askTitle"></h2><p id="askText"></p>
+  <label class="row" id="askCheckRow"><input type="checkbox" id="askCheck"> <span id="askCheckText"></span></label>
+  <div class="btns"><button type="button" class="ghost" id="askNo">Cancel</button><button type="button" class="primary" id="askYes">OK</button></div>
 </form></dialog>
 <div id="toast"></div>
 
 <script>
 const TOKEN="__TOKEN__";
+// Opened by the desktop app (Tauri webview) rather than a browser tab.
+const APP=new URLSearchParams(location.search).has("app");
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let S={apps:[],jobs:{},settings:{}}, editId=null, timer=null;
@@ -1314,6 +1454,21 @@ async function act(path,body,ok){try{const r=await api(path,body);if(ok)toast(ty
 const mb=b=>b?(b/1e6).toFixed(1)+" MB":"";
 const ago=t=>{if(!t)return"never";const s=Date.now()/1000-t;if(s<60)return"just now";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago"};
 
+// In-page confirm: native confirm() isn't reliable inside the desktop app's webview.
+function ask({title,text="",ok="OK",danger=false,check=""}){
+  return new Promise(resolve=>{
+    const d=$("#dAsk"),yes=$("#askYes");let done=false;
+    $("#askTitle").textContent=title;$("#askText").textContent=text;
+    $("#askCheckRow").hidden=!check;$("#askCheck").checked=false;$("#askCheckText").textContent=check;
+    yes.textContent=ok;yes.className=danger?"danger":"primary";
+    const finish=v=>{if(done)return;done=true;d.close();resolve(v)};
+    yes.onclick=()=>finish({checked:$("#askCheck").checked});
+    $("#askNo").onclick=()=>finish(null);
+    d.onclose=()=>finish(null);
+    d.showModal();yes.focus();
+  });
+}
+
 function card(a){
   const job=S.jobs[a.id], inst=a.installed, L=a.latest||{};
   let badge;
@@ -1321,21 +1476,25 @@ function card(a){
   else if(!inst||!a.exists) badge='<span class="badge b-new">Not installed</span>';
   else if(a.has_update) badge='<span class="badge b-up">Update</span>';
   else if(L.tag) badge='<span class="badge b-ok">Up to date</span>';
-  else badge='<span class="badge">…</span>';
+  else badge='<span class="badge">Checking</span>';
   const running=job&&job.state=="running";
   let jobHtml="";
   if(job){
-    if(job.state=="running") jobHtml=`<div class="bar"><i style="width:${job.label=="Downloading"?Math.round(job.progress*100):100}%"></i></div><div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
+    if(job.state=="running"){
+      const dl=job.label=="Downloading"&&job.progress;
+      jobHtml=`<div class="bar ${dl?"":"wait"}"><i style="transform:scaleX(${dl?job.progress.toFixed(3):1})"></i></div><div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
+    }
     else if(job.state=="error") jobHtml=`<div class="err">${esc(job.message)}</div>`;
     else jobHtml=`<div class="jobtxt" style="color:var(--good)">✓ ${job.label=="Checking"?"Checked":"Installed"}</div>`;
   }
   const mainBtn=(!inst||!a.exists)?"Install":(a.has_update?"Update":null);
-  return `<div class="card ${a.has_update&&inst?"upd":""}">
-   <div class="top"><div><div class="name">${esc(a.name)}</div>
+  return `<div class="card glass ${a.has_update&&inst?"upd":""}">
+   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}</div>
+     <div style="min-width:0"><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>${badge}</div>
    <div class="vers">
      <span>Installed</span><span class="mono">${esc(inst?inst.tag:"-")}</span>
-     <span>Latest</span><span class="mono">${L.url?`<a class="repo" href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}</span>
+     <span>Latest</span><span class="mono">${L.url?`<a href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}</span>
      <span>Asset</span><span class="mono">${esc(L.asset?L.asset.name:"-")} ${L.asset&&L.asset.size?"· "+mb(L.asset.size):""}</span>
      <span>Checked</span><span>${ago(a.checked_at)}</span>
      ${inst&&a.exists?`<span>Integrity</span><span>${inst.verified?`<span class="ok" title="${esc(inst.sha256)}">✓ SHA-256 verified</span> <span class="dim">(${esc(inst.verified_by)})</span>`:`<span class="dim" title="${esc(inst.sha256||"")}">Not verified, no checksum published</span>`}</span>`:""}
@@ -1354,34 +1513,43 @@ function card(a){
 
 function render(){
   const L=$("#list");
-  if(!S.apps.length){L.innerHTML='<div class="empty" style="grid-column:1/-1"><b>No apps yet</b>Click “Add app” and paste a GitHub link of a PC port or AppImage.</div>'}
+  if(!S.apps.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to a PC port or AppImage release.</div>'}
   else L.innerHTML=S.apps.map(card).join("");
   const n=S.apps.filter(a=>a.has_update&&!(S.jobs[a.id]&&S.jobs[a.id].state=="running")).length;
+  const inst=S.apps.filter(a=>a.installed&&a.exists).length;
+  $("#summary").innerHTML=S.apps.length?`<span><b>${S.apps.length}</b> tracked</span><span><b>${inst}</b> installed</span><span><b>${n}</b> update${n==1?"":"s"}</span>`:"";
   const b=$("#btnUpdAll");b.disabled=!n;b.textContent=n?`Update all (${n})`:"Update all";
 }
 async function refresh(){
-  try{S=await api("/api/state");render()}catch(e){$("#list").innerHTML='<div class="empty" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
+  try{S=await api("/api/state");render()}catch(e){$("#list").innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
   clearTimeout(timer);
   const busy=Object.values(S.jobs||{}).some(j=>j.state=="running");
   timer=setTimeout(refresh,busy?700:(Object.keys(S.jobs||{}).length?2000:15000));
 }
 
-$("#list").addEventListener("click",e=>{
+$("#list").addEventListener("click",async e=>{
   const b=e.target.closest("button[data-a]");if(!b)return;
   const id=b.dataset.id,a=S.apps.find(x=>x.id==id),k=b.dataset.a;
   if(k=="update")act("/api/update",{id});
   else if(k=="check")act("/api/check",{id});
   else if(k=="launch")act("/api/launch",{id},"Launching "+a.name);
-  else if(k=="rollback"){if(confirm(`Restore the previous version of ${a.name}?`))act("/api/rollback",{id},"Rolled back")}
+  else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
   else if(k=="remove"){
-    if(!confirm(`Stop tracking ${a.name}?`))return;
-    const del=a.installed&&confirm("Also delete its downloaded files?\n\nOK = delete files, Cancel = keep files");
-    act("/api/remove",{id,delete_files:!!del},"Removed");
+    const r=await ask({title:`Remove ${a.name}?`,text:"DeckPort will stop tracking it.",ok:"Remove",danger:true,
+                       check:a.installed?"Also delete its downloaded files":""});
+    if(r)act("/api/remove",{id,delete_files:!!r.checked},"Removed");
   }
   else if(k=="edit")openAdd(a);
 });
 $("#btnCheck").onclick=()=>act("/api/check",{});
 $("#btnUpdAll").onclick=()=>act("/api/update",{},r=>`Updating ${r.count} app(s)`);
+if(APP){
+  // Links open in the system browser instead of navigating the app window.
+  document.addEventListener("click",e=>{
+    const a=e.target.closest("a[target=_blank]");if(!a)return;
+    e.preventDefault();act("/api/open_url",{url:a.href});
+  });
+}
 
 function openAdd(a){
   editId=a?a.id:null;
@@ -1421,7 +1589,7 @@ $("#fAdd").onsubmit=async e=>{
 
 $("#btnSet").onclick=()=>{
   $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTok").value="";
-  $("#sTokInfo").innerHTML=S.settings.has_token?'Token saved. <a href="#" id="clrTok" class="repo">Remove token</a>':"No token set.";
+  $("#sTokInfo").innerHTML=S.settings.has_token?'Token saved. <a href="#" id="clrTok">Remove token</a>':"No token set.";
   const c=$("#clrTok");if(c)c.onclick=ev=>{ev.preventDefault();act("/api/settings",{clear_token:true},"Token removed");dSet.close()};
   dSet.showModal();
 };
@@ -1429,6 +1597,7 @@ $("#fSet").onsubmit=e=>{e.preventDefault();act("/api/settings",{install_dir:$("#
 $("#sOpen").onclick=()=>act("/api/open",{});
 $("#sExport").onclick=async()=>{
   try{
+    if(APP){const r=await api("/api/export_save");toast(`Exported ${r.count} app(s) to ${r.path}`);return}
     const data=await api("/api/export");
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
     const a=document.createElement("a");a.href=url;a.download="deckport-apps-"+data.exported_at.slice(0,10)+".json";
@@ -1446,10 +1615,13 @@ $("#sImportFile").onchange=async e=>{
     dSet.close();toast(`Imported ${r.added} app(s)`+(r.skipped?`, ${r.skipped} already tracked`:""));refresh();
   }catch(err){toast(err.message,true)}
 };
+// In the desktop app, closing the window quits; the button is only for the browser version.
+$("#sQuit").hidden=APP;
 $("#sQuit").onclick=async()=>{try{await api("/api/quit")}catch(e){}document.body.innerHTML='<div class="empty"><b>DeckPort closed</b>You can close this tab.</div>'};
 refresh();
 </script></body></html>
 """
+
 
 if __name__ == "__main__":
     main()

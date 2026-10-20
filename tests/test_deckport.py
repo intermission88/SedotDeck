@@ -143,4 +143,41 @@ other["apps"].append(dict(other["apps"][0], id="y", name="FromPlugin"))
 dp.save_config(other)
 eq([a["name"] for a in srv.handle("/api/state", {})["apps"]], ["Old", "FromPlugin"], "server reloads changed config")
 
+# --- desktop-app mode: the way the Tauri shell runs the server
+import re, subprocess, urllib.error, urllib.request
+home = tempfile.mkdtemp()
+env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"))
+Path(env["XDG_CONFIG_HOME"], "deckport").mkdir(parents=True)
+Path(env["XDG_CONFIG_HOME"], "deckport", "config.json").write_text(json.dumps(
+    {"settings": {"github_token": "SECRET"}, "apps": [{"id": "x", "name": "A", "repo": "a/b"}]}))
+proc = subprocess.Popen([sys.executable, "-I", sys.argv[1], "serve", "--no-browser", "--port", "0", "--exit-on-stdin-close"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
+line = proc.stdout.readline().strip()
+eq(line.startswith("DECKPORT_READY http://127.0.0.1:") and not line.endswith(":0/"), True, "ready line with real port")
+base = line.split(" ", 1)[1]
+html = urllib.request.urlopen(base + "?app=1", timeout=5).read().decode()
+token = re.search(r'const TOKEN="([^"]+)"', html).group(1)
+
+
+def post(path, body):
+    req = urllib.request.Request(base.rstrip("/") + path, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-DeckPort-Token": token})
+    try:
+        return 200, json.loads(urllib.request.urlopen(req, timeout=5).read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+code, r = post("/api/export_save", {})
+eq(code, 200, "export_save ok")
+saved = Path(r["path"])
+eq((saved.parent == Path(home, "Downloads"), "SECRET" in saved.read_text(), r["count"]), (True, False, 1), "export saved without token")
+eq(post("/api/export_save", {})[1]["path"] != r["path"], True, "second export doesn't overwrite")
+for bad in ("http://example.com", "file:///etc/passwd", "javascript:alert(1)", 5):
+    eq(post("/api/open_url", {"url": bad})[0], 400, "open_url rejects %r" % (bad,))
+proc.stdin.close()
+try:
+    eq(proc.wait(timeout=5), 0, "server exits when stdin closes")
+except subprocess.TimeoutExpired:
+    proc.kill(); raise AssertionError("server did not exit after stdin closed")
+
 print("all %d checks passed" % ok)

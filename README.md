@@ -19,18 +19,18 @@ DeckPort tersedia dalam tiga bentuk. Ketiganya memakai daftar app dan folder `~/
 
 | Bentuk | Dipakai di | Kelebihan |
 |---|---|---|
-| **AppImage** (`DeckPort-x.y.z-x86_64.AppImage`) | Desktop Mode | Satu file, punya jendela sendiri |
+| **AppImage** (`DeckPort-x.y.z-x86_64.AppImage`) | Desktop Mode | Aplikasi standalone dengan jendela sendiri, tidak butuh browser |
 | **Plugin Decky** (`DeckPort-decky-x.y.z.zip`) | Game Mode (menu ⋯) | Update tanpa pindah ke Desktop, cek otomatis tiap 6 jam dengan notifikasi |
-| **Script** (`install.sh`) | Desktop Mode | Tanpa build, langsung dari source |
+| **Script** (`install.sh`) | Desktop Mode | Paling ringan, tapi tampil di browser |
 
-File AppImage dan ZIP Decky ada di halaman **Releases** repo ini, atau di artifact **deckport-builds** di tab **Actions**.
+File AppImage dan ZIP Decky ada di halaman **Releases** repo ini, atau di artifact **appimage** dan **decky** di tab **Actions**.
 
 ### AppImage
 1. Masuk **Desktop Mode**, lalu download `DeckPort-…-x86_64.AppImage` dari Releases.
 2. Klik kanan file-nya, pilih **Properties** → **Permissions**, lalu centang **Is executable**.
 3. Klik dua kali untuk membuka.
 
-Kalau ada Chrome/Chromium/Brave/Edge (termasuk versi Flatpak), DeckPort terbuka di jendelanya sendiri. Kalau tidak ada, terbuka di browser biasa. DeckPort berhenti otomatis sekitar 2 menit setelah jendelanya ditutup.
+DeckPort terbuka sebagai aplikasi sendiri (dibuat dengan Tauri), jadi tidak butuh browser apa pun. Ukuran AppImage sekitar 70–90 MB karena mesin tampilannya ikut dibundel. Satu-satunya yang dibutuhkan adalah `python3`, yang sudah ada di SteamOS. Begitu jendelanya ditutup, DeckPort langsung berhenti. Kalau saat itu sedang ada download, download-nya diselesaikan dulu.
 
 AppImage ini juga bisa dipakai sebagai CLI, misalnya `./DeckPort-…AppImage update`.
 
@@ -54,7 +54,7 @@ Setelah itu buka **DeckPort** dari menu aplikasi (Utilities) atau dari ikon di D
 
 ## Build sendiri
 
-- **AppImage** (di Linux x86_64): jalankan `appimage/build.sh`. Butuh `python3`, `rsvg-convert`, dan `curl`.
+- **AppImage** (di Linux x86_64): `cd desktop && npm ci && npm run build`. Butuh Rust, Node.js, dan [dependensi Tauri](https://v2.tauri.app/start/prerequisites/#linux) (`libwebkit2gtk-4.1-dev` dan lainnya). Hasilnya ada di `desktop/src-tauri/target/release/bundle/appimage/`. Untuk mencoba tanpa build: `cd desktop && npm run dev`.
 - **Plugin Decky**: jalankan `decky-plugin/package.sh`. Butuh Node.js 20+ dan `zip`.
 - **Tes**: jalankan `python3 -I tests/test_deckport.py deckport.py`.
 
