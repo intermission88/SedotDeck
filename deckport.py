@@ -735,6 +735,12 @@ def rollback_app(app):
 
 
 def remove_app(cfg, app, delete_files=False):
+    kept = (app.get("installed") or {}).get("path") or app.get("target_path")
+    if not delete_files and kept and os.path.isfile(kept):
+        # The user just chose to stop tracking it: the folder scan shouldn't offer it right back.
+        ign = cfg["settings"].setdefault("scan_ignored", [])
+        if kept not in ign:
+            ign.append(kept)
     if delete_files:
         p = (app.get("installed") or {}).get("path")
         if p and os.path.isdir(p):
@@ -762,7 +768,7 @@ def new_app(repo_text, name="", pattern="", prerelease=False, src=None):
         re.compile(pattern)  # validate early
     return {
         "id": uuid.uuid4().hex[:10],
-        "name": name.strip() or src["repo"].split("/")[-1],
+        "name": name.strip() or (catalog_entry(src) or {}).get("name") or src["repo"].split("/")[-1],
         "provider": src["provider"],
         "host": src["host"],
         "repo": src["repo"],
@@ -997,18 +1003,26 @@ def steam_shortcuts_file():
     return None
 
 
-def steam_running():
-    """Steam rewrites shortcuts.vdf from memory when it exits, so it must not be running."""
-    if not os.path.isdir("/proc"):
-        return False
-    for pid in os.listdir("/proc"):
-        if pid.isdigit():
-            try:
-                if Path("/proc", pid, "comm").read_text().strip() == "steam":
-                    return True
-            except OSError:
-                pass
-    return False
+_running_cache = {"at": 0.0, "value": False}
+
+
+def steam_running(max_age=0.0):
+    """Steam rewrites shortcuts.vdf from memory when it exits, so it must not be running.
+    max_age lets the UI's frequent polls reuse a recent answer instead of walking /proc each time."""
+    if time.time() - _running_cache["at"] < max_age:
+        return _running_cache["value"]
+    found = False
+    if os.path.isdir("/proc"):
+        for pid in os.listdir("/proc"):
+            if pid.isdigit():
+                try:
+                    if Path("/proc", pid, "comm").read_text().strip() == "steam":
+                        found = True
+                        break
+                except OSError:
+                    pass
+    _running_cache.update(at=time.time(), value=found)
+    return found
 
 
 # Binary KeyValues as used by shortcuts.vdf: a list of (type, key, value); type 0 is a nested list.
@@ -1234,7 +1248,8 @@ class Server:
             s["scan_ignored"] = len(s.get("scan_ignored") or [])
             s["install_dir_short"] = short_home(os.path.expanduser(s["install_dir"]))
             return {"apps": apps, "settings": s, "jobs": self.jobs.snapshot(), "version": VERSION,
-                    "found": scan_folder(self.cfg), "catalog": CATALOG_UI, "steam": bool(steam_shortcuts_file())}
+                    "found": scan_folder(self.cfg), "catalog": CATALOG_UI, "steam": bool(steam_shortcuts_file()),
+                    "steam_running": steam_running(max_age=10)}
 
     def check(self, app):
         def fn(job):
@@ -1293,25 +1308,29 @@ class Server:
 
         if path == "/api/track_found":
             # Files from the folder scan: each becomes a tracked app that updates that exact file.
-            started = []
+            # Everything is validated first, so one bad item changes nothing.
+            plan, seen = [], set()
             with _lock:
                 for item in body.get("items") or []:
                     path_ = validate_adopt_path(cfg, item.get("path"), item.get("app_id"))
+                    if path_ in seen:
+                        raise ValueError("%s is listed twice" % os.path.basename(path_))
+                    seen.add(path_)
                     if item.get("app_id"):
                         app = self._app({"id": item["app_id"]})
                     else:
-                        src = resolve_source(item.get("src", ""))
-                        entry = catalog_entry(src) or {}
-                        app = new_app("", item.get("name") or entry.get("name", ""), entry.get("pattern", ""), src=src)
-                        if any(same_source(a, app) for a in cfg["apps"]):
+                        app = new_app("", item.get("name", ""), src=resolve_source(item.get("src", "")))
+                        if any(same_source(a, app) for a in cfg["apps"]) or any(same_source(a, app) for a, _p in plan):
                             raise ValueError("%s is already tracked" % display_repo(app))
+                    plan.append((app, path_))
+                for app, path_ in plan:
+                    if app not in cfg["apps"]:
                         cfg["apps"].append(app)
                     app["target_path"] = path_
-                    started.append((app, path_))
                 self.save()
-            for app, path_ in started:
+            for app, path_ in plan:
                 self.adopt(app, path_)
-            return {"ok": True, "count": len(started)}
+            return {"ok": True, "count": len(plan)}
 
         if path == "/api/scan_ignore":
             with _lock:
@@ -1431,14 +1450,9 @@ class Server:
             return {"ok": True}
 
         if path == "/api/open":
-            app = self._app(body) if body.get("id") else None
-            if app:
-                p = (app.get("installed") or {}).get("path", "")
-                open_path(p if os.path.isdir(p) else os.path.dirname(p))
-            else:
-                d = os.path.expanduser(cfg["settings"]["install_dir"])
-                os.makedirs(d, exist_ok=True)
-                open_path(d)
+            d = os.path.expanduser(cfg["settings"]["install_dir"])
+            os.makedirs(d, exist_ok=True)
+            open_path(d)
             return {"ok": True}
 
         if path == "/api/export":
@@ -1747,7 +1761,7 @@ def cmd_scan(args):
             app = find_app(cfg, it["app_id"])
         else:
             src = resolve_source(it["src"])
-            app = new_app("", it["name"], (catalog_entry(src) or {}).get("pattern", ""), src=src)
+            app = new_app("", it["name"], src=src)
             cfg["apps"].append(app)
         check_app(app, token)
         if app["error"]:
@@ -1904,12 +1918,10 @@ main{padding:22px;max-width:1180px;margin:0 auto}
 .summary{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px;color:var(--dim);font-size:13px}
 .summary span{padding:5px 12px;border-radius:99px;border:1px solid var(--edge);background:rgba(23,37,84,.35)}
 .summary b{color:var(--text);font-weight:600}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px;align-items:start}
 
 /* ---- app cards */
 .card{padding:18px;display:flex;flex-direction:column;gap:12px}
-.card.upd{border-color:rgba(96,165,250,.55);
-  box-shadow:inset 0 1px 0 var(--shine),0 0 0 1px rgba(59,130,246,.25),0 14px 36px -14px rgba(37,99,235,.55)}
 .top{display:flex;align-items:flex-start;gap:12px}
 .avatar{width:40px;height:40px;flex:none;border-radius:12px;display:grid;place-items:center;font-weight:700;font-size:16px;
   color:var(--blue-50);background:linear-gradient(160deg,var(--blue-600),var(--blue-900));
@@ -1920,14 +1932,19 @@ main{padding:22px;max-width:1180px;margin:0 auto}
   white-space:nowrap;border:1px solid var(--edge);background:rgba(5,8,20,.35);color:var(--blue-200)}
 .badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
 .b-ok{color:var(--good)} .b-up{color:var(--blue-300);border-color:rgba(96,165,250,.45)} .b-new{color:var(--warn)} .b-err{color:var(--bad)}
-.vers{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;padding:12px 14px;border-radius:14px;
-  background:rgba(5,8,20,.32);border:1px solid rgba(147,197,253,.08)}
-.vers>span:nth-child(odd){color:var(--faint)}
+/* one line for the version, then small tags; details live in the ⋯ menu and Edit */
+.ver{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:13.5px;color:var(--blue-100)}
+.ver .mono{font-size:13px} .ver b{color:#fff;font-weight:600}
+.ver a[data-a]{white-space:nowrap;font-size:13px}
+.tag{font-size:11px;padding:1px 7px;border-radius:99px;color:var(--blue-200);border:1px solid var(--edge);white-space:nowrap}
+.tag.ok,.tag.steam{color:var(--good);border-color:rgba(134,239,172,.35)}
+.fname{color:var(--faint);font-size:12px;margin-top:-6px}
 .ok{color:var(--good)} .dim{color:var(--faint)} .err{color:var(--bad);font-size:13px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
 .actions{gap:6px}
 .actions button{min-height:38px;padding:7px 12px;font-size:13.5px}
 .actions button.ghost{padding:7px 9px}
+.actions .more{margin-left:auto;width:38px;min-height:38px}
 .bar{height:6px;border-radius:99px;overflow:hidden;background:rgba(147,197,253,.12)}
 .bar i{display:block;height:100%;width:100%;transform-origin:left;border-radius:inherit;
   background:linear-gradient(90deg,var(--blue-600),var(--blue-400));transition:transform .3s ease-out}
@@ -1979,10 +1996,6 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
 .card.st-err{--st:var(--bad);--st-bg:rgba(252,165,165,.10);--st-edge:rgba(252,165,165,.38)}
 .card.st-update::after{content:"";position:absolute;left:-1px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;
   background:linear-gradient(180deg,var(--blue-300),var(--blue-600));box-shadow:0 0 12px rgba(96,165,250,.7)}
-.avatar{position:relative}
-.avatar .st{position:absolute;right:-6px;bottom:-6px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
-  background:#0a1430;border:1.5px solid var(--st);color:var(--st);box-shadow:0 0 0 2px var(--bg)}
-.avatar .st svg{width:12px;height:12px}
 .badge svg{width:14px;height:14px;flex:none}
 .badge::before{display:none}
 .badge{color:var(--st);border-color:var(--st-edge);background:var(--st-bg)}
@@ -1994,9 +2007,6 @@ button svg{width:16px;height:16px;vertical-align:-3px}
 @keyframes ring{0%{transform:scale(1);opacity:.8}100%{transform:scale(1.35);opacity:0}}
 .spin{animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.file{display:flex;gap:6px;align-items:center;min-width:0}
-.file .tag{font-size:10.5px;padding:1px 6px;border-radius:99px;color:var(--blue-200);border:1px solid var(--edge);white-space:nowrap}
-
 /* ---- filter chips */
 .summary button{min-height:32px;padding:4px 12px;border-radius:99px;font-size:13px;color:var(--dim);
   background:rgba(23,37,84,.35);box-shadow:none;display:inline-flex;gap:6px;align-items:center}
@@ -2044,8 +2054,18 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;color:var(--blue-100);padding:12px 14px;border-radius:14px;
   background:rgba(5,8,20,.4);border:1px solid var(--edge);overflow-wrap:anywhere}
 .notes b{color:#fff}
-.file .tag.steam{color:var(--good);border-color:rgba(134,239,172,.35)}
-.vers a[data-a]{white-space:nowrap;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:12.5px}
+
+/* ---- the ⋯ menu on each card */
+.menu{position:fixed;z-index:15;min-width:230px;padding:6px;border-radius:16px;border:1px solid var(--edge-hi);
+  box-shadow:inset 0 1px 0 var(--shine),0 18px 44px -12px rgba(0,0,0,.8);display:flex;flex-direction:column}
+.menu button{background:none;border:0;box-shadow:none;text-align:left;min-height:40px;padding:8px 12px;border-radius:10px;font-size:14px}
+.menu button:hover:not(:disabled),.menu button:focus-visible{background:rgba(59,130,246,.16)}
+.menu button small{display:block;color:var(--faint);font-size:11.5px}
+.menu hr{border:0;border-top:1px solid var(--edge);margin:4px 6px}
+.summary:empty{display:none}
+.found-line{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 16px;margin:0 0 16px;font-size:13.5px;color:var(--dim)}
+.found-line span{flex:1}
+.found-line button{min-height:34px;padding:5px 11px;font-size:13px}
 
 @media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
 /* Users who turn transparency off get solid panels and no blur at all. */
@@ -2072,15 +2092,16 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <symbol id="i-err" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.8 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0z"/></g></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
   <symbol id="i-sync" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9M4 13a8 8 0 0 0 14.3 4.9"/><path d="M5 3v4h4M19 21v-4h-4"/></g></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></g></symbol>
   <symbol id="i-busy" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-9 9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
 </defs></svg>
 
 <header class="frost">
   <div class="brand"><svg><use href="#logo"/></svg>
-    <div><h1>DeckPort<span class="pill">v__VERSION__</span></h1><div class="sub">AppImages &amp; PC ports, always up to date</div></div></div>
-  <button id="btnCheck"><svg><use href="#i-sync"/></svg> Check all</button>
-  <button id="btnUpdAll" class="primary" disabled>Update all</button>
-  <button id="btnAdd" class="primary"><svg><use href="#i-plus"/></svg> Add app</button>
+    <div><h1>DeckPort<span class="pill">v__VERSION__</span></h1><div class="sub" id="sub">AppImages &amp; PC ports, always up to date</div></div></div>
+  <button id="btnCheck" class="icon ghost" title="Check for updates" aria-label="Check for updates"><svg><use href="#i-sync"/></svg></button>
+  <button id="btnAdd"><svg><use href="#i-plus"/></svg> Add app</button>
+  <button id="btnUpdAll" class="primary" hidden>Update all</button>
   <button id="btnSet" class="icon ghost" title="Settings" aria-label="Settings"><svg><use href="#gear"/></svg></button>
 </header>
 <main><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
@@ -2142,6 +2163,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <label class="row" id="askCheckRow"><input type="checkbox" id="askCheck"> <span id="askCheckText"></span></label>
   <div class="btns"><button type="button" class="ghost" id="askNo">Cancel</button><button type="button" class="primary" id="askYes">OK</button></div>
 </form></dialog>
+<div id="menu" class="menu frost" role="menu" hidden></div>
 <div id="toast"></div>
 
 <script>
@@ -2194,10 +2216,12 @@ function status(a){
 const ORDER={update:0,busy:1,err:2,new:3,ok:4};
 const BADGE={update:["i-up","st-update"],ok:["i-ok","st-ok"],new:["i-get","st-new"],err:["i-err","st-err"],busy:["i-busy",""]};
 
+// Nightly builds are tagged with long hashes ("build-4024ea31e049f3…"): keep cards to one line.
+const short=t=>{t=String(t||"");return t.length>16?t.slice(0,14)+"…":t};
 function card(a,i){
-  const job=S.jobs[a.id], inst=a.installed, L=a.latest||{}, st=status(a), [icon,cls]=BADGE[st];
+  const job=S.jobs[a.id], inst=a.installed, here=!!(inst&&a.exists), L=a.latest||{}, st=status(a), [icon]=BADGE[st];
   const running=job&&job.state=="running";
-  let label={update:`Update → ${esc(L.tag||"")}`,ok:a.skipped?`Skipped ${esc(L.tag||"")}`:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
+  let label={update:`Update → ${esc(short(L.tag))}`,ok:a.skipped?`Skipped ${esc(short(L.tag))}`:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
   if(running) label=job.label=="Downloading"&&job.progress?`Downloading ${Math.round(job.progress*100)}%`:esc(job.label)+"…";
   const badge=`<span class="badge ${st=="update"&&!seen.has(a.id)?"pulse":""}">${ICON(icon,st=="busy"?"spin":"")}${label}</span>`;
   let jobHtml="";
@@ -2210,36 +2234,32 @@ function card(a,i){
   }
   if(doneAt[a.id]&&Date.now()-doneAt[a.id]<4000&&!running)
     jobHtml=`<div class="done-check"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="rgba(134,239,172,.12)" stroke="currentColor" stroke-width="1.5"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Installed ${esc(inst&&inst.tag||"")}</div>`;
-  const mainBtn=(!inst||!a.exists)?"Install":(a.has_update?"Update":null);
+  const mainBtn=!here?"Install":(a.has_update?"Update":null);
   const isNew=!seen.has(a.id);
-  const fileRow=a.file_name?`<span>File</span><span class="file"><span class="mono">${esc(a.file_name)}</span>${a.target_path?'<span class="tag">your file</span>':""}${a.in_steam?'<span class="tag steam">in Steam</span>':""}</span>`:"";
-  const notesLink=L.notes&&(st=="update"||st=="new"||a.skipped)?` · <a href="#" data-a="notes" data-id="${a.id}">What's new</a>`:"";
-  const skipLink=a.skipped?` · <a href="#" data-a="unskip" data-id="${a.id}">undo skip</a>`:"";
+  // One line: the version you have and, if there is one, the version you'd get.
+  const cur=here?(inst.tag=="unknown"?"your copy":inst.tag):"";
+  let ver="";
+  if(st=="update")ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(cur))} → <b>${esc(short(L.tag))}</b></span>`;
+  else if(here)ver=`<span class="mono" title="${esc(inst.tag)}">${esc(short(cur))}</span>`+(a.skipped?`<span class="dim">${esc(short(L.tag))} skipped</span><a href="#" data-a="unskip" data-id="${a.id}">undo</a>`:"");
+  else if(L.tag)ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(L.tag))}</span>`+(L.asset&&L.asset.size?`<span class="dim">${mb(L.asset.size)}</span>`:"");
+  if(ver&&L.prerelease)ver+='<span class="tag">pre-release</span>';
+  if(st=="update"&&L.notes)ver+=`<a href="#" data-a="notes" data-id="${a.id}">What's new</a>`;
+  if(here&&inst.verified)ver+=`<span class="tag ok" title="SHA-256 ${esc(inst.sha256)} (${esc(inst.verified_by)})">✓ verified</span>`;
+  if(a.in_steam)ver+='<span class="tag steam">in Steam</span>';
+  // A file the user brought keeps its own (often versioned) name, so show which one it is.
+  const fname=a.target_path&&a.file_name?`<div class="fname mono" title="Your file, updated in place">${esc(a.file_name)}</div>`:"";
   return `<div class="card glass st-${st} ${isNew?"enter":""}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}">
-   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}<span class="st">${ICON(icon,st=="busy"?"spin":"")}</span></div>
+   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}</div>
      <div style="min-width:0"><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>${badge}</div>
-   <div class="vers">
-     <span>Installed</span><span class="mono">${inst?(inst.tag=="unknown"?'<span class="dim">unknown version</span>':esc(inst.tag)):"-"}</span>
-     <span>Latest</span><span class="mono">${L.url?`<a href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}${notesLink}${skipLink}</span>
-     <span>Asset</span><span class="mono">${esc(L.asset?L.asset.name:"-")} ${L.asset&&L.asset.size?"· "+mb(L.asset.size):""}</span>
-     ${fileRow}
-     <span>Checked</span><span>${ago(a.checked_at)}</span>
-     ${inst&&a.exists?`<span>Integrity</span><span>${inst.verified?`<span class="ok" title="${esc(inst.sha256)}">✓ SHA-256 verified</span> <span class="dim">(${esc(inst.verified_by)})</span>`:
-        inst.tag=="unknown"?`<span class="dim">Older copy you downloaded yourself. Update to get a verified one.</span>`:
-        `<span class="dim" title="${esc(inst.sha256||"")}">Not verified, no checksum published</span>`}</span>`:""}
-   </div>
+   ${ver?`<div class="ver">${ver}</div>`:""}
+   ${fname}
    ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
    ${jobHtml}
    <div class="actions">
      ${mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
-     <button data-a="check" data-id="${a.id}" ${running?"disabled":""}>Check</button>
-     ${inst&&a.exists?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
-     ${a.has_backup?`<button data-a="rollback" data-id="${a.id}" title="Restore previous version" ${running?"disabled":""}>Rollback</button>`:""}
-     ${S.steam&&inst&&a.exists&&inst.kind!="archive"&&!a.in_steam?`<button data-a="steam" data-id="${a.id}" title="Add as a Non-Steam game" ${running?"disabled":""}>Add to Steam</button>`:""}
-     ${st=="update"&&!running?`<button class="ghost" data-a="skip" data-id="${a.id}" title="Don't offer ${esc(L.tag||"")}; tell me about the next one">Skip</button>`:""}
-     <button class="ghost" data-a="edit" data-id="${a.id}">Edit</button>
-     <button class="ghost danger" data-a="remove" data-id="${a.id}">Remove</button>
+     ${here?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
+     <button class="ghost icon more" data-a="menu" data-id="${a.id}" title="More" aria-label="More actions for ${esc(a.name)}" aria-haspopup="menu">${ICON("i-more")}</button>
    </div></div>`;
 }
 
@@ -2257,16 +2277,24 @@ function render(){
                ["ok","Up to date",count("ok"),"var(--good)"],["new","Not installed",count("new"),"var(--warn)"]];
   if(count("err")) chips.push(["err","Errors",count("err"),"var(--bad)"]);
   if(!chips.some(c=>c[0]==FILTER)) FILTER="all";
-  $("#summary").innerHTML=apps.length?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
+  // Filters only help with a long list; a short one is already sorted with updates first.
+  const useChips=apps.length>=8;
+  if(!useChips)FILTER="all";
+  $("#summary").innerHTML=useChips?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
-  if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” to pick a popular emulator or port, or paste a link to any release page.</div>'}
+  if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
+  else if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” to pick a popular emulator or port, or paste a link to any release page.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No apps match this filter.</div>'}
   else L.innerHTML=shown.map(card).join("");
   shown.forEach(a=>seen.add(a.id));
   // Safety net: if the webview pauses animations (hidden/occluded window), still show the cards.
   setTimeout(()=>L.querySelectorAll(".enter").forEach(el=>el.classList.remove("enter")),1500);
   const n=count("update");
-  const b=$("#btnUpdAll");b.disabled=!n;b.textContent=n?`Update all (${n})`:"Update all";
+  const b=$("#btnUpdAll");b.hidden=!n;b.textContent=`Update all (${n})`;
+  const checking=Object.values(S.jobs||{}).some(j=>j.state=="running"&&j.label=="Checking");
+  const last=Math.max(0,...S.apps.map(a=>a.checked_at||0));
+  $("#btnCheck svg").classList.toggle("spin",checking);
+  $("#sub").textContent=checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"AppImages & PC ports, always up to date";
 }
 // Drop the entrance class once it has played so a card can never stay mid-animation.
 $("#list").addEventListener("animationend",e=>{if(e.target.classList.contains("enter")&&e.animationName=="enter")e.target.classList.remove("enter")});
@@ -2290,26 +2318,68 @@ async function refresh(){
   timer=setTimeout(refresh,busy?700:(Object.keys(S.jobs||{}).length?2000:15000));
 }
 
-$("#list").addEventListener("click",async e=>{
-  const b=e.target.closest("[data-a]");if(!b)return;
-  if(b.tagName=="A")e.preventDefault();
-  const id=b.dataset.id,a=S.apps.find(x=>x.id==id),k=b.dataset.a;
-  if(k=="update"||k=="check")b.disabled=true;
+async function doAction(k,a,el){
+  const id=a.id;
+  if(k=="update"||k=="check"){if(el)el.disabled=true}
   if(k=="update")act("/api/update",{id});
   else if(k=="check")act("/api/check",{id});
   else if(k=="launch")act("/api/launch",{id},"Launching "+a.name);
+  else if(k=="menu")openMenu(el,a);
   else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
   else if(k=="remove"){
     const r=await ask({title:`Remove ${a.name}?`,text:"DeckPort will stop tracking it.",ok:"Remove",danger:true,
-                       check:a.installed?"Also delete its downloaded files":""});
+                       check:a.installed&&a.exists?"Also delete its downloaded files":""});
     if(r)act("/api/remove",{id,delete_files:!!r.checked},"Removed");
   }
   else if(k=="edit")openAdd(a);
   else if(k=="notes")openNotes(a);
+  else if(k=="release"){const u=(a.latest&&a.latest.url)||a.web_url;APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
   else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. DeckPort will tell you about the next version.`);
   else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
-  else if(k=="steam")act("/api/steam_add",{id},r=>r.added?`${a.name} added to Steam. Restart Steam to see it.`:`${a.name} is already in Steam`);
+  else if(k=="steam")act("/api/steam_add",{id},r=>r.added?`${a.name} added to Steam. Start Steam to see it.`:`${a.name} is already in Steam`);
+}
+$("#list").addEventListener("click",e=>{
+  const b=e.target.closest("[data-a]");if(!b)return;
+  if(b.tagName=="A")e.preventDefault();
+  const a=S.apps.find(x=>x.id==b.dataset.id);if(a)doAction(b.dataset.a,a,b);
 });
+
+// The ⋯ menu: everything a card needs now and then, so the card itself shows only what matters.
+const menu=$("#menu");let menuFor=null;
+function closeMenu(){if(!menu.hidden){menu.hidden=true;if(menuFor)menuFor.focus();menuFor=null}}
+function openMenu(btn,a){
+  if(menuFor==btn){closeMenu();return}
+  const L=a.latest||{},st=status(a),here=a.installed&&a.exists,running=st=="busy";
+  const it=(k,t,{hint="",danger=false,off=false}={})=>`<button type="button" role="menuitem" data-k="${k}" class="${danger?"danger":""}" ${off?"disabled":""}>${t}${hint?`<small>${hint}</small>`:""}</button>`;
+  const rows=[it("check","Check for updates",{off:running})];
+  if(L.notes&&st!="update")rows.push(it("notes",`Release notes ${esc(L.tag||"")}`));
+  if(st=="update")rows.push(it("skip",`Skip ${esc(L.tag||"")}`,{hint:"Get told about the next version instead"}));
+  if(a.skipped)rows.push(it("unskip",`Offer ${esc(L.tag||"")} again`));
+  if(a.has_backup)rows.push(it("rollback","Roll back to previous version",{off:running}));
+  if(S.steam&&here&&a.installed.kind!="archive"&&!a.in_steam)
+    rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":"Adds it as a Non-Steam game"}));
+  rows.push(it("release","Open release page"),"<hr>",it("edit","Edit"),it("remove","Remove…",{danger:true}));
+  menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
+  const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
+  menu.style.left=Math.max(8,Math.min(r.right-m.width,innerWidth-m.width-8))+"px";
+  menu.style.top=(r.bottom+6+m.height>innerHeight?Math.max(8,r.top-6-m.height):r.bottom+6)+"px";
+  const first=menu.querySelector("button:not(:disabled)");if(first)first.focus();
+}
+menu.addEventListener("click",e=>{
+  const b=e.target.closest("button[data-k]");if(!b||b.disabled)return;
+  const a=S.apps.find(x=>x.id==menu.dataset.id);menuFor=null;menu.hidden=true;
+  if(a)doAction(b.dataset.k,a);
+});
+document.addEventListener("click",e=>{if(!menu.hidden&&!menu.contains(e.target)&&!e.target.closest("[data-a=menu]"))closeMenu()});
+document.addEventListener("keydown",e=>{
+  if(menu.hidden)return;
+  if(e.key=="Escape")closeMenu();
+  else if(e.key=="ArrowDown"||e.key=="ArrowUp"){
+    e.preventDefault();const bs=[...menu.querySelectorAll("button:not(:disabled)")],i=bs.indexOf(document.activeElement);
+    bs[(i+(e.key=="ArrowDown"?1:bs.length-1))%bs.length].focus();
+  }
+});
+addEventListener("resize",closeMenu);addEventListener("scroll",closeMenu,true);
 
 // Release notes, lightly cleaned up from Markdown into plain text.
 function md(t){
@@ -2331,14 +2401,20 @@ function openNotes(a){
 }
 
 // Banner: AppImages already in the install folder that DeckPort could keep up to date.
-let foundKey="",foundLater=false;
+let foundKey="",foundLater=false,foundOpen=false;
 function renderFound(){
   const F=S.found||[],box=$("#found");
   if(foundLater||!F.length){box.innerHTML="";foundKey="";return}
-  const key=JSON.stringify(F.map(f=>[f.path,f.app_id||"",f.src]));
+  const key=JSON.stringify([foundOpen,F.map(f=>[f.path,f.app_id||"",f.src])]);
   if(key==foundKey)return;  // keep the user's checkbox choices between polls
   foundKey=key;
   const known=F.filter(f=>f.src),unknown=F.filter(f=>!f.src);
+  if(!known.length&&!foundOpen){
+    // Only files DeckPort can't name: one quiet line instead of a big banner.
+    box.innerHTML=`<div class="found-line glass"><span>${F.length} AppImage${F.length>1?"s":""} in ${esc(S.settings.install_dir_short||"")} DeckPort doesn't recognize</span>
+      <button type="button" class="ghost" id="fOpen">Review</button><button type="button" class="ghost" id="fHideAll">Hide</button></div>`;
+    return;
+  }
   const row=f=>f.src
     ?`<label class="frow"><input type="checkbox" data-p="${esc(f.path)}" checked><span><b>${esc(f.name)}</b> <span class="dim">${f.app_id?"for the "+esc(f.name)+" entry you added":esc(f.display)}</span><small class="mono">${esc(f.file)} · ${mb(f.size)}</small></span></label>`
     :`<div class="frow"><span><span class="mono">${esc(f.file)}</span><small>Not recognized · ${mb(f.size)}</small></span><button type="button" data-link="${esc(f.path)}">Choose repo…</button><button type="button" class="ghost" data-ign="${esc(f.path)}">Hide</button></div>`;
@@ -2354,7 +2430,9 @@ $("#found").addEventListener("change",()=>{
 $("#found").addEventListener("click",async e=>{
   const t=e.target.closest("button");if(!t)return;
   const byPath=p=>(S.found||[]).find(f=>f.path==p);
-  if(t.id=="fLater"){foundLater=true;renderFound()}
+  if(t.id=="fLater"){foundLater=true;renderFound();render()}
+  else if(t.id=="fOpen"){foundOpen=true;renderFound()}
+  else if(t.id=="fHideAll"){foundKey="";act("/api/scan_ignore",{paths:(S.found||[]).filter(f=>!f.src).map(f=>f.path)},"Hidden. Settings can show them again.")}
   else if(t.id=="fTrack"){
     const items=[...$("#found").querySelectorAll("input[data-p]:checked")].map(i=>byPath(i.dataset.p)).filter(Boolean)
       .map(f=>({path:f.path,src:f.src,name:f.name,app_id:f.app_id||""}));
@@ -2374,14 +2452,16 @@ if(APP){
   });
 }
 
-let ADOPT=null,prevTimer=null,lastPrev="";
+let ADOPT=null,prevTimer=null,lastPrev="",PICKED=false;
 const isLink=v=>/[\/.]/.test(v.trim());  // owner/repo or a URL; anything else is a catalog search
 function openAdd(a,adopt){
   editId=a?a.id:null;ADOPT=adopt||null;
   $("#addTitle").textContent=a?"Edit "+a.name:"Add app";
   $("#aSave").textContent=a?"Save":"Add";
   $("#aRepoLbl").firstChild.textContent=a?"Repository":"Search popular apps, or paste a release link (GitHub, GitLab, Codeberg, Gitea, Forgejo)";
-  $("#aRepo").value=a?a.repo:"";$("#aRepo").disabled=!!a;
+  // Non-GitHub repos need their host, or the preview would look them up on GitHub.
+  $("#aRepo").value=a?(a.host&&a.host!="github.com"?`https://${a.host}/${a.repo}`:a.repo):"";$("#aRepo").disabled=!!a;
+  PICKED=false;
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
@@ -2402,7 +2482,7 @@ function renderCat(){
 }
 $("#aCat").onclick=e=>{
   const b=e.target.closest("[data-c]");if(!b)return;const c=S.catalog[b.dataset.c];
-  $("#aRepo").value=c.src;$("#aName").value=c.name;$("#aPat").value=c.pattern||"";renderCat();preview();
+  $("#aRepo").value=c.src;$("#aName").value=c.name;PICKED=true;renderCat();preview();
 };
 const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 function patternFor(name){
@@ -2411,6 +2491,8 @@ function patternFor(name){
 }
 function previewSoon(){clearTimeout(prevTimer);prevTimer=setTimeout(preview,600)}
 $("#aRepo").oninput=()=>{
+  // Typing after picking from the catalog starts over: don't keep that app's name.
+  if(PICKED){PICKED=false;$("#aName").value=""}
   renderCat();
   if(isLink($("#aRepo").value))previewSoon();
   else{clearTimeout(prevTimer);lastPrev="";$("#aInfo").textContent="";$("#aAssets").hidden=true;$("#aTip").hidden=true}

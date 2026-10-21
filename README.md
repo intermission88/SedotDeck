@@ -52,7 +52,7 @@ DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otom
 
 **Aman**
 - **Verifikasi SHA-256** memakai checksum dari GitHub atau dari file checksum di rilis (`SHA256SUMS`, `*.sha256`). Kalau tidak cocok, download dihapus dan versi lama tetap dipakai.
-- Versi sebelumnya disimpan sebagai `.old` dan bisa di-**Rollback** dengan satu klik.
+- Versi sebelumnya disimpan sebagai `.old` dan bisa di-**Rollback** dari menu **⋯** di kartu app.
 - App yang sudah versi terbaru **tidak bisa ter-install ulang** tanpa sengaja.
 - Port berbentuk folder di-update dengan cara menimpa file, jadi **save dan config tidak terhapus**.
 
@@ -119,7 +119,7 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 1. Klik **Add app**, lalu ketik nama app-nya (misalnya `pcsx2`) dan klik hasilnya. App yang tidak ada di katalog? Tempel link repo-nya, misalnya `https://github.com/owner/repo`, `https://gitlab.com/group/project`, atau `https://codeberg.org/owner/repo`.
 2. DeckPort langsung menunjukkan file mana yang akan di-download. Kalau pilihannya salah, buka **Advanced** dan klik file yang benar.
 3. Klik **Add**, lalu **Install**. Untuk seterusnya, cukup **Update all**.
-4. **Supaya bisa dimainkan dari Game Mode:** klik **Add to Steam** di kartu app-nya (tutup Steam dulu, lihat [FAQ](#-faq)), atau dari Game Mode lewat plugin Decky. Cukup sekali saja, karena path file-nya tidak pernah berubah.
+4. **Supaya bisa dimainkan dari Game Mode:** buka menu **⋯** di kartu app-nya lalu pilih **Add to Steam** (tutup Steam dulu, lihat [FAQ](#-faq)), atau dari Game Mode lewat plugin Decky. Cukup sekali saja, karena path file-nya tidak pernah berubah.
 
 <img src="docs/screenshots/add.jpg" alt="Dialog Add app dengan katalog app populer" width="720">
 
@@ -129,12 +129,12 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 |---|---|---|
 | **Update → v1.2** | ↑ biru, dengan garis aksen | Ada versi baru. Klik **Update**. |
 | **Up to date** | ✓ hijau | Sudah versi terbaru. Tombol Install/Update tidak muncul. |
-| **Skipped v1.2** | ✓ hijau | Kamu memilih **Skip** untuk versi itu. Klik *undo skip* untuk membatalkan. |
+| **Skipped v1.2** | ✓ hijau | Kamu memilih **Skip** untuk versi itu. Klik *undo* di kartunya untuk membatalkan. |
 | **Not installed** | ↓ kuning | Sudah dilacak tapi belum di-download, atau file-nya sudah kamu hapus. |
-| **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Pilih file yang benar lewat **Edit** → **Advanced**. |
+| **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Pilih file yang benar lewat **⋯** → **Edit** → **Advanced**. |
 | **Downloading 45%** | spinner | Sedang proses. Launch dan Rollback dinonaktifkan sampai selesai. |
 
-App yang butuh update selalu tampil paling atas. Chip di atas daftar (**All · Updates · Up to date · Not installed**) bisa dipakai untuk memfilter.
+Kartu hanya menampilkan yang penting: status, versi, tombol **Install/Update** dan **Launch**. Sisanya (Check, Skip, Rollback, Add to Steam, Edit, Remove) ada di menu **⋯**. App yang butuh update selalu tampil paling atas, dan kalau app-mu sudah 8 atau lebih, muncul chip filter (**All · Updates · Up to date · Not installed**).
 
 | Sedang download | Sudah terpasang |
 |---|---|
@@ -215,7 +215,7 @@ Tanpa login, GitHub hanya mengizinkan 60 request per jam. Buat token di <https:/
 <details>
 <summary><b>DeckPort memilih file yang salah</b></summary>
 
-Buka **Edit**, lalu di bagian **Advanced** klik file yang benar. Pattern regex-nya akan terisi otomatis, dengan bagian versinya diganti wildcard supaya tetap cocok untuk rilis berikutnya.
+Buka **⋯** → **Edit**, lalu di bagian **Advanced** klik file yang benar. Pattern regex-nya akan terisi otomatis, dengan bagian versinya diganti wildcard supaya tetap cocok untuk rilis berikutnya.
 </details>
 
 <details>
@@ -233,7 +233,7 @@ Cek baris **File** di kartu app. Shortcut Steam harus mengarah ke file itu. Kala
 <details>
 <summary><b>Kenapa harus menutup Steam untuk "Add to Steam"?</b></summary>
 
-Steam menyimpan daftar *Non-Steam Game* di `shortcuts.vdf`, dan menimpa file itu dari memorinya saat keluar. Jadi di Desktop Mode, keluar dulu dari Steam (menu **Steam** → **Exit**), klik **Add to Steam**, lalu buka Steam lagi. Sebelum mengubah file itu, DeckPort selalu menyimpan salinannya sebagai `shortcuts.vdf.deckport.bak`.
+Steam menyimpan daftar *Non-Steam Game* di `shortcuts.vdf`, dan menimpa file itu dari memorinya saat keluar. Jadi di Desktop Mode, keluar dulu dari Steam (menu **Steam** → **Exit**), pilih **⋯** → **Add to Steam** (selama Steam masih jalan, pilihan ini abu-abu), lalu buka Steam lagi. Sebelum mengubah file itu, DeckPort selalu menyimpan salinannya sebagai `shortcuts.vdf.deckport.bak`.
 
 Di Game Mode tidak perlu: plugin Decky memakai API Steam sendiri (tekan app-nya → **Add to Steam library**).
 </details>

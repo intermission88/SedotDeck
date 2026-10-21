@@ -249,6 +249,29 @@ eq((found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["how"], found["pcsx2-v2
    ("catalog", scfg["apps"][0]["id"]), "catalog match offered for the tracked app")
 eq(found["Mystery-1.0.AppImage"]["src"], "", "unknown file")
 
+# --- added by link: a catalog app gets its catalog name, not the repo's ("rpcs3-binaries-linux")
+eq(dp.new_app("https://github.com/RPCS3/rpcs3-binaries-linux")["name"], "RPCS3", "catalog name")
+eq(dp.new_app("", src={"provider": "github", "host": "github.com", "repo": "me/my-port"})["name"], "my-port", "repo name")
+
+# --- removing an app but keeping its file: the scan doesn't offer it straight back
+cemu_file = os.path.join(sdir, "Cemu.AppImage")
+rcfg = {"settings": {"install_dir": sdir}, "apps": [dict(dp.new_app("", "Cemu", src={"provider": "github", "host": "github.com",
+                                                                                   "repo": "cemu-project/Cemu"}), installed={"path": cemu_file})]}
+dp.remove_app(rcfg, rcfg["apps"][0])
+eq(("Cemu.AppImage" in [f["file"] for f in dp.scan_folder(rcfg)], rcfg["settings"]["scan_ignored"]), (False, [cemu_file]), "removed file hidden")
+
+# --- tracking found files is all-or-nothing
+tsrv = dp.Server.__new__(dp.Server)
+tsrv.cfg, tsrv.jobs = {"settings": {"install_dir": sdir}, "apps": []}, dp.Jobs()
+tsrv.sync = tsrv.save = lambda: None
+try:
+    tsrv.handle("/api/track_found", {"items": [{"path": os.path.join(sdir, "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"), "src": "PCSX2/pcsx2"},
+                                               {"path": os.path.join(sdir, "nope.AppImage"), "src": "a/b"}]})
+    raise AssertionError("bad item should fail")
+except ValueError:
+    pass
+eq(tsrv.cfg["apps"], [], "nothing tracked when one item is bad")
+
 # --- skip this version
 k = {"latest": {"tag": "v3", "asset": {"id": 3, "updated_at": "t3"}},
      "installed": {"path": old_file, "asset_id": 2, "updated_at": "t2"}, "skip": {"asset_id": 3, "updated_at": "t3"}}
