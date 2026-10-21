@@ -17,8 +17,9 @@ sys.path.insert(0, os.path.join(decky.DECKY_PLUGIN_DIR, "py_modules"))
 import deckport  # noqa: E402  (bundled copy of deckport.py)
 
 # What the Game Mode panel may do. Launching apps, settings (token) and quitting stay in the desktop UI.
+# Adding to Steam goes through SteamClient in the frontend: Steam is running in Game Mode.
 ALLOWED = {"/api/state", "/api/check", "/api/update", "/api/add", "/api/edit", "/api/remove",
-           "/api/rollback", "/api/preview"}
+           "/api/rollback", "/api/preview", "/api/track_found", "/api/skip"}
 CHECK_EVERY = 6 * 3600
 
 

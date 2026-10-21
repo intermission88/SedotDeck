@@ -9,6 +9,7 @@ Usage:
   deckport.py serve                 # open the web UI (default)
   deckport.py add <github-url>      # track a repo
   deckport.py list
+  deckport.py scan [--track]        # find AppImages you already have
   deckport.py check
   deckport.py update [name ...]     # update given apps, or everything with an update
   deckport.py remove <name>
@@ -22,6 +23,7 @@ import re
 import secrets
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -34,10 +36,11 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
@@ -48,7 +51,7 @@ ARCHIVE_EXTS = (".zip", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2
 NOT_FOR_DECK = re.compile(
     r"(windows|win32|win64|[-_.]win[-_.]|\.exe$|\.msi$|macos|mac[-_.]?os|darwin|osx|\.dmg$|\.pkg$"
     r"|android|\.apk$|[-_.]ios[-_.]|aarch64|arm64|armhf|armv\d|[-_.]arm([-_.]?\d+|el)?([-_. )]|$)|i386|i686|riscv|ppc64|s390x|\.zsync$|\.sha\d*(sum)?$|\.sig$|\.asc$"
-    r"|checksums?|\.blockmap$|\.txt$|\.json$|\.ya?ml$|\.deb$|\.rpm$|flatpak|\.snap$|debug|symbols|\.pdb$)",
+    r"|checksums?|\.blockmap$|\.txt$|\.json$|\.ya?ml$|\.deb$|\.rpm$|flatpak|\.snap$|debug|[-_.]dbg([-_.]|$)|symbols|\.pdb$)",
     re.I,
 )
 
@@ -209,7 +212,7 @@ def _norm_github(r):
     return {
         "tag_name": r.get("tag_name") or "", "name": r.get("name") or "",
         "published_at": r.get("published_at") or "", "html_url": r.get("html_url") or "",
-        "prerelease": bool(r.get("prerelease")), "draft": bool(r.get("draft")),
+        "prerelease": bool(r.get("prerelease")), "draft": bool(r.get("draft")), "body": r.get("body") or "",
         "assets": [{
             "id": a["id"], "name": a["name"], "size": a.get("size", 0),
             "updated_at": a.get("updated_at", ""), "browser_download_url": a["browser_download_url"],
@@ -222,7 +225,7 @@ def _norm_gitea(r):
     return {
         "tag_name": r.get("tag_name") or "", "name": r.get("name") or "",
         "published_at": r.get("published_at") or r.get("created_at") or "", "html_url": r.get("html_url") or "",
-        "prerelease": bool(r.get("prerelease")), "draft": bool(r.get("draft")),
+        "prerelease": bool(r.get("prerelease")), "draft": bool(r.get("draft")), "body": r.get("body") or "",
         "assets": [{
             "id": a.get("uuid") or a["id"], "name": a["name"], "size": a.get("size", 0),
             "updated_at": a.get("created_at", ""), "browser_download_url": a["browser_download_url"],
@@ -238,7 +241,7 @@ def _norm_gitlab(r, host, repo):
         "tag_name": r.get("tag_name") or "", "name": r.get("name") or "",
         "published_at": when,
         "html_url": ((r.get("_links") or {}).get("self")) or "https://%s/%s/-/releases" % (host, repo),
-        "prerelease": bool(r.get("upcoming_release")), "draft": False,
+        "prerelease": bool(r.get("upcoming_release")), "draft": False, "body": r.get("description") or "",
         "assets": [{
             "id": l["id"], "name": l["name"], "size": 0, "updated_at": when,
             "browser_download_url": l.get("direct_asset_url") or l["url"], "sha256": "",
@@ -295,6 +298,12 @@ def score_asset(name):
         s += 10
     if "linux" in n:
         s += 30
+    elif not n.endswith(".appimage") and re.search(r"appimage|ubuntu", n):
+        s += 30  # e.g. melonDS-1.1-appimage-x86_64.zip
+    if "appimage" in n and not n.endswith(".appimage"):
+        s += 5  # a zipped AppImage beats a loose build of the same release
+    if "sse2" in n:
+        s -= 5  # builds for very old CPUs; the Deck has AVX2
     if re.search(r"steam[-_. ]?deck|steamos", n):
         s += 40
     if re.search(r"(^|[^a-z0-9])(x86[_-]?64|amd64|x64)($|[^a-z0-9])", n):
@@ -328,6 +337,9 @@ def find_checksum_asset(assets, name):
     return None, False
 
 
+NOTES_MAX = 6000  # release notes kept per app, enough for a "What's new" dialog
+
+
 def release_info(rel, asset):
     info = {
         "tag": rel.get("tag_name") or "",
@@ -335,6 +347,7 @@ def release_info(rel, asset):
         "published": rel.get("published_at") or "",
         "url": rel.get("html_url") or "",
         "prerelease": bool(rel.get("prerelease")),
+        "notes": (rel.get("body") or "")[:NOTES_MAX],
         "asset": None,
     }
     if asset:
@@ -354,7 +367,14 @@ def release_info(rel, asset):
     return info
 
 
-def has_update(app):
+def is_skipped(app):
+    """The user chose "Skip this version" for exactly the latest asset."""
+    sk = app.get("skip") or {}
+    la = (app.get("latest") or {}).get("asset") or {}
+    return bool(sk and la) and sk.get("asset_id") == la.get("id") and sk.get("updated_at") == la.get("updated_at")
+
+
+def has_update(app, honor_skip=True):
     latest = app.get("latest") or {}
     la = latest.get("asset")
     if not la:
@@ -363,7 +383,8 @@ def has_update(app):
     if not inst or not inst.get("path") or not Path(inst["path"]).exists():
         return True
     # Asset id + timestamp also catches "nightly"/"continuous" tags that get re-uploaded.
-    return inst.get("asset_id") != la["id"] or inst.get("updated_at") != la["updated_at"]
+    newer = inst.get("asset_id") != la["id"] or inst.get("updated_at") != la["updated_at"]
+    return newer and not (honor_skip and is_skipped(app))
 
 
 def check_app(app, token=""):
@@ -574,9 +595,24 @@ def install_app(app, settings, progress=None, phase=None):
         "sha256": actual,
         "verified": bool(expected),
         "verified_by": source,
+        "size": disk_size(path),
     }
     app["error"] = ""
     return path
+
+
+def disk_size(path):
+    """Bytes used by a file, or by a folder port (walked once at install, then stored)."""
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for fn in files:
+            try:
+                total += os.lstat(os.path.join(root, fn)).st_size
+            except OSError:
+                pass
+    return total
 
 
 def file_sha256(path):
@@ -597,6 +633,11 @@ def stem_of(name):
     """A file name without version, arch and extension: Game-v1.1-x86_64.AppImage -> "game"."""
     n = re.sub(r"\.appimage$", "", name.lower())
     return re.sub(r"[^a-z0-9]+", "", _STEM_NOISE.sub(" ", n))
+
+
+def short_home(path):
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
 
 
 def tracked_paths(cfg, except_id=None):
@@ -677,6 +718,7 @@ def adopt_app(app, path):
         "verified": verified,
         "verified_by": source if verified else "",
         "adopted": True,
+        "size": os.path.getsize(path),
     }
     return current
 
@@ -796,6 +838,305 @@ def launch_app(app):
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
 
+# --------------------------------------------------------------------------- catalog & folder scan
+
+# Popular Deck apps whose releases were checked to have a Linux build DeckPort picks correctly.
+# "match" finds a file the user downloaded by hand (lower-case file name), so a scan can name it.
+CATALOG = [
+    {"name": "PCSX2", "about": "PS2", "src": "PCSX2/pcsx2", "match": r"pcsx2"},
+    {"name": "RPCS3", "about": "PS3", "src": "RPCS3/rpcs3-binaries-linux", "match": r"^rpcs3"},
+    {"name": "shadPS4", "about": "PS4", "src": "shadps4-emu/shadPS4", "match": r"shadps4"},
+    {"name": "DuckStation", "about": "PS1", "src": "stenzek/duckstation", "match": r"duckstation"},
+    {"name": "PPSSPP", "about": "PSP", "src": "hrydgard/ppsspp", "match": r"ppsspp"},
+    {"name": "Vita3K", "about": "PS Vita", "src": "Vita3K/Vita3K", "match": r"vita3k"},
+    {"name": "Cemu", "about": "Wii U", "src": "cemu-project/Cemu", "match": r"^cemu"},
+    {"name": "Azahar", "about": "3DS", "src": "azahar-emu/azahar", "match": r"azahar"},
+    {"name": "melonDS", "about": "DS", "src": "melonDS-emu/melonDS", "match": r"melonds"},
+    {"name": "mGBA", "about": "GBA", "src": "mgba-emu/mgba", "match": r"^mgba"},
+    {"name": "xemu", "about": "Xbox", "src": "xemu-project/xemu", "match": r"^xemu"},
+    {"name": "Flycast", "about": "Dreamcast", "src": "flyinghead/flycast", "match": r"^flycast"},
+    {"name": "ES-DE", "about": "Frontend", "src": "https://gitlab.com/es-de/emulationstation-de", "match": r"^es-de|emulationstation"},
+    {"name": "Heroic", "about": "Epic/GOG launcher", "src": "Heroic-Games-Launcher/HeroicGamesLauncher", "match": r"^heroic"},
+    {"name": "Ship of Harkinian", "about": "Ocarina of Time port", "src": "HarbourMasters/Shipwright", "match": r"^soh[-_.]|shipwright"},
+    {"name": "2 Ship 2 Harkinian", "about": "Majora's Mask port", "src": "HarbourMasters/2ship2harkinian", "match": r"^2ship"},
+    {"name": "Zelda 64: Recompiled", "about": "Majora's Mask recomp", "src": "Zelda64Recomp/Zelda64Recomp", "match": r"zelda64recomp"},
+]
+
+
+# What the Add dialog needs; "key" (host/repo) tells it which entries are already tracked.
+CATALOG_UI = [dict(c, key=("%s/%s" % parse_source(c["src"])[1:]).lower()) for c in CATALOG]
+
+
+def _src_key(provider, host, repo):
+    return (provider or "", (host or "").lower(), (repo or "").lower())
+
+
+def catalog_entry(src):
+    """The catalog entry for a {provider, host, repo} source, if any."""
+    want = _src_key(src.get("provider"), src.get("host"), src.get("repo"))
+    for c in CATALOG:
+        if _src_key(*parse_source(c["src"])) == want:
+            return c
+    return None
+
+
+def read_update_info(path):
+    """The AppImage's embedded update information (ELF section .upd_info), e.g.
+    "gh-releases-zsync|owner|repo|latest|*.zsync". Read with plain file I/O: never runs the file."""
+    try:
+        with open(path, "rb") as f:
+            h = f.read(64)
+            if len(h) < 64 or h[:4] != b"\x7fELF" or h[4] != 2 or h[5] != 1:
+                return ""
+            shoff, = struct.unpack_from("<Q", h, 0x28)
+            shentsize, shnum, shstrndx = struct.unpack_from("<HHH", h, 0x3A)
+            if not shoff or shentsize < 64 or not 0 < shnum <= 1024 or shstrndx >= shnum:
+                return ""
+            f.seek(shoff)
+            table = f.read(shentsize * shnum)
+            if len(table) < shentsize * shnum:
+                return ""
+            secs = [struct.unpack_from("<IIQQQQ", table, i * shentsize) for i in range(shnum)]
+            f.seek(secs[shstrndx][4])
+            names = f.read(min(secs[shstrndx][5], 65536))
+            for name_off, _type, _flags, _addr, off, size in secs:
+                if names[name_off:name_off + 10] == b".upd_info\0":
+                    f.seek(off)
+                    return f.read(min(size, 1024)).split(b"\0")[0].decode("utf-8", "replace").strip()
+    except (OSError, struct.error):
+        pass
+    return ""
+
+
+def source_from_update_info(info):
+    parts = info.split("|")
+    if len(parts) >= 3 and parts[0] in ("gh-releases-zsync", "gh-releases-direct") and valid_repo(parts[1] + "/" + parts[2]):
+        return parts[1] + "/" + parts[2]
+    return ""
+
+
+_ident_cache = {}
+
+
+def identify_file(path):
+    """(source text, catalog entry or None, how) for an AppImage on disk; how is "embedded",
+    "catalog" or "" when DeckPort can't tell which repo it came from."""
+    st = os.stat(path)
+    key = (path, st.st_size, st.st_mtime_ns)
+    if key not in _ident_cache:
+        src = source_from_update_info(read_update_info(path))
+        if src:
+            entry = catalog_entry(dict(zip(("provider", "host", "repo"), parse_source(src))))
+            result = (src, entry, "embedded")
+        else:
+            low = os.path.basename(path).lower()
+            entry = next((c for c in CATALOG if re.search(c["match"], low)), None)
+            result = (entry["src"], entry, "catalog") if entry else ("", None, "")
+        _ident_cache[key] = result
+    return _ident_cache[key]
+
+
+def scan_folder(cfg):
+    """AppImages in the install folder that DeckPort doesn't manage yet, with the repo each one
+    probably came from. A file whose repo is tracked but not installed is offered for that app."""
+    folder = os.path.expanduser(cfg["settings"]["install_dir"])
+    if not os.path.isdir(folder):
+        return []
+    taken = tracked_paths(cfg)
+    ignored = set(cfg["settings"].get("scan_ignored") or [])
+    by_src = {}
+    for a in cfg["apps"]:
+        by_src.setdefault(_src_key(a.get("provider"), a.get("host"), a["repo"]), a)
+    out = []
+    for f in sorted(os.listdir(folder), key=str.lower):
+        p = os.path.join(folder, f)
+        if (not f.lower().endswith(".appimage") or f.lower().startswith("deckport") or os.path.islink(p)
+                or not os.path.isfile(p) or os.path.realpath(p) in taken or p in ignored):
+            continue
+        try:
+            src, entry, how = identify_file(p)
+        except OSError:
+            continue
+        item = {"path": p, "file": f, "size": os.path.getsize(p), "src": src, "how": how,
+                "name": entry["name"] if entry else "", "about": entry["about"] if entry else ""}
+        if src:
+            prov, host, repo = parse_source(src)
+            item["display"] = repo if host == "github.com" else "%s/%s" % (host, repo)
+            item["name"] = item["name"] or repo.split("/")[-1]
+            owner = by_src.get(_src_key(prov or "", host, repo))
+            if owner:
+                inst = owner.get("installed") or {}
+                if inst.get("path") and os.path.exists(inst["path"]):
+                    continue  # a spare copy of an app DeckPort already keeps up to date
+                item["app_id"], item["name"] = owner["id"], owner["name"]
+        out.append(item)
+    return out
+
+
+# --------------------------------------------------------------------------- Steam shortcuts
+
+STEAM_ROOTS = ("~/.steam/steam", "~/.local/share/Steam", "~/.var/app/com.valvesoftware.Steam/.local/share/Steam")
+
+
+def steam_shortcuts_file():
+    """shortcuts.vdf of the Steam account used most recently, or None when Steam isn't set up."""
+    for root in STEAM_ROOTS:
+        ud = Path(os.path.expanduser(root)) / "userdata"
+        if not ud.is_dir():
+            continue
+        best = None
+        for d in ud.iterdir():
+            if not d.name.isdigit() or d.name == "0":
+                continue
+            lc = d / "config" / "localconfig.vdf"
+            m = lc.stat().st_mtime if lc.exists() else 0
+            if best is None or m > best[0]:
+                best = (m, d)
+        if best:
+            return best[1] / "config" / "shortcuts.vdf"
+    return None
+
+
+def steam_running():
+    """Steam rewrites shortcuts.vdf from memory when it exits, so it must not be running."""
+    if not os.path.isdir("/proc"):
+        return False
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                if Path("/proc", pid, "comm").read_text().strip() == "steam":
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+# Binary KeyValues as used by shortcuts.vdf: a list of (type, key, value); type 0 is a nested list.
+def vdf_load(data):
+    pos = 0
+
+    def cstr():
+        nonlocal pos
+        end = data.index(b"\0", pos)
+        s, pos = data[pos:end].decode("utf-8", "surrogateescape"), end + 1
+        return s
+
+    def node():
+        nonlocal pos
+        items = []
+        while pos < len(data):
+            t = data[pos]
+            pos += 1
+            if t == 8:
+                return items
+            k = cstr()
+            if t == 0:
+                items.append((0, k, node()))
+            elif t == 1:
+                items.append((1, k, cstr()))
+            elif t == 2:
+                items.append((2, k, struct.unpack_from("<i", data, pos)[0]))
+                pos += 4
+            elif t == 7:
+                items.append((7, k, struct.unpack_from("<Q", data, pos)[0]))
+                pos += 8
+            else:
+                raise ValueError("Unsupported value type %d in shortcuts.vdf" % t)
+        return items
+
+    return node()
+
+
+def vdf_dump(items):
+    out = bytearray()
+    for t, k, v in items:
+        out.append(t)
+        out += k.encode("utf-8", "surrogateescape") + b"\0"
+        if t == 0:
+            out += vdf_dump(v)
+        elif t == 1:
+            out += v.encode("utf-8", "surrogateescape") + b"\0"
+        elif t == 2:
+            out += struct.pack("<i", v)
+        elif t == 7:
+            out += struct.pack("<Q", v)
+    out.append(8)
+    return bytes(out)
+
+
+def _shortcut_list(items):
+    for t, k, v in items:
+        if t == 0 and k.lower() == "shortcuts":
+            return v
+    lst = []
+    items.append((0, "shortcuts", lst))
+    return lst
+
+
+def _shortcut_exe(entry):
+    for t, k, v in entry:
+        if t == 1 and k.lower() == "exe":
+            return v.strip().strip('"')
+    return ""
+
+
+_steam_cache = {}
+
+
+def steam_shortcut_exes():
+    """Executables of the current Non-Steam shortcuts (cached on the file's mtime)."""
+    f = steam_shortcuts_file()
+    try:
+        m = f.stat().st_mtime_ns if f else None
+    except OSError:
+        m = None
+    if m is None:
+        return set()
+    if _steam_cache.get("key") != (str(f), m):
+        try:
+            exes = {_shortcut_exe(e) for t, _k, e in _shortcut_list(vdf_load(f.read_bytes())) if t == 0}
+        except (OSError, ValueError, IndexError, struct.error):
+            exes = set()
+        _steam_cache.update(key=(str(f), m), exes=exes)
+    return _steam_cache["exes"]
+
+
+def add_to_steam(app, shortcuts=None):
+    """Add the installed AppImage as a Non-Steam game. Returns False if it was already there."""
+    path = (app.get("installed") or {}).get("path") or ""
+    if not path or not os.path.isfile(path):
+        raise RuntimeError("Install %s first" % app["name"])
+    f = shortcuts or steam_shortcuts_file()
+    if not f:
+        raise RuntimeError("Steam not found. Start Steam once and log in, then try again.")
+    if shortcuts is None and steam_running():
+        raise RuntimeError("Close Steam first (Steam menu > Exit), then press Add to Steam again. "
+                           "In Game Mode, use the DeckPort Decky plugin instead.")
+    f = Path(f)
+    data = f.read_bytes() if f.exists() else b""
+    root = vdf_load(data) if data else []
+    lst = _shortcut_list(root)
+    if any(_shortcut_exe(e) == path for t, _k, e in lst if t == 0):
+        return False
+    exe, name = '"%s"' % path, app["name"]
+    appid = (zlib.crc32((exe + name).encode()) | 0x80000000) - (1 << 32)  # stored as a signed int32
+    nxt = max([int(k) for _t, k, _v in lst if k.isdigit()] + [-1]) + 1
+    lst.append((0, str(nxt), [
+        (2, "appid", appid), (1, "AppName", name), (1, "Exe", exe),
+        (1, "StartDir", '"%s"' % os.path.dirname(path)), (1, "icon", ""), (1, "ShortcutPath", ""),
+        (1, "LaunchOptions", ""), (2, "IsHidden", 0), (2, "AllowDesktopConfig", 1), (2, "AllowOverlay", 1),
+        (2, "OpenVR", 0), (2, "Devkit", 0), (1, "DevkitGameID", ""), (2, "DevkitOverrideAppID", 0),
+        (2, "LastPlayTime", 0), (1, "FlatpakAppID", ""), (0, "tags", []),
+    ]))
+    f.parent.mkdir(parents=True, exist_ok=True)
+    if data:
+        shutil.copy2(f, str(f) + ".deckport.bak")  # the previous version, in case Steam dislikes ours
+    tmp = f.with_suffix(".vdf.tmp")
+    tmp.write_bytes(vdf_dump(root))
+    os.replace(tmp, f)
+    return True
+
+
 # --------------------------------------------------------------------------- web server
 
 class Jobs:
@@ -871,6 +1212,7 @@ class Server:
 
     def state(self):
         with _lock:
+            in_steam = steam_shortcut_exes()
             apps = []
             for a in self.cfg["apps"]:
                 d = dict(a)
@@ -878,13 +1220,21 @@ class Server:
                 d["web_url"] = web_url(a)
                 d["display_repo"] = display_repo(a)
                 inst = a.get("installed") or {}
-                d["has_backup"] = bool(inst.get("path") and os.path.exists(inst["path"] + ".old"))
-                d["exists"] = bool(inst.get("path") and os.path.exists(inst["path"]))
-                d["file_name"] = os.path.basename(inst.get("path") or a.get("target_path") or "")
+                p = inst.get("path") or ""
+                d["exists"] = bool(p and os.path.exists(p))
+                d["has_backup"] = bool(p and os.path.isfile(p + ".old"))
+                d["file_name"] = os.path.basename(p or a.get("target_path") or "")
+                d["skipped"] = d["exists"] and is_skipped(a) and has_update(a, honor_skip=False)
+                d["in_steam"] = bool(p) and p in in_steam
+                d["disk"] = (os.path.getsize(p) if os.path.isfile(p) else inst.get("size", 0)) if d["exists"] else 0
+                d["old_disk"] = os.path.getsize(p + ".old") if d["has_backup"] else 0
                 apps.append(d)
             s = dict(self.cfg["settings"])
             s["has_token"] = bool(s.pop("github_token", ""))
-            return {"apps": apps, "settings": s, "jobs": self.jobs.snapshot(), "version": VERSION}
+            s["scan_ignored"] = len(s.get("scan_ignored") or [])
+            s["install_dir_short"] = short_home(os.path.expanduser(s["install_dir"]))
+            return {"apps": apps, "settings": s, "jobs": self.jobs.snapshot(), "version": VERSION,
+                    "found": scan_folder(self.cfg), "catalog": CATALOG_UI, "steam": bool(steam_shortcuts_file())}
 
     def check(self, app):
         def fn(job):
@@ -941,29 +1291,38 @@ class Server:
                 "picked": picked["name"] if picked else None,
             }
 
-        if path == "/api/adopt_candidates":
-            if body.get("id"):
-                app = self._app(body)
-                name, repo, except_id = app["name"], app["repo"], app["id"]
-                asset = ((app.get("latest") or {}).get("asset") or {}).get("name", "")
-            else:
-                src = resolve_source(body.get("repo", ""))
-                name, repo, except_id, asset = body.get("name", ""), src["repo"], None, ""
-                try:
-                    rel = fetch_release(src, body.get("prerelease", False),
-                                        self.gh_token() if src["provider"] == "github" else "")
-                    picked = pick_asset(rel.get("assets", []), body.get("pattern", ""))
-                    asset = picked["name"] if picked else ""
-                except Exception:
-                    pass  # still useful: match on the app/repo name alone
+        if path == "/api/track_found":
+            # Files from the folder scan: each becomes a tracked app that updates that exact file.
+            started = []
             with _lock:
-                cands = find_adopt_candidates(cfg, name, repo, asset, except_id)
-            folder = os.path.expanduser(cfg["settings"]["install_dir"])
-            home = str(Path.home())
-            if folder == home or folder.startswith(home + os.sep):
-                folder = "~" + folder[len(home):]
-            default = safe_name(name or repo.split("/")[-1]) + ".AppImage"
-            return {"candidates": cands, "folder": folder, "default_name": default}
+                for item in body.get("items") or []:
+                    path_ = validate_adopt_path(cfg, item.get("path"), item.get("app_id"))
+                    if item.get("app_id"):
+                        app = self._app({"id": item["app_id"]})
+                    else:
+                        src = resolve_source(item.get("src", ""))
+                        entry = catalog_entry(src) or {}
+                        app = new_app("", item.get("name") or entry.get("name", ""), entry.get("pattern", ""), src=src)
+                        if any(same_source(a, app) for a in cfg["apps"]):
+                            raise ValueError("%s is already tracked" % display_repo(app))
+                        cfg["apps"].append(app)
+                    app["target_path"] = path_
+                    started.append((app, path_))
+                self.save()
+            for app, path_ in started:
+                self.adopt(app, path_)
+            return {"ok": True, "count": len(started)}
+
+        if path == "/api/scan_ignore":
+            with _lock:
+                s = cfg["settings"]
+                if body.get("clear"):
+                    s["scan_ignored"] = []
+                else:
+                    keep = [p for p in (s.get("scan_ignored") or []) if os.path.exists(p)]
+                    s["scan_ignored"] = (keep + [p for p in body.get("paths") or [] if isinstance(p, str) and p not in keep])[-200:]
+                self.save()
+            return {"ok": True}
 
         if path == "/api/add":
             app = new_app(body.get("repo", ""), body.get("name", ""), body.get("pattern", ""),
@@ -972,6 +1331,8 @@ class Server:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
                 adopt = validate_adopt_path(cfg, body["adopt_path"]) if body.get("adopt_path") else None
+                if adopt:
+                    app["target_path"] = adopt  # claim the file now so the folder scan stops offering it
                 cfg["apps"].append(app)
                 self.save()
             if adopt:
@@ -992,6 +1353,8 @@ class Server:
                 if "prerelease" in body:
                     app["prerelease"] = bool(body["prerelease"])
                 adopt = validate_adopt_path(cfg, body["adopt_path"], app["id"]) if body.get("adopt_path") else None
+                if adopt:
+                    app["target_path"] = adopt
                 app["latest"] = None
                 self.save()
             if adopt:
@@ -1010,15 +1373,43 @@ class Server:
             if body.get("id"):
                 app = self._app(body)
                 inst = app.get("installed") or {}
-                if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app):
+                if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app, honor_skip=False):
                     # Installed and current: don't download the same release again.
                     raise ValueError("%s is already up to date" % app["name"])
+                app.pop("skip", None)  # updating on purpose undoes "Skip this version"
                 targets = [app]
             else:
                 targets = [a for a in cfg["apps"] if has_update(a)]
             for a in targets:
                 self.install(a)
             return {"ok": True, "count": len(targets)}
+
+        if path == "/api/skip":
+            app = self._app(body)
+            with _lock:
+                la = (app.get("latest") or {}).get("asset")
+                if body.get("undo") or not la:
+                    app.pop("skip", None)
+                else:
+                    app["skip"] = {"asset_id": la["id"], "updated_at": la["updated_at"], "tag": app["latest"].get("tag", "")}
+                self.save()
+            return {"ok": True}
+
+        if path == "/api/steam_add":
+            app = self._app(body)
+            added = add_to_steam(app)
+            return {"ok": True, "added": added}
+
+        if path == "/api/clean_backups":
+            removed = freed = 0
+            with _lock:
+                for a in cfg["apps"]:
+                    p = (a.get("installed") or {}).get("path") or ""
+                    if p and os.path.isfile(p + ".old"):
+                        freed += os.path.getsize(p + ".old")
+                        os.remove(p + ".old")
+                        removed += 1
+            return {"ok": True, "removed": removed, "freed": freed}
 
         if path == "/api/rollback":
             app = self._app(body)
@@ -1336,6 +1727,37 @@ def cmd_remove(args):
     print("Removed", a["name"])
 
 
+def cmd_scan(args):
+    cfg = load_config()
+    found = scan_folder(cfg)
+    if not found:
+        print("No untracked AppImages in", short_home(os.path.expanduser(cfg["settings"]["install_dir"])))
+        return
+    for it in found:
+        what = ("%s (%s)" % (it["name"], it["display"])) if it["src"] else "not recognized"
+        print("%-48s %s" % (it["file"][:48], what))
+    known = [it for it in found if it["src"]]
+    if not args.track:
+        if known:
+            print("\nRun: deckport.py scan --track   to keep the %d recognized file(s) up to date" % len(known))
+        return
+    token = cfg["settings"]["github_token"]
+    for it in known:
+        if it.get("app_id"):
+            app = find_app(cfg, it["app_id"])
+        else:
+            src = resolve_source(it["src"])
+            app = new_app("", it["name"], (catalog_entry(src) or {}).get("pattern", ""), src=src)
+            cfg["apps"].append(app)
+        check_app(app, token)
+        if app["error"]:
+            print("%s: %s" % (app["name"], app["error"]))
+            continue
+        current = adopt_app(app, it["path"])
+        print("%s: tracking %s%s" % (app["name"], it["file"], ", up to date" if current else ", update available"))
+    save_config(cfg)
+
+
 def cmd_export(args):
     data = json.dumps(export_apps(load_config()), indent=2)
     if args.file in (None, "-"):
@@ -1380,6 +1802,9 @@ def main():
     s.set_defaults(fn=cmd_add)
 
     sub.add_parser("list", help="list tracked apps").set_defaults(fn=cmd_list)
+    s = sub.add_parser("scan", help="find AppImages you already have that DeckPort can update")
+    s.add_argument("--track", action="store_true", help="track every recognized file (updates keep its name)")
+    s.set_defaults(fn=cmd_scan)
     sub.add_parser("check", help="check all for updates").set_defaults(fn=cmd_check)
 
     s = sub.add_parser("update", help="install updates (all, or the named apps)")
@@ -1594,16 +2019,33 @@ dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
 .done-check circle{transform-origin:center;animation:enter .3s both}
 @keyframes draw{to{stroke-dashoffset:0}}
 
-/* ---- adopt an existing file */
-.adopt{border-radius:14px;border:1px solid var(--edge);background:rgba(5,8,20,.4);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
-.adopt-title{font-weight:600;font-size:14px}
-.adopt label{flex-direction:row;align-items:flex-start;gap:10px;color:var(--text);padding:8px 10px;border-radius:10px;cursor:pointer;
-  border:1px solid transparent;transition:background .15s,border-color .15s}
-.adopt label:hover{background:rgba(59,130,246,.10)}
-.adopt label.sel{border-color:rgba(96,165,250,.5);background:rgba(37,99,235,.16)}
-.adopt input[type=radio]{margin-top:3px;accent-color:var(--blue-500);width:16px;height:16px;flex:none}
-.adopt small{display:block;color:var(--faint);font-size:12px}
-.adopt .more{max-height:150px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+/* ---- files found in the install folder */
+.found{padding:16px 18px;margin:0 0 16px;display:flex;flex-direction:column;gap:10px}
+.found h3{margin:0;font-size:15.5px;font-weight:650}
+.found .rows{display:flex;flex-direction:column;gap:2px;max-height:312px;overflow:auto}
+.frow{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:10px;border:1px solid transparent;color:var(--text);font-size:14px}
+label.frow{flex-direction:row;cursor:pointer} label.frow:hover{background:rgba(59,130,246,.10)}
+.frow input{flex:none} .frow>span{min-width:0;flex:1}
+.frow small{display:block;color:var(--faint);font-size:12px}
+.frow button{min-height:34px;padding:5px 11px;font-size:13px}
+.found .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+
+/* ---- catalog in the Add dialog */
+.cat{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;max-height:228px;overflow:auto}
+.cat button{text-align:left;min-height:52px;padding:7px 11px;display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+.cat button small{color:var(--faint);font-size:11.5px;font-weight:400}
+details.adv{border-radius:14px;border:1px solid var(--edge);background:rgba(5,8,20,.3)}
+details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim);list-style-position:inside}
+details.adv[open]>summary{border-bottom:1px solid var(--edge)}
+details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+.using{padding:10px 12px;border-radius:12px;border:1px solid rgba(96,165,250,.45);background:rgba(37,99,235,.14);font-size:13px}
+
+/* ---- release notes */
+.notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;color:var(--blue-100);padding:12px 14px;border-radius:14px;
+  background:rgba(5,8,20,.4);border:1px solid var(--edge);overflow-wrap:anywhere}
+.notes b{color:#fff}
+.file .tag.steam{color:var(--good);border-color:rgba(134,239,172,.35)}
+.vers a[data-a]{white-space:nowrap;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:12.5px}
 
 @media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
 /* Users who turn transparency off get solid panels and no blur at all. */
@@ -1641,19 +2083,30 @@ dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
   <button id="btnAdd" class="primary"><svg><use href="#i-plus"/></svg> Add app</button>
   <button id="btnSet" class="icon ghost" title="Settings" aria-label="Settings"><svg><use href="#gear"/></svg></button>
 </header>
-<main><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
+<main><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
 
 <dialog id="dAdd"><form class="dlg" method="dialog" id="fAdd">
   <h2 id="addTitle">Add app</h2>
-  <label>Repo link (GitHub, GitLab, Codeberg, Gitea, Forgejo)<input type="text" id="aRepo" placeholder="https://github.com/owner/repo" required></label>
-  <label>Name (optional)<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
-  <label>Asset pattern (optional regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
-  <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
-  <div class="btns" style="justify-content:flex-start;align-items:center"><button type="button" id="aPrev">Preview assets</button><span class="hint" id="aInfo"></span></div>
-  <div class="assets" id="aAssets" hidden></div>
-  <div class="hint">Tip: click an asset to auto-fill a pattern for it.</div>
-  <div class="adopt" id="aAdopt" hidden></div>
+  <label id="aRepoLbl">Search popular apps, or paste a release link (GitHub, GitLab, Codeberg, Gitea, Forgejo)
+    <input type="text" id="aRepo" placeholder="e.g. pcsx2, or https://github.com/owner/repo" autocomplete="off" spellcheck="false" required></label>
+  <div class="cat" id="aCat"></div>
+  <div class="hint" id="aInfo"></div>
+  <div class="using" id="aUsing" hidden></div>
+  <details class="adv" id="aAdv"><summary>Advanced: name, asset, pre-releases</summary><div>
+    <label>Name<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
+    <label>Asset pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
+    <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
+    <div class="assets" id="aAssets" hidden></div>
+    <div class="hint" id="aTip" hidden>Click a file to download that one instead. DeckPort turns it into a pattern that keeps matching future versions.</div>
+  </div></details>
   <div class="btns"><button type="button" class="ghost" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
+</form></dialog>
+
+<dialog id="dNotes"><form class="dlg" method="dialog">
+  <h2 id="nTitle"></h2>
+  <div class="hint" id="nMeta"></div>
+  <div class="notes" id="nBody"></div>
+  <div class="btns"><button type="button" class="ghost" onclick="dNotes.close()">Close</button><button type="button" class="primary" id="nUpd">Update now</button></div>
 </form></dialog>
 
 <dialog id="dSet"><form class="dlg" method="dialog" id="fSet">
@@ -1671,6 +2124,13 @@ dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
     <input type="file" id="sImportFile" accept=".json,application/json" hidden>
   </div>
   <div class="hint">The export contains only repos, names and asset patterns. No token, no files, no paths. Use it as a backup or to share your list.</div>
+  <div class="sep"></div>
+  <label>Storage</label>
+  <div class="hint" id="sDisk" style="margin-top:-6px"></div>
+  <div class="btns" style="justify-content:flex-start;margin-top:-4px">
+    <button type="button" id="sClean">Delete .old backups</button>
+    <button type="button" id="sUnhide">Show hidden files again</button>
+  </div>
   <div class="btns" style="justify-content:space-between">
     <span><button type="button" id="sOpen">Open folder</button> <button type="button" class="danger ghost" id="sQuit">Quit DeckPort</button></span>
     <span><button type="button" class="ghost" onclick="dSet.close()">Cancel</button> <button class="primary" type="submit">Save</button></span>
@@ -1737,7 +2197,7 @@ const BADGE={update:["i-up","st-update"],ok:["i-ok","st-ok"],new:["i-get","st-ne
 function card(a,i){
   const job=S.jobs[a.id], inst=a.installed, L=a.latest||{}, st=status(a), [icon,cls]=BADGE[st];
   const running=job&&job.state=="running";
-  let label={update:`Update → ${esc(L.tag||"")}`,ok:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
+  let label={update:`Update → ${esc(L.tag||"")}`,ok:a.skipped?`Skipped ${esc(L.tag||"")}`:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
   if(running) label=job.label=="Downloading"&&job.progress?`Downloading ${Math.round(job.progress*100)}%`:esc(job.label)+"…";
   const badge=`<span class="badge ${st=="update"&&!seen.has(a.id)?"pulse":""}">${ICON(icon,st=="busy"?"spin":"")}${label}</span>`;
   let jobHtml="";
@@ -1752,14 +2212,16 @@ function card(a,i){
     jobHtml=`<div class="done-check"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="rgba(134,239,172,.12)" stroke="currentColor" stroke-width="1.5"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Installed ${esc(inst&&inst.tag||"")}</div>`;
   const mainBtn=(!inst||!a.exists)?"Install":(a.has_update?"Update":null);
   const isNew=!seen.has(a.id);
-  const fileRow=a.file_name?`<span>File</span><span class="file"><span class="mono">${esc(a.file_name)}</span>${a.target_path?'<span class="tag">your file</span>':""}</span>`:"";
+  const fileRow=a.file_name?`<span>File</span><span class="file"><span class="mono">${esc(a.file_name)}</span>${a.target_path?'<span class="tag">your file</span>':""}${a.in_steam?'<span class="tag steam">in Steam</span>':""}</span>`:"";
+  const notesLink=L.notes&&(st=="update"||st=="new"||a.skipped)?` · <a href="#" data-a="notes" data-id="${a.id}">What's new</a>`:"";
+  const skipLink=a.skipped?` · <a href="#" data-a="unskip" data-id="${a.id}">undo skip</a>`:"";
   return `<div class="card glass st-${st} ${isNew?"enter":""}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}">
    <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}<span class="st">${ICON(icon,st=="busy"?"spin":"")}</span></div>
      <div style="min-width:0"><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>${badge}</div>
    <div class="vers">
      <span>Installed</span><span class="mono">${inst?(inst.tag=="unknown"?'<span class="dim">unknown version</span>':esc(inst.tag)):"-"}</span>
-     <span>Latest</span><span class="mono">${L.url?`<a href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}</span>
+     <span>Latest</span><span class="mono">${L.url?`<a href="${esc(L.url)}" target="_blank" rel="noopener">${esc(L.tag)}</a>`:"-"}${L.prerelease?" (pre)":""}${notesLink}${skipLink}</span>
      <span>Asset</span><span class="mono">${esc(L.asset?L.asset.name:"-")} ${L.asset&&L.asset.size?"· "+mb(L.asset.size):""}</span>
      ${fileRow}
      <span>Checked</span><span>${ago(a.checked_at)}</span>
@@ -1774,12 +2236,15 @@ function card(a,i){
      <button data-a="check" data-id="${a.id}" ${running?"disabled":""}>Check</button>
      ${inst&&a.exists?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
      ${a.has_backup?`<button data-a="rollback" data-id="${a.id}" title="Restore previous version" ${running?"disabled":""}>Rollback</button>`:""}
+     ${S.steam&&inst&&a.exists&&inst.kind!="archive"&&!a.in_steam?`<button data-a="steam" data-id="${a.id}" title="Add as a Non-Steam game" ${running?"disabled":""}>Add to Steam</button>`:""}
+     ${st=="update"&&!running?`<button class="ghost" data-a="skip" data-id="${a.id}" title="Don't offer ${esc(L.tag||"")}; tell me about the next one">Skip</button>`:""}
      <button class="ghost" data-a="edit" data-id="${a.id}">Edit</button>
      <button class="ghost danger" data-a="remove" data-id="${a.id}">Remove</button>
    </div></div>`;
 }
 
 function render(){
+  renderFound();
   // Remember installs that just finished, for the check-mark animation.
   for(const [id,p] of Object.entries(prevJobs)){
     const j=S.jobs[id];
@@ -1794,7 +2259,7 @@ function render(){
   if(!chips.some(c=>c[0]==FILTER)) FILTER="all";
   $("#summary").innerHTML=apps.length?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
-  if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to a PC port or AppImage release.</div>'}
+  if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” to pick a popular emulator or port, or paste a link to any release page.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No apps match this filter.</div>'}
   else L.innerHTML=shown.map(card).join("");
   shown.forEach(a=>seen.add(a.id));
@@ -1810,15 +2275,24 @@ $("#summary").addEventListener("click",e=>{
   FILTER=c.dataset.f;try{localStorage.setItem("deckport.filter",FILTER)}catch(err){}
   render();
 });
+let autoChecked=false;
 async function refresh(){
-  try{S=await api("/api/state");render()}catch(e){$("#list").innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
+  try{
+    S=await api("/api/state");render();
+    if(!autoChecked){
+      // Opening DeckPort checks for updates by itself, at most once an hour.
+      autoChecked=true;const last=Math.max(0,...S.apps.map(a=>a.checked_at||0));
+      if(S.apps.length&&Date.now()/1000-last>3600)act("/api/check",{});
+    }
+  }catch(e){$("#list").innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
   clearTimeout(timer);
   const busy=Object.values(S.jobs||{}).some(j=>j.state=="running");
   timer=setTimeout(refresh,busy?700:(Object.keys(S.jobs||{}).length?2000:15000));
 }
 
 $("#list").addEventListener("click",async e=>{
-  const b=e.target.closest("button[data-a]");if(!b)return;
+  const b=e.target.closest("[data-a]");if(!b)return;
+  if(b.tagName=="A")e.preventDefault();
   const id=b.dataset.id,a=S.apps.find(x=>x.id==id),k=b.dataset.a;
   if(k=="update"||k=="check")b.disabled=true;
   if(k=="update")act("/api/update",{id});
@@ -1831,6 +2305,64 @@ $("#list").addEventListener("click",async e=>{
     if(r)act("/api/remove",{id,delete_files:!!r.checked},"Removed");
   }
   else if(k=="edit")openAdd(a);
+  else if(k=="notes")openNotes(a);
+  else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. DeckPort will tell you about the next version.`);
+  else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
+  else if(k=="steam")act("/api/steam_add",{id},r=>r.added?`${a.name} added to Steam. Restart Steam to see it.`:`${a.name} is already in Steam`);
+});
+
+// Release notes, lightly cleaned up from Markdown into plain text.
+function md(t){
+  return esc(String(t).replace(/\r/g,"").replace(/<[^>]+>/g,"")).split("\n").map(l=>{
+    l=l.replace(/!\[[^\]]*\]\([^)]*\)/g,"").replace(/\[([^\]]+)\]\([^)]*\)/g,"$1").replace(/\*\*(.+?)\*\*/g,"$1").replace(/`/g,"");
+    const h=l.match(/^\s{0,3}#{1,6}\s+(.*)/);if(h)return"<b>"+h[1]+"</b>";
+    return l.replace(/^(\s*)[-*+]\s+/,"$1• ");
+  }).join("\n").replace(/\n{3,}/g,"\n\n").trim();
+}
+function openNotes(a){
+  const L=a.latest||{},st=status(a);
+  $("#nTitle").textContent=`${a.name} ${L.tag||""}`;
+  $("#nMeta").innerHTML=(L.published?"Released "+esc(L.published.slice(0,10))+" · ":"")+`<a href="${esc(L.url||a.web_url)}" target="_blank" rel="noopener">Open release page</a>`;
+  $("#nBody").innerHTML=md(L.notes||"")||'<span class="dim">No release notes.</span>';
+  const u=$("#nUpd");u.hidden=!(st=="update"||st=="new"||a.skipped)||!L.asset;
+  u.textContent=a.installed&&a.exists?"Update now":"Install";
+  u.onclick=()=>{dNotes.close();act("/api/update",{id:a.id})};
+  dNotes.showModal();$("#nBody").scrollTop=0;
+}
+
+// Banner: AppImages already in the install folder that DeckPort could keep up to date.
+let foundKey="",foundLater=false;
+function renderFound(){
+  const F=S.found||[],box=$("#found");
+  if(foundLater||!F.length){box.innerHTML="";foundKey="";return}
+  const key=JSON.stringify(F.map(f=>[f.path,f.app_id||"",f.src]));
+  if(key==foundKey)return;  // keep the user's checkbox choices between polls
+  foundKey=key;
+  const known=F.filter(f=>f.src),unknown=F.filter(f=>!f.src);
+  const row=f=>f.src
+    ?`<label class="frow"><input type="checkbox" data-p="${esc(f.path)}" checked><span><b>${esc(f.name)}</b> <span class="dim">${f.app_id?"for the "+esc(f.name)+" entry you added":esc(f.display)}</span><small class="mono">${esc(f.file)} · ${mb(f.size)}</small></span></label>`
+    :`<div class="frow"><span><span class="mono">${esc(f.file)}</span><small>Not recognized · ${mb(f.size)}</small></span><button type="button" data-link="${esc(f.path)}">Choose repo…</button><button type="button" class="ghost" data-ign="${esc(f.path)}">Hide</button></div>`;
+  box.innerHTML=`<div class="found glass"><h3>Found ${F.length} AppImage${F.length>1?"s":""} in ${esc(S.settings.install_dir_short||"")}</h3>
+    <div class="hint">DeckPort can keep these up to date. Updates keep the same file name, so Steam shortcuts to them keep working.</div>
+    <div class="rows">${known.map(row).join("")}${unknown.map(row).join("")}</div>
+    <div class="btns"><button type="button" class="ghost" id="fLater">Not now</button>${known.length?`<button type="button" class="primary" id="fTrack">Keep ${known.length} up to date</button>`:""}</div></div>`;
+}
+$("#found").addEventListener("change",()=>{
+  const n=$("#found").querySelectorAll("input[data-p]:checked").length,b=$("#fTrack");
+  if(b){b.disabled=!n;b.textContent=`Keep ${n} up to date`}
+});
+$("#found").addEventListener("click",async e=>{
+  const t=e.target.closest("button");if(!t)return;
+  const byPath=p=>(S.found||[]).find(f=>f.path==p);
+  if(t.id=="fLater"){foundLater=true;renderFound()}
+  else if(t.id=="fTrack"){
+    const items=[...$("#found").querySelectorAll("input[data-p]:checked")].map(i=>byPath(i.dataset.p)).filter(Boolean)
+      .map(f=>({path:f.path,src:f.src,name:f.name,app_id:f.app_id||""}));
+    t.disabled=true;foundKey="";
+    act("/api/track_found",{items},r=>`Tracking ${r.count} app(s), checking for updates…`);
+  }
+  else if(t.dataset.link){const f=byPath(t.dataset.link);if(f)openAdd(null,{path:f.path,file:f.file})}
+  else if(t.dataset.ign){foundKey="";act("/api/scan_ignore",{paths:[t.dataset.ign]},"Hidden. Settings can show it again.")}
 });
 $("#btnCheck").onclick=()=>act("/api/check",{});
 $("#btnUpdAll").onclick=()=>act("/api/update",{},r=>`Updating ${r.count} app(s)`);
@@ -1842,63 +2374,75 @@ if(APP){
   });
 }
 
-function openAdd(a){
-  editId=a?a.id:null;
+let ADOPT=null,prevTimer=null,lastPrev="";
+const isLink=v=>/[\/.]/.test(v.trim());  // owner/repo or a URL; anything else is a catalog search
+function openAdd(a,adopt){
+  editId=a?a.id:null;ADOPT=adopt||null;
   $("#addTitle").textContent=a?"Edit "+a.name:"Add app";
   $("#aSave").textContent=a?"Save":"Add";
+  $("#aRepoLbl").firstChild.textContent=a?"Repository":"Search popular apps, or paste a release link (GitHub, GitLab, Codeberg, Gitea, Forgejo)";
   $("#aRepo").value=a?a.repo:"";$("#aRepo").disabled=!!a;
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
-  $("#aAssets").hidden=true;$("#aInfo").textContent="";$("#aAdopt").hidden=true;$("#aAdopt").innerHTML="";
-  dAdd.showModal(); if(a)preview();
+  $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
+  $("#aAdv").open=!!a;
+  $("#aUsing").hidden=!ADOPT;
+  if(ADOPT)$("#aUsing").innerHTML=`DeckPort will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
+  renderCat();dAdd.showModal();
+  if(a)preview();else $("#aRepo").focus();
 }
 $("#btnAdd").onclick=()=>openAdd(null);
+function renderCat(){
+  const q=$("#aRepo").value.trim().toLowerCase(),box=$("#aCat");
+  if(editId||isLink(q)){box.hidden=true;return}
+  const have=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
+  const list=(S.catalog||[]).map((c,i)=>({...c,i})).filter(c=>!q||(c.name+" "+c.about).toLowerCase().includes(q));
+  box.hidden=!list.length;
+  box.innerHTML=list.map(c=>{const t=have.has(c.key);
+    return `<button type="button" data-c="${c.i}" ${t?"disabled":""}>${esc(c.name)}<small>${esc(c.about)}${t?" · already added":""}</small></button>`}).join("");
+}
+$("#aCat").onclick=e=>{
+  const b=e.target.closest("[data-c]");if(!b)return;const c=S.catalog[b.dataset.c];
+  $("#aRepo").value=c.src;$("#aName").value=c.name;$("#aPat").value=c.pattern||"";renderCat();preview();
+};
 const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 function patternFor(name){
   // Replace version-like chunks with wildcards so the pattern keeps matching future releases.
   return "^"+reEsc(name).replace(/v?\d+(\\\.\d+)+[\w-]*?(?=[-_\\]|$)/g,".*").replace(/(\.\*)+/g,".*")+"$";
 }
+function previewSoon(){clearTimeout(prevTimer);prevTimer=setTimeout(preview,600)}
+$("#aRepo").oninput=()=>{
+  renderCat();
+  if(isLink($("#aRepo").value))previewSoon();
+  else{clearTimeout(prevTimer);lastPrev="";$("#aInfo").textContent="";$("#aAssets").hidden=true;$("#aTip").hidden=true}
+};
+$("#aPat").oninput=previewSoon;$("#aPre").onchange=preview;
 async function preview(){
-  const box=$("#aAssets");$("#aInfo").textContent="Loading…";
+  const repo=$("#aRepo").value.trim();if(!isLink(repo))return;
+  const me=lastPrev=JSON.stringify([repo,$("#aPat").value,$("#aPre").checked]),box=$("#aAssets");
+  $("#aInfo").textContent="Looking up the latest release…";
   try{
-    const r=await api("/api/preview",{repo:$("#aRepo").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked});
-    $("#aInfo").textContent=`${r.repo} · ${r.tag} · ${r.picked?"will download: "+r.picked:"⚠ no match"}`;
-    box.innerHTML=r.assets.map(x=>`<div class="${x.name==r.picked?"pick":""}" data-n="${esc(x.name)}">${esc(x.name)}<small>${mb(x.size)}</small></div>`).join("")||"<div>No assets in this release</div>";
-    box.hidden=false;
-    loadAdopt();
-  }catch(e){$("#aInfo").textContent="⚠ "+e.message;box.hidden=true}
+    const r=await api("/api/preview",{repo,pattern:$("#aPat").value,prerelease:$("#aPre").checked});
+    if(me!=lastPrev)return;  // a newer lookup is on its way
+    $("#aInfo").innerHTML=`<b>${esc(r.repo)}</b> · ${esc(r.tag)} · `+(r.picked?`will download <span class="mono">${esc(r.picked)}</span>`:"⚠ no Linux build found. Open Advanced and click the right file.");
+    box.innerHTML=r.assets.map(x=>`<div class="${x.name==r.picked?"pick":""}" data-n="${esc(x.name)}">${esc(x.name)}<small>${mb(x.size)}</small></div>`).join("")||"<div>No files in this release</div>";
+    box.hidden=false;$("#aTip").hidden=false;
+    if(!r.picked)$("#aAdv").open=true;
+  }catch(e){if(me!=lastPrev)return;$("#aInfo").textContent="⚠ "+e.message;box.hidden=true;$("#aTip").hidden=true}
 }
-// "Already have this AppImage?": offer to update a file the user downloaded by hand,
-// keeping its exact (often versioned) name so their Steam shortcut keeps working.
-async function loadAdopt(){
-  const box=$("#aAdopt"), app=editId&&S.apps.find(x=>x.id==editId);
-  if(app&&app.installed&&app.exists){box.hidden=true;return}
-  try{
-    const r=await api("/api/adopt_candidates",editId?{id:editId}:{repo:$("#aRepo").value,name:$("#aName").value,
-                       pattern:$("#aPat").value,prerelease:$("#aPre").checked});
-    if(!r.candidates.length){box.hidden=true;return}
-    const sug=r.candidates.find(c=>c.suggested), others=r.candidates.filter(c=>!c.suggested);
-    const opt=(c,sel)=>`<label class="${sel?"sel":""}"><input type="radio" name="adopt" value="${esc(c.path)}" ${sel?"checked":""}>
-      <span><span class="mono">${esc(c.name)}</span><small>${sel?"Found in your Applications folder. DeckPort will update this file, so your Steam shortcut keeps working.":mb(c.size)}</small></span></label>`;
-    box.innerHTML=`<div class="adopt-title">Already have this AppImage?</div>
-      ${sug?opt(sug,true):""}
-      <label class="${sug?"":"sel"}"><input type="radio" name="adopt" value="" ${sug?"":"checked"}>
-        <span>No, save a new file<small>as <span class="mono">${esc(r.default_name)}</span> in ${esc(r.folder)}</small></span></label>
-      ${others.length?`<div class="hint">Or pick another file you already have:</div><div class="more">${others.map(c=>opt(c,false)).join("")}</div>`:""}`;
-    box.hidden=false;
-    box.onchange=()=>box.querySelectorAll("label").forEach(l=>l.classList.toggle("sel",l.querySelector("input").checked));
-  }catch(e){box.hidden=true}
-}
-$("#aPrev").onclick=preview;
 $("#aAssets").onclick=e=>{const d=e.target.closest("[data-n]");if(!d)return;$("#aPat").value=patternFor(d.dataset.n);preview()};
 $("#fAdd").onsubmit=async e=>{
   e.preventDefault();
-  const pick=document.querySelector('#aAdopt input[name=adopt]:checked');
-  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,
-              adopt_path:!$("#aAdopt").hidden&&pick?pick.value:""};
+  if(!editId&&!isLink($("#aRepo").value)){
+    // Enter in the search box picks the first match instead of adding "pcsx2" as a repo.
+    const b=document.querySelector("#aCat button:not(:disabled)");
+    if(b)b.click();else toast("Pick an app from the list, or paste a link",true);
+    return;
+  }
+  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,adopt_path:ADOPT?ADOPT.path:""};
   try{
     if(editId)await api("/api/edit",{id:editId,...body});
     else await api("/api/add",{repo:$("#aRepo").value,...body});
-    dAdd.close();toast(body.adopt_path?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
+    dAdd.close();foundKey="";toast(ADOPT?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
   }catch(err){toast(err.message,true)}
 };
 
@@ -1906,8 +2450,18 @@ $("#btnSet").onclick=()=>{
   $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTok").value="";
   $("#sTokInfo").innerHTML=S.settings.has_token?'Token saved. <a href="#" id="clrTok">Remove token</a>':"No token set.";
   const c=$("#clrTok");if(c)c.onclick=ev=>{ev.preventDefault();act("/api/settings",{clear_token:true},"Token removed");dSet.close()};
+  const sum=k=>S.apps.reduce((t,a)=>t+(a[k]||0),0),old=sum("old_disk"),n=S.settings.scan_ignored||0;
+  $("#sDisk").textContent=`Apps use ${size(sum("disk"))}. Previous versions (.old, for Rollback) use ${size(old)}.`;
+  $("#sClean").disabled=!old;
+  $("#sUnhide").hidden=!n;$("#sUnhide").textContent=`Show ${n} hidden file${n>1?"s":""} again`;
   dSet.showModal();
 };
+const size=b=>b>=1e9?(b/1e9).toFixed(1)+" GB":(b/1e6).toFixed(0)+" MB";
+$("#sClean").onclick=async()=>{
+  if(!await ask({title:"Delete .old backups?",text:"This frees disk space, but Rollback won't be possible until the next update.",ok:"Delete",danger:true}))return;
+  act("/api/clean_backups",{},r=>`Deleted ${r.removed} backup(s), freed ${size(r.freed)}`);dSet.close();
+};
+$("#sUnhide").onclick=()=>{foundKey="";foundLater=false;act("/api/scan_ignore",{clear:true},"Hidden files are shown again");dSet.close()};
 $("#fSet").onsubmit=e=>{e.preventDefault();act("/api/settings",{install_dir:$("#sDir").value,keep_backup:$("#sBak").checked,github_token:$("#sTok").value},"Settings saved");dSet.close()};
 $("#sOpen").onclick=()=>act("/api/open",{});
 $("#sExport").onclick=async()=>{

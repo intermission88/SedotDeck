@@ -27,14 +27,17 @@ DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otom
 ## ✨ Fitur
 
 **Update tanpa ribet**
+- **Katalog app populer** (PCSX2, RPCS3, shadPS4, DuckStation, PPSSPP, Cemu, Azahar, xemu, ES-DE, Heroic, dan lainnya): ketik namanya di **Add app**, klik, selesai. Tidak perlu cari link.
 - Mendukung **GitHub, GitLab, Codeberg, Gitea, dan Forgejo**. Server self-hosted pun dideteksi otomatis.
 - **Memilih file Linux yang benar dengan sendirinya**: AppImage dulu, lalu build `linux`/`steamdeck` di zip/tar. Build Windows, macOS, ARM, dan Flatpak dilewati. Kalau perlu, pilihannya bisa diatur dengan regex.
 - Rilis *nightly* atau *continuous* tetap terdeteksi, walaupun nama tag-nya sama.
-- **Update all** sekali klik, dengan progress per app.
+- **Update all** sekali klik, dengan progress per app. DeckPort juga cek update sendiri saat dibuka (paling sering sejam sekali).
+- **What's new**: baca catatan rilis sebelum meng-update. Ada rilis yang bermasalah? **Skip** versi itu, dan DeckPort baru mengabari lagi saat versi berikutnya keluar.
 
 **Ramah Steam**
 - **Path file tidak berubah** (`~/Applications/NamaGame.AppImage`), jadi shortcut *Non-Steam Game* tidak rusak setelah update.
-- **Memakai file yang sudah kamu punya**: `Game-v1.1-x86_64.AppImage` yang di-download manual akan di-update di tempatnya, dengan nama yang sama.
+- **Menemukan AppImage yang sudah kamu punya**: DeckPort memindai `~/Applications`, mengenali app-nya, lalu menawarkan untuk meng-update file itu di tempatnya, dengan nama yang sama. Cukup satu klik.
+- **Add to Steam**: jadikan app sebagai *Non-Steam Game* langsung dari DeckPort, tanpa lewat menu Steam.
 - **Plugin Decky** untuk Game Mode: update tanpa pindah ke Desktop, ditambah cek otomatis tiap 6 jam dengan notifikasi.
 
 **Aman**
@@ -47,6 +50,7 @@ DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otom
 - Logikanya hanya satu file Python yang memakai Python bawaan SteamOS. Tidak perlu `pip`, tidak perlu `sudo`, dan tetap aman setelah SteamOS update.
 - UI *liquid glass* gelap yang tetap ringan: efek blur hanya di header dan dialog, dan animasinya cuma jalan sekali.
 - Daftar app bisa di-**export/import** ke JSON untuk backup atau dibagikan ke teman. Token dan path lokal tidak ikut.
+- **Settings** menunjukkan berapa ruang disk yang dipakai, dan bisa menghapus semua backup `.old` sekaligus.
 
 ## 📦 Install
 
@@ -83,7 +87,7 @@ Butuh [Decky Loader](https://decky.xyz) yang sudah terpasang.
 1. Download `DeckPort-decky-….zip` ke Deck. **Jangan diekstrak.**
 2. Di Game Mode, buka **⋯** → **Decky** → ⚙ **Settings** → **Developer**, lalu aktifkan **Developer mode**.
 3. Pilih **Install Plugin from ZIP File**, lalu pilih file ZIP tadi.
-4. DeckPort muncul di daftar plugin. Isinya **Update all**, **Check for updates**, daftar app (tekan sebuah app untuk Check/Rollback/Remove), dan kolom **Add app**.
+4. DeckPort muncul di daftar plugin. Isinya **Update all**, **Check for updates**, AppImage yang ditemukan di `~/Applications`, daftar app (tekan sebuah app untuk Check, Skip, Add to Steam library, Rollback, atau Remove), dan kolom **Add app**.
 
 Asset pattern dan GitHub token diatur dari versi Desktop, lalu otomatis ikut terpakai di plugin.
 </details>
@@ -102,10 +106,12 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 
 ## 🚀 Cara pakai
 
-1. Klik **Add app**, lalu tempel link repo-nya. Contohnya `https://github.com/owner/repo`, `https://gitlab.com/group/project`, atau `https://codeberg.org/owner/repo`. Link `/releases` juga bisa.
-2. Klik **Preview assets** untuk melihat file mana yang akan di-download. Kalau pilihannya salah, klik file yang benar dan pattern-nya akan terisi otomatis.
-3. Klik **Install**. Untuk seterusnya, cukup **Check all** lalu **Update all**.
-4. **Supaya bisa dimainkan dari Game Mode:** di Steam (Desktop Mode), pilih **Games** → **Add a Non-Steam Game**, lalu pilih file di `~/Applications`. Langkah ini cukup sekali saja, karena path-nya tidak pernah berubah.
+1. Klik **Add app**, lalu ketik nama app-nya (misalnya `pcsx2`) dan klik hasilnya. App yang tidak ada di katalog? Tempel link repo-nya, misalnya `https://github.com/owner/repo`, `https://gitlab.com/group/project`, atau `https://codeberg.org/owner/repo`.
+2. DeckPort langsung menunjukkan file mana yang akan di-download. Kalau pilihannya salah, buka **Advanced** dan klik file yang benar.
+3. Klik **Add**, lalu **Install**. Untuk seterusnya, cukup **Update all**.
+4. **Supaya bisa dimainkan dari Game Mode:** klik **Add to Steam** di kartu app-nya (tutup Steam dulu, lihat [FAQ](#-faq)), atau dari Game Mode lewat plugin Decky. Cukup sekali saja, karena path file-nya tidak pernah berubah.
+
+<img src="docs/screenshots/add.jpg" alt="Dialog Add app dengan katalog app populer" width="720">
 
 ### Arti status
 
@@ -113,6 +119,7 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 |---|---|---|
 | **Update → v1.2** | ↑ biru, dengan garis aksen | Ada versi baru. Klik **Update**. |
 | **Up to date** | ✓ hijau | Sudah versi terbaru. Tombol Install/Update tidak muncul. |
+| **Skipped v1.2** | ✓ hijau | Kamu memilih **Skip** untuk versi itu. Klik *undo skip* untuk membatalkan. |
 | **Not installed** | ↓ kuning | Sudah dilacak tapi belum di-download, atau file-nya sudah kamu hapus. |
 | **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Atur asset pattern lewat **Edit**. |
 | **Downloading 45%** | spinner | Sedang proses. Launch dan Rollback dinonaktifkan sampai selesai. |
@@ -125,19 +132,20 @@ App yang butuh update selalu tampil paling atas. Chip di atas daftar (**All · U
 
 ## 📁 Sudah punya AppImage-nya?
 
-Banyak rilis memakai nama file yang berisi versi. Misalnya, `~/Applications` sudah berisi `pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage` yang sudah kamu jadikan shortcut Steam. Caranya:
+Banyak orang sudah punya, misalnya `pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage` di `~/Applications` yang sudah dijadikan shortcut Steam. Tidak perlu apa-apa: saat dibuka, DeckPort memindai folder itu dan menampilkan file yang bisa ia jaga.
 
-1. Klik **Add app**, tempel link repo-nya, lalu klik **Preview assets**.
-2. Di bagian **"Already have this AppImage?"**, DeckPort menunjukkan file yang cocok dan otomatis mencentangnya.
-3. Klik **Add**.
-   - Kalau file lamanya ternyata sudah versi terbaru (dicek lewat SHA-256), statusnya langsung *Up to date*.
-   - Kalau belum, klik **Update**: versi baru ditulis ke **path dan nama file yang sama**, dan yang lama disimpan sebagai `.old`.
+<img src="docs/screenshots/found.jpg" alt="DeckPort menemukan AppImage yang sudah ada di ~/Applications" width="720">
 
-<img src="docs/screenshots/adopt.jpg" alt="Dialog Add dengan saran file yang sudah ada" width="720">
+- Klik **Keep … up to date**. DeckPort lalu mengecek versinya (lewat SHA-256): kalau sudah terbaru statusnya langsung *Up to date*, kalau belum tinggal klik **Update**.
+- Versi baru ditulis ke **path dan nama file yang sama**, jadi shortcut Steam-mu tetap jalan. Yang lama disimpan sebagai `.old`.
+- Cara DeckPort mengenali file: pertama dari info update yang tertanam di AppImage (misalnya Vita3K dan PPSSPP), lalu dari nama file yang dicocokkan dengan katalog.
+- File yang tidak dikenali? Klik **Choose repo…** lalu pilih app-nya atau tempel link-nya. Atau klik **Hide** kalau memang tidak mau dilacak (bisa dimunculkan lagi di **⚙ Settings**).
 
 Lewat CLI:
 
 ```bash
+deckport scan            # lihat file apa saja yang ditemukan
+deckport scan --track    # lacak semua yang dikenali
 deckport add https://github.com/PCSX2/pcsx2 --adopt ~/Applications/pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage
 ```
 
@@ -151,6 +159,7 @@ deckport add <repo> --pattern 'linux.*\.AppImage$'   # pilih asset manual (regex
 deckport add <repo> --pre                            # ikut memantau pre-release
 deckport add <repo> --adopt ~/Applications/Game-v1.1.AppImage
 deckport list
+deckport scan [--track]         # cari AppImage yang sudah ada di ~/Applications
 deckport check
 deckport update                 # update semua yang ada versi barunya
 deckport update "My Port"       # update satu app
@@ -170,7 +179,7 @@ Tanpa login, GitHub hanya mengizinkan 60 request per jam. Buat token di <https:/
 <details>
 <summary><b>DeckPort memilih file yang salah</b></summary>
 
-Buka **Edit**, klik **Preview assets**, lalu klik file yang benar. Pattern regex-nya akan terisi otomatis, dengan bagian versinya diganti wildcard supaya tetap cocok untuk rilis berikutnya.
+Buka **Edit**, lalu di bagian **Advanced** klik file yang benar. Pattern regex-nya akan terisi otomatis, dengan bagian versinya diganti wildcard supaya tetap cocok untuk rilis berikutnya.
 </details>
 
 <details>
@@ -183,6 +192,14 @@ Pastikan **Is executable** sudah dicentang (lewat Properties → Permissions, at
 <summary><b>Shortcut Steam-ku masih menjalankan versi lama</b></summary>
 
 Cek baris **File** di kartu app. Shortcut Steam harus mengarah ke file itu. Kalau shortcut-mu mengarah ke file lain (misalnya yang dulu kamu download manual), pakai fitur [Sudah punya AppImage?](#-sudah-punya-appimage-nya) supaya DeckPort meng-update file tersebut.
+</details>
+
+<details>
+<summary><b>Kenapa harus menutup Steam untuk "Add to Steam"?</b></summary>
+
+Steam menyimpan daftar *Non-Steam Game* di `shortcuts.vdf`, dan menimpa file itu dari memorinya saat keluar. Jadi di Desktop Mode, keluar dulu dari Steam (menu **Steam** → **Exit**), klik **Add to Steam**, lalu buka Steam lagi. Sebelum mengubah file itu, DeckPort selalu menyimpan salinannya sebagai `shortcuts.vdf.deckport.bak`.
+
+Di Game Mode tidak perlu: plugin Decky memakai API Steam sendiri (tekan app-nya → **Add to Steam library**).
 </details>
 
 <details>

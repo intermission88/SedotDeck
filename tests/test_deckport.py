@@ -201,6 +201,77 @@ while srv2.busy():
     time.sleep(0.05)
 eq(os.path.exists(old_file), True, "reinstalled to the same path")
 
+# --- asset picking fixes found on real releases (xemu dbg build, melonDS zipped AppImage, DuckStation SSE2)
+eq(dp.pick_asset(A("xemu-1-dbg-x86_64.AppImage", "xemu-1-x86_64.AppImage"))["name"], "xemu-1-x86_64.AppImage", "no dbg build")
+eq(dp.pick_asset(A("melonDS-1.1-macOS.zip", "melonDS-1.1-appimage-x86_64.zip", "melonDS-1.1-ubuntu-x86_64.zip"))["name"],
+   "melonDS-1.1-appimage-x86_64.zip", "zipped appimage")
+eq(dp.pick_asset(A("DuckStation-x64-SSE2.AppImage", "DuckStation-x64.AppImage"))["name"], "DuckStation-x64.AppImage", "not sse2")
+
+# --- release notes travel with the latest release
+g = dp._norm_github({"tag_name": "v2", "body": "## Fixes\n- crash", "assets": []})
+eq(dp.release_info(g, None)["notes"], "## Fixes\n- crash", "github notes")
+eq(dp._norm_gitlab({"tag_name": "v2", "description": "notes"}, "gitlab.com", "a/b")["body"], "notes", "gitlab notes")
+
+
+# --- folder scan: name AppImages the user already has (embedded update info, then the catalog)
+def fake_elf(upd):
+    names = b"\0.shstrtab\0.upd_info\0"
+    upd = upd.encode() + b"\0" * 8
+    names_off, upd_off = 64, 64 + len(names)
+    shoff = upd_off + len(upd)
+    hdr = bytearray(64)
+    hdr[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<Q", hdr, 0x28, shoff)
+    struct.pack_into("<HHH", hdr, 0x3A, 64, 3, 1)
+    sec = lambda name, off, size: struct.pack("<IIQQQQ", name, 1, 0, 0, off, size) + b"\0" * 24
+    return bytes(hdr) + names + upd + b"\0" * 64 + sec(1, names_off, len(names)) + sec(11, upd_off, len(upd))
+
+import struct
+sdir = tempfile.mkdtemp()
+Path(sdir, "weird-name.AppImage").write_bytes(fake_elf("gh-releases-zsync|hrydgard|ppsspp|latest|*.zsync"))
+Path(sdir, "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage").write_bytes(appimage)
+Path(sdir, "Mystery-1.0.AppImage").write_bytes(appimage)
+Path(sdir, "Hidden.AppImage").write_bytes(appimage)
+Path(sdir, "DeckPort-1.5.0-x86_64.AppImage").write_bytes(appimage)
+Path(sdir, "Cemu.AppImage").write_bytes(appimage)
+eq(dp.read_update_info(os.path.join(sdir, "weird-name.AppImage")), "gh-releases-zsync|hrydgard|ppsspp|latest|*.zsync", "upd_info")
+eq(dp.read_update_info(os.path.join(sdir, "Mystery-1.0.AppImage")), "", "no upd_info")
+scfg = {"settings": {"install_dir": sdir, "scan_ignored": [os.path.join(sdir, "Hidden.AppImage")]}, "apps": [
+    dp.new_app("", "My PCSX2", src={"provider": "github", "host": "github.com", "repo": "PCSX2/pcsx2"}),
+    dict(dp.new_app("", "Cemu", src={"provider": "github", "host": "github.com", "repo": "cemu-project/Cemu"}),
+         installed={"path": old_file})]}
+found = {f["file"]: f for f in dp.scan_folder(scfg)}
+eq(sorted(found), ["Mystery-1.0.AppImage", "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage", "weird-name.AppImage"],
+   "scan skips DeckPort itself, hidden files and spare copies of installed apps")
+eq((found["weird-name.AppImage"]["src"], found["weird-name.AppImage"]["name"], found["weird-name.AppImage"]["how"]),
+   ("hrydgard/ppsspp", "PPSSPP", "embedded"), "identified by update info")
+eq((found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["how"], found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["app_id"]),
+   ("catalog", scfg["apps"][0]["id"]), "catalog match offered for the tracked app")
+eq(found["Mystery-1.0.AppImage"]["src"], "", "unknown file")
+
+# --- skip this version
+k = {"latest": {"tag": "v3", "asset": {"id": 3, "updated_at": "t3"}},
+     "installed": {"path": old_file, "asset_id": 2, "updated_at": "t2"}, "skip": {"asset_id": 3, "updated_at": "t3"}}
+eq((dp.has_update(k), dp.has_update(k, honor_skip=False)), (False, True), "skipped version hidden")
+k["latest"]["asset"] = {"id": 4, "updated_at": "t4"}
+eq(dp.has_update(k), True, "next version shown again")
+
+# --- Steam shortcuts.vdf: keep what's there, add ours once
+vdf_path = Path(tempfile.mkdtemp(), "shortcuts.vdf")
+existing = [(0, "shortcuts", [(0, "0", [(2, "appid", -123), (1, "AppName", "Other"), (1, "Exe", '"/x/other"'),
+                                        (7, "big", 2 ** 40), (0, "tags", [(1, "0", "fav")])])])]
+vdf_path.write_bytes(dp.vdf_dump(existing))
+eq(dp.vdf_load(vdf_path.read_bytes()), existing, "vdf round trip")
+sapp = {"name": "Game", "installed": {"path": old_file}}
+eq(dp.add_to_steam(sapp, vdf_path), True, "added to steam")
+eq(dp.add_to_steam(sapp, vdf_path), False, "not added twice")
+lst = dp.vdf_load(vdf_path.read_bytes())[0][2]
+new = dict((k_, v) for _t, k_, v in lst[1][2])
+eq((len(lst), lst[0][2], lst[1][1], new["Exe"], new["AppName"]), (2, existing[0][2][0][2], "1", '"%s"' % old_file, "Game"),
+   "existing shortcut kept, ours appended")
+eq(new["appid"] < 0 and (new["appid"] + (1 << 32)) & 0x80000000 != 0, True, "shortcut appid has the high bit")
+eq(Path(str(vdf_path) + ".deckport.bak").exists(), True, "vdf backup")
+
 # --- desktop-app mode: the way the Tauri shell runs the server
 import re, subprocess, urllib.error, urllib.request
 home = tempfile.mkdtemp()

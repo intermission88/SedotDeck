@@ -22,14 +22,18 @@ type App = {
   id: string;
   name: string;
   display_repo: string;
-  installed: { tag: string; verified?: boolean } | null;
+  installed: { tag: string; verified?: boolean; path: string; kind: string } | null;
   latest: { tag: string; asset: Asset | null } | null;
   error: string;
   has_update: boolean;
   has_backup: boolean;
   exists: boolean;
+  skipped: boolean;
+  in_steam: boolean;
 };
-type State = { apps: App[]; jobs: Record<string, Job>; version: string };
+// An AppImage in ~/Applications that DeckPort could keep up to date (src is "" when unrecognized).
+type Found = { path: string; file: string; src: string; name: string; app_id?: string };
+type State = { apps: App[]; jobs: Record<string, Job>; version: string; found: Found[] };
 
 // One backend entry point; main.py forwards to DeckPort's Server.handle (an allowlisted subset).
 const call = callable<[path: string, body: Record<string, unknown>], any>("call");
@@ -42,6 +46,7 @@ function statusOf(a: App, job?: Job): string {
   if (a.error) return "Error";
   if (!a.installed || !a.exists) return "Not installed";
   if (a.has_update) return "Update available";
+  if (a.skipped) return "Skipped " + (a.latest?.tag ?? "");
   return a.latest?.tag ? "Up to date" : "…";
 }
 
@@ -51,6 +56,21 @@ function describe(a: App): string {
   const latest = a.latest?.tag ?? "?";
   const check = a.installed && a.exists ? (a.installed.verified ? " · ✓ SHA-256" : " · not verified") : "";
   return inst === latest ? inst + check : `${inst} → ${latest}${check}`;
+}
+
+// Steam is running in Game Mode, so the shortcut goes through its own API instead of shortcuts.vdf.
+async function addToSteam(app: App) {
+  const exe = app.installed!.path;
+  const dir = exe.slice(0, exe.lastIndexOf("/"));
+  try {
+    const id = await SteamClient.Apps.AddShortcut(app.name, `"${exe}"`, `"${dir}"`, "");
+    SteamClient.Apps.SetShortcutName(id, app.name);
+    SteamClient.Apps.SetShortcutExe(id, `"${exe}"`);
+    SteamClient.Apps.SetShortcutStartDir(id, `"${dir}"`);
+    toaster.toast({ title: "DeckPort", body: `${app.name} added to your library` });
+  } catch (e) {
+    fail(e);
+  }
 }
 
 function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, body: object, ok?: string) => void }) {
@@ -65,6 +85,17 @@ function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, b
           <MenuItem onSelected={() => act("/api/update", { id: app.id })}>
             {installed ? `Update to ${app.latest.tag}` : "Install"}
           </MenuItem>
+        )}
+        {app.has_update && installed && (
+          <MenuItem onSelected={() => act("/api/skip", { id: app.id }, `Skipped ${app.latest?.tag}`)}>
+            Skip this version
+          </MenuItem>
+        )}
+        {app.skipped && (
+          <MenuItem onSelected={() => act("/api/skip", { id: app.id, undo: true })}>Undo skip</MenuItem>
+        )}
+        {installed && app.installed!.kind !== "archive" && !app.in_steam && (
+          <MenuItem onSelected={() => addToSteam(app)}>Add to Steam library</MenuItem>
         )}
         {app.has_backup && (
           <MenuItem onSelected={() => act("/api/rollback", { id: app.id }, `${app.name} rolled back`)}>
@@ -194,6 +225,7 @@ function Content() {
   }
 
   const updatable = state.apps.filter((a) => a.has_update && state.jobs[a.id]?.state !== "running");
+  const found = (state.found ?? []).filter((f) => f.src);
 
   return (
     <>
@@ -209,6 +241,31 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+
+      {found.length > 0 && (
+        <PanelSection title="Found in ~/Applications">
+          <PanelSectionRow>
+            <Field
+              description={`${found.map((f) => f.name).join(", ")}. DeckPort can update these in place, so Steam shortcuts keep working.`}
+              bottomSeparator="none"
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() =>
+                act(
+                  "/api/track_found",
+                  { items: found.map((f) => ({ path: f.path, src: f.src, name: f.name, app_id: f.app_id ?? "" })) },
+                  `Tracking ${found.length} app(s)`,
+                )
+              }
+            >
+              {`Keep ${found.length} up to date`}
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
 
       <PanelSection title="Apps">
         {state.apps.length === 0 && (
