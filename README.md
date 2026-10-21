@@ -5,14 +5,14 @@
 # DeckPort
 
 **Satu tempat untuk meng-update semua AppImage dan PC port di Steam Deck.**<br>
-Mirip Obtainium, tapi untuk Steam Deck: tempel link rilisnya, DeckPort yang cek, download, verifikasi, dan ganti file lamanya.
+Mirip Obtainium, tapi untuk Steam Deck: pilih app-nya dari katalog atau tempel link rilisnya, DeckPort yang cek, download, verifikasi, dan ganti file lamanya.
 
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1e40af?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-2563eb?style=flat-square&logo=steam&logoColor=white)
 ![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-3b82f6?style=flat-square)
 ![Decky](https://img.shields.io/badge/Decky%20Loader-plugin-60a5fa?style=flat-square)
 
-[Install](#-install) · [Cara pakai](#-cara-pakai) · [Sudah punya AppImage?](#-sudah-punya-appimage-nya) · [CLI](#-cli) · [FAQ](#-faq)
+[Install](#-install) · [Cara pakai](#-cara-pakai) · [Katalog](#-katalog-app) · [Sudah punya AppImage?](#-sudah-punya-appimage-nya) · [CLI](#-cli) · [FAQ](#-faq)
 
 <img src="docs/screenshots/overview.jpg" alt="DeckPort: daftar app dengan status update, up to date, belum terpasang, dan error" width="860">
 
@@ -23,6 +23,16 @@ Mirip Obtainium, tapi untuk Steam Deck: tempel link rilisnya, DeckPort yang cek,
 PC port dan emulator di GitHub rilis update terus. Tanpa DeckPort, setiap update berarti buka GitHub, cari file Linux yang benar, download, ganti file lama, lalu berharap shortcut Steam-mu masih jalan.
 
 DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otomatis dari Game Mode.
+
+## 🆕 Yang baru di v1.5.0
+
+- **AppImage yang sudah ada langsung ketemu.** DeckPort memindai `~/Applications` dan menawarkan untuk meng-update file-file itu di tempatnya. Tidak perlu lagi tempel link dulu. [Selengkapnya](#-sudah-punya-appimage-nya)
+- **Katalog 17 app populer** di dialog **Add app**: ketik `pcsx2`, klik, selesai. [Daftarnya](#-katalog-app)
+- **Add to Steam** dari Desktop Mode maupun dari plugin Decky di Game Mode.
+- **What's new** untuk membaca catatan rilis, dan **Skip** untuk melewati satu versi.
+- DeckPort **cek update sendiri** saat dibuka, dan **Settings** menunjukkan pemakaian disk serta bisa menghapus backup `.old`.
+- Dialog **Add app** lebih ringkas: preview jalan sendiri, opsi lanjutan pindah ke **Advanced**, dan tombolnya selalu kelihatan di layar Deck.
+- Pemilihan file lebih tepat: build *debug* dilewati (xemu), AppImage di dalam zip dikenali (melonDS), build x64 diutamakan di atas SSE2 (DuckStation).
 
 ## ✨ Fitur
 
@@ -38,7 +48,7 @@ DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otom
 - **Path file tidak berubah** (`~/Applications/NamaGame.AppImage`), jadi shortcut *Non-Steam Game* tidak rusak setelah update.
 - **Menemukan AppImage yang sudah kamu punya**: DeckPort memindai `~/Applications`, mengenali app-nya, lalu menawarkan untuk meng-update file itu di tempatnya, dengan nama yang sama. Cukup satu klik.
 - **Add to Steam**: jadikan app sebagai *Non-Steam Game* langsung dari DeckPort, tanpa lewat menu Steam.
-- **Plugin Decky** untuk Game Mode: update tanpa pindah ke Desktop, ditambah cek otomatis tiap 6 jam dengan notifikasi.
+- **Plugin Decky** untuk Game Mode: update dan *Add to Steam library* tanpa pindah ke Desktop, ditambah cek otomatis tiap 6 jam dengan notifikasi.
 
 **Aman**
 - **Verifikasi SHA-256** memakai checksum dari GitHub atau dari file checksum di rilis (`SHA256SUMS`, `*.sha256`). Kalau tidak cocok, download dihapus dan versi lama tetap dipakai.
@@ -121,7 +131,7 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 | **Up to date** | ✓ hijau | Sudah versi terbaru. Tombol Install/Update tidak muncul. |
 | **Skipped v1.2** | ✓ hijau | Kamu memilih **Skip** untuk versi itu. Klik *undo skip* untuk membatalkan. |
 | **Not installed** | ↓ kuning | Sudah dilacak tapi belum di-download, atau file-nya sudah kamu hapus. |
-| **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Atur asset pattern lewat **Edit**. |
+| **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Pilih file yang benar lewat **Edit** → **Advanced**. |
 | **Downloading 45%** | spinner | Sedang proses. Launch dan Rollback dinonaktifkan sampai selesai. |
 
 App yang butuh update selalu tampil paling atas. Chip di atas daftar (**All · Updates · Up to date · Not installed**) bisa dipakai untuk memfilter.
@@ -129,6 +139,32 @@ App yang butuh update selalu tampil paling atas. Chip di atas daftar (**All · U
 | Sedang download | Sudah terpasang |
 |---|---|
 | ![Download berjalan](docs/screenshots/downloading.jpg) | ![Terpasang dan terverifikasi](docs/screenshots/installed.jpg) |
+
+## 📚 Katalog app
+
+Ketik namanya (atau konsolnya, misalnya `ps2` atau `3ds`) di **Add app**. Semua repo di bawah ini sudah dicek punya build Linux yang dipilih DeckPort dengan benar.
+
+| App | Untuk | Repo |
+|---|---|---|
+| PCSX2 | PS2 | [PCSX2/pcsx2](https://github.com/PCSX2/pcsx2) |
+| RPCS3 | PS3 | [RPCS3/rpcs3-binaries-linux](https://github.com/RPCS3/rpcs3-binaries-linux) |
+| shadPS4 | PS4 | [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4) |
+| DuckStation | PS1 | [stenzek/duckstation](https://github.com/stenzek/duckstation) |
+| PPSSPP | PSP | [hrydgard/ppsspp](https://github.com/hrydgard/ppsspp) |
+| Vita3K | PS Vita | [Vita3K/Vita3K](https://github.com/Vita3K/Vita3K) |
+| Cemu | Wii U | [cemu-project/Cemu](https://github.com/cemu-project/Cemu) |
+| Azahar | 3DS | [azahar-emu/azahar](https://github.com/azahar-emu/azahar) |
+| melonDS | DS | [melonDS-emu/melonDS](https://github.com/melonDS-emu/melonDS) |
+| mGBA | GBA | [mgba-emu/mgba](https://github.com/mgba-emu/mgba) |
+| xemu | Xbox | [xemu-project/xemu](https://github.com/xemu-project/xemu) |
+| Flycast | Dreamcast | [flyinghead/flycast](https://github.com/flyinghead/flycast) |
+| ES-DE | Frontend | [es-de/emulationstation-de](https://gitlab.com/es-de/emulationstation-de) (GitLab) |
+| Heroic | Launcher Epic/GOG | [Heroic-Games-Launcher/HeroicGamesLauncher](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) |
+| Ship of Harkinian | Port Ocarina of Time | [HarbourMasters/Shipwright](https://github.com/HarbourMasters/Shipwright) |
+| 2 Ship 2 Harkinian | Port Majora's Mask | [HarbourMasters/2ship2harkinian](https://github.com/HarbourMasters/2ship2harkinian) |
+| Zelda 64: Recompiled | Recomp Majora's Mask | [Zelda64Recomp/Zelda64Recomp](https://github.com/Zelda64Recomp/Zelda64Recomp) |
+
+App lain tetap bisa ditambahkan dengan menempel link repo-nya.
 
 ## 📁 Sudah punya AppImage-nya?
 
@@ -207,6 +243,7 @@ Di Game Mode tidak perlu: plugin Decky memakai API Steam sendiri (tekan app-nya 
 
 - Daftar app dan pengaturan: `~/.config/deckport/config.json`
 - File game: `~/Applications/` (bisa diganti di **⚙ Settings**)
+- Shortcut Steam: DeckPort hanya mengubah `~/.steam/steam/userdata/<id>/config/shortcuts.vdf` saat kamu menekan **Add to Steam**, dan selalu menyimpan salinan sebelumnya sebagai `shortcuts.vdf.deckport.bak`.
 
 Ketiga bentuk DeckPort (AppImage, Decky, script) membaca file yang sama. DeckPort tidak mengirim telemetri; yang dihubungi hanya API forge tempat rilisnya berada.
 </details>
@@ -220,10 +257,12 @@ flowchart LR
   D["Decky plugin<br/>(Game Mode)"] -- "imports" --> P
   P -- "release API" --> F["GitHub · GitLab · Codeberg<br/>Gitea · Forgejo"]
   P -- "download + SHA-256" --> L["~/Applications"]
+  L -- "scan: recognize existing AppImages" --> P
+  P -- "Add to Steam" --> V["Steam shortcuts.vdf"]
   P <--> C["~/.config/deckport"]
 ```
 
-Semua logika ada di [`deckport.py`](deckport.py), yang hanya memakai Python standard library. AppImage-nya hanyalah cangkang [Tauri](https://v2.tauri.app) ([`desktop/`](desktop)) yang menjalankan script itu dan menampilkan UI-nya di jendela native. Plugin Decky ([`decky-plugin/`](decky-plugin)) memanggil kode yang sama.
+Semua logika ada di [`deckport.py`](deckport.py), yang hanya memakai Python standard library (termasuk katalog app, pemindai folder, dan penulis `shortcuts.vdf`). AppImage-nya hanyalah cangkang [Tauri](https://v2.tauri.app) ([`desktop/`](desktop)) yang menjalankan script itu dan menampilkan UI-nya di jendela native. Plugin Decky ([`decky-plugin/`](decky-plugin)) memanggil kode yang sama.
 
 <details>
 <summary><b>Build sendiri</b></summary>
