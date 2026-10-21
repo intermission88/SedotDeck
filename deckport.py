@@ -1436,6 +1436,8 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
     radial-gradient(35% 30% at 25% 70%,rgba(23,37,84,.55),transparent 75%)}
 a{color:var(--blue-300);text-decoration:none} a:hover{color:var(--blue-200)}
 .mono{font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;font-size:12.5px;word-break:break-all}
+/* `hidden` must win over the display:flex on label/.adopt etc. */
+[hidden]{display:none!important}
 
 /* ---- glass surfaces: cards use layered gradients only; blur is reserved for header, dialogs, toast */
 .glass{position:relative;background:linear-gradient(180deg,var(--glass-hi),rgba(30,58,138,.04)),var(--glass);
@@ -1511,7 +1513,7 @@ main{padding:22px;max-width:1180px;margin:0 auto}
 .empty svg{width:56px;height:56px;opacity:.9}
 
 /* ---- dialogs & toast (the only other blurred surfaces) */
-dialog{color:var(--text);padding:0;width:min(580px,94vw);border-radius:24px;border:1px solid var(--edge-hi);
+dialog{color:var(--text);padding:0;width:min(580px,94vw);max-height:calc(100vh - 32px);overflow:auto;overscroll-behavior:contain;border-radius:24px;border:1px solid var(--edge-hi);
   background:rgba(13,24,58,.72);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
   box-shadow:inset 0 1px 0 rgba(239,246,255,.10),0 30px 80px -20px rgba(0,0,0,.8)}
 dialog::backdrop{background:rgba(5,8,20,.62)}
@@ -1527,13 +1529,16 @@ input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(
   box-shadow:inset 0 1px 2px rgba(0,0,0,.35),0 0 0 3px rgba(59,130,246,.25)}
 input::placeholder{color:rgba(147,197,253,.38)}
 input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
-.assets{max-height:210px;overflow:auto;border-radius:14px;font-size:13px;background:rgba(5,8,20,.4);border:1px solid var(--edge)}
+.assets{max-height:168px;overflow:auto;border-radius:14px;font-size:13px;background:rgba(5,8,20,.4);border:1px solid var(--edge)}
 .assets div{padding:8px 12px;border-bottom:1px solid rgba(147,197,253,.07);display:flex;gap:8px;cursor:pointer;transition:background .15s}
 .assets div:last-child{border:0} .assets div:hover{background:rgba(59,130,246,.12)}
 .assets .pick{background:rgba(59,130,246,.22);color:#fff} .assets .pick::before{content:"✓";color:var(--blue-300)}
 .assets small{margin-left:auto;color:var(--faint)}
 .hint{font-size:12.5px;color:var(--faint)}
 .dlg .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+/* The last button row stays on screen while a tall dialog scrolls (Deck screens are only 800px high). */
+.dlg>.btns:last-child{position:sticky;bottom:0;z-index:1;margin:-8px -22px -22px;padding:18px 22px 22px;
+  background:linear-gradient(rgba(11,20,50,0),rgba(11,20,50,.96) 16px)}
 .sep{height:1px;background:var(--edge);margin:4px 0}
 #toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,8px);padding:12px 18px;border-radius:14px;
   border:1px solid var(--edge-hi);background:rgba(13,24,58,.78);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
