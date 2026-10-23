@@ -523,6 +523,11 @@ def make_executable(p):
     os.chmod(p, os.stat(p).st_mode | 0o755)
 
 
+def pinned_path(app):
+    """Where this app was first installed or adopted; updates keep it so Steam shortcuts survive renames."""
+    return app.get("target_path") or (app.get("installed") or {}).get("path") or None
+
+
 def install_app(app, settings, progress=None, phase=None):
     latest = app.get("latest") or {}
     asset = latest.get("asset")
@@ -532,6 +537,7 @@ def install_app(app, settings, progress=None, phase=None):
     install_dir = Path(os.path.expanduser(settings["install_dir"]))
     install_dir.mkdir(parents=True, exist_ok=True)
     base = safe_name(app["name"])
+    pinned = pinned_path(app)
     work = Path(tempfile.mkdtemp(prefix=".deckport-", dir=install_dir))
     try:
         dl = work / safe_name(asset["name"])
@@ -567,15 +573,15 @@ def install_app(app, settings, progress=None, phase=None):
                 # layout stays stable across updates and Steam shortcuts keep working.
                 entries = list(ex.iterdir())
                 root = entries[0] if len(entries) == 1 and entries[0].is_dir() else ex
-                dest_dir = install_dir / base
+                dest_dir = Path(pinned) if pinned and os.path.isdir(pinned) else install_dir / base
                 copy_over(str(root), str(dest_dir))
                 path = str(dest_dir)
 
         if kind in ("appimage", "file"):
             suffix = ".AppImage" if kind == "appimage" else ""
             dest = install_dir / (base + suffix)
-            if kind == "appimage" and app.get("target_path"):
-                dest = Path(app["target_path"])  # an adopted file keeps its exact name and Steam shortcut
+            if pinned and not os.path.isdir(pinned):
+                dest = Path(pinned)  # the first install pins the path; renaming the app never moves it
             make_executable(dl)
             if dest.exists() and settings.get("keep_backup", True):
                 os.replace(dest, str(dest) + ".old")
@@ -584,6 +590,10 @@ def install_app(app, settings, progress=None, phase=None):
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+    if os.path.isdir(path):
+        app.pop("target_path", None)  # target_path means a single file; folders are pinned via installed.path
+    else:
+        app["target_path"] = path
     app["installed"] = {
         "tag": latest["tag"],
         "asset": asset["name"],

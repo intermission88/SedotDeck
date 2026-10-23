@@ -106,6 +106,41 @@ dp.install_app(app, settings)
 eq(app["installed"]["verified"], False, "unverified")
 eq(os.path.exists(path + ".old"), True, "backup kept")
 
+# --- the install path is pinned by the first install; renaming the app never moves it
+app = mkapp(); app["name"] = "Pin One"
+p1 = dp.install_app(app, settings)
+eq(app["target_path"], p1, "target_path pinned after install")
+app["name"] = "Renamed Thing"
+eq(dp.install_app(app, settings), p1, "rename keeps the installed path")
+eq(os.path.exists(os.path.join(tmp, "Renamed-Thing.AppImage")), False, "no file under the new name")
+
+legacy = os.path.join(tmp, "Legacy Name.AppImage")
+Path(legacy).write_bytes(appimage)
+app = mkapp(); app["name"] = "Something Else"; app["installed"] = {"path": legacy, "kind": "appimage"}
+eq(dp.install_app(app, settings), legacy, "installed.path alone pins the update")
+eq(app["target_path"], legacy, "legacy config migrated to target_path")
+
+abuf = io.BytesIO()
+with zipfile.ZipFile(abuf, "w") as z:
+    z.writestr("Port-v1/bin/port", b"#!/bin/sh\n")
+FILES["https://x/port.zip"] = abuf.getvalue()
+def mkarch():
+    return {"name": "Port Game", "latest": {"tag": "v1", "asset": {"id": 9, "name": "port.zip", "size": 1, "updated_at": "t",
+            "download_url": "https://x/port.zip", "sha256": ""}}}
+app = mkarch()
+d1 = dp.install_app(app, settings)
+eq(os.path.isfile(os.path.join(d1, "bin", "port")), True, "archive folder installed")
+eq("target_path" in app, False, "folder is not a target_path")
+app["name"] = "Port Renamed"
+eq(dp.install_app(app, settings), d1, "archive folder keeps its path after rename")
+eq(os.path.exists(os.path.join(tmp, "Port-Renamed")), False, "no folder under the new name")
+
+dpin = os.path.join(tmp, "AFolder"); os.mkdir(dpin)
+app = mkapp(); app["name"] = "Dir Pinned"; app["installed"] = {"path": dpin, "kind": "archive"}
+pa = dp.install_app(app, settings)
+eq(pa, os.path.join(tmp, "Dir-Pinned.AppImage"), "dir pin + AppImage release falls back to name")
+eq(os.path.isdir(dpin), True, "pinned folder untouched")
+
 # --- export / import
 cfg = {"settings": {"github_token": "SECRET"}, "apps": []}
 added, skipped = dp.import_apps(cfg, {"format": "deckport-apps", "apps": [
