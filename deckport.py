@@ -1932,16 +1932,12 @@ main{padding:22px;max-width:1180px;margin:0 auto}
 
 /* ---- app cards */
 .card{padding:18px;display:flex;flex-direction:column;gap:12px}
-.top{display:flex;align-items:flex-start;gap:12px}
-.avatar{width:40px;height:40px;flex:none;border-radius:12px;display:grid;place-items:center;font-weight:700;font-size:16px;
-  color:var(--blue-50);background:linear-gradient(160deg,var(--blue-600),var(--blue-900));
-  border:1px solid rgba(191,219,254,.22);box-shadow:inset 0 1px 0 rgba(255,255,255,.2)}
+.top{min-width:0}
 .name{font-weight:650;font-size:16.5px;word-break:break-word;line-height:1.25}
 .repo{color:var(--dim);font-size:12.5px}
-.badge{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:99px;
-  white-space:nowrap;border:1px solid var(--edge);background:rgba(5,8,20,.35);color:var(--blue-200)}
-.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
-.b-ok{color:var(--good)} .b-up{color:var(--blue-300);border-color:rgba(96,165,250,.45)} .b-new{color:var(--warn)} .b-err{color:var(--bad)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:var(--st);box-shadow:0 0 8px var(--st)}
+.st-busy .dot{animation:blink 1.2s ease-in-out infinite}
+@keyframes blink{50%{opacity:.3}}
 /* one line for the version, then small tags; details live in the ⋯ menu and Edit */
 .ver{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:13.5px;color:var(--blue-100)}
 .ver .mono{font-size:13px} .ver b{color:#fff;font-weight:600}
@@ -2006,15 +2002,7 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
 .card.st-err{--st:var(--bad);--st-bg:rgba(252,165,165,.10);--st-edge:rgba(252,165,165,.38)}
 .card.st-update::after{content:"";position:absolute;left:-1px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;
   background:linear-gradient(180deg,var(--blue-300),var(--blue-600));box-shadow:0 0 12px rgba(96,165,250,.7)}
-.badge svg{width:14px;height:14px;flex:none}
-.badge::before{display:none}
-.badge{color:var(--st);border-color:var(--st-edge);background:var(--st-bg)}
 button svg{width:16px;height:16px;vertical-align:-3px}
-.card.st-update .badge{font-weight:600;position:relative}
-/* the update badge pulses three times when it first appears, then stays still */
-.card.st-update .badge.pulse::after{content:"";position:absolute;inset:-1px;border-radius:inherit;
-  border:1px solid var(--blue-400);animation:ring 1.5s ease-out .35s 3;opacity:0}
-@keyframes ring{0%{transform:scale(1);opacity:.8}100%{transform:scale(1.35);opacity:0}}
 .spin{animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 /* ---- filter chips */
@@ -2075,7 +2063,8 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .summary:empty{display:none}
 .found-line{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 16px;margin:0 0 16px;font-size:13.5px;color:var(--dim)}
 .found-line span{flex:1}
-.found-line button{min-height:34px;padding:5px 11px;font-size:13px}
+.found-line button{min-height:38px;padding:5px 12px;font-size:13px}
+.inl{display:flex;gap:8px}.inl input{flex:1;min-width:0}
 
 @media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
 /* Users who turn transparency off get solid panels and no blur at all. */
@@ -2097,13 +2086,10 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V6M6.5 11.5 12 6l5.5 5.5"/></g></symbol>
-  <symbol id="i-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-get" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></g></symbol>
-  <symbol id="i-err" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.8 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0z"/></g></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
   <symbol id="i-sync" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9M4 13a8 8 0 0 0 14.3 4.9"/><path d="M5 3v4h4M19 21v-4h-4"/></g></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></g></symbol>
-  <symbol id="i-busy" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-9 9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></symbol>
 </defs></svg>
 
 <header class="frost">
@@ -2118,7 +2104,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 
 <dialog id="dAdd"><form class="dlg" method="dialog" id="fAdd">
   <h2 id="addTitle">Add app</h2>
-  <label id="aRepoLbl">Search popular apps, or paste a release link (GitHub, GitLab, Codeberg, Gitea, Forgejo)
+  <label id="aRepoLbl">Search apps or paste a release link
     <input type="text" id="aRepo" placeholder="e.g. pcsx2, or https://github.com/owner/repo" autocomplete="off" spellcheck="false" required></label>
   <div class="cat" id="aCat"></div>
   <div class="hint" id="aInfo"></div>
@@ -2142,28 +2128,27 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 
 <dialog id="dSet"><form class="dlg" method="dialog" id="fSet">
   <h2>Settings</h2>
-  <label>Install folder<input type="text" id="sDir"></label>
-  <div class="hint">AppImages are saved with a fixed name (e.g. <span class="mono">Name.AppImage</span>) so your Steam shortcuts keep working after updates.</div>
+  <label>Install folder<div class="inl"><input type="text" id="sDir"><button type="button" id="sOpen">Open folder</button></div></label>
   <label class="row"><input type="checkbox" id="sBak"> Keep previous version as <span class="mono">.old</span> (enables rollback)</label>
-  <label>GitHub token (optional, raises rate limit from 60 to 5000 requests/hour)<input type="password" id="sTok" placeholder="ghp_… (leave empty to keep current)"></label>
+  <label>GitHub token (optional)<input type="password" id="sTok" placeholder="ghp_… (raises the rate limit from 60 to 5000/hour)"></label>
   <div class="hint" id="sTokInfo"></div>
-  <div class="sep"></div>
-  <label>App list</label>
-  <div class="btns" style="justify-content:flex-start;margin-top:-6px">
-    <button type="button" id="sExport">Export list</button>
-    <button type="button" id="sImport">Import list</button>
-    <input type="file" id="sImportFile" accept=".json,application/json" hidden>
-  </div>
-  <div class="hint">The export contains only repos, names and asset patterns. No token, no files, no paths. Use it as a backup or to share your list.</div>
-  <div class="sep"></div>
-  <label>Storage</label>
-  <div class="hint" id="sDisk" style="margin-top:-6px"></div>
-  <div class="btns" style="justify-content:flex-start;margin-top:-4px">
-    <button type="button" id="sClean">Delete .old backups</button>
-    <button type="button" id="sUnhide">Show hidden files again</button>
-  </div>
+  <details class="adv"><summary>More</summary><div>
+    <label>App list</label>
+    <div class="btns" style="justify-content:flex-start;margin-top:-6px">
+      <button type="button" id="sExport">Export list</button>
+      <button type="button" id="sImport">Import list</button>
+      <input type="file" id="sImportFile" accept=".json,application/json" hidden>
+    </div>
+    <div class="hint" style="margin-top:-6px">Repos, names and patterns only. No token or paths.</div>
+    <label>Storage</label>
+    <div class="hint" id="sDisk" style="margin-top:-6px"></div>
+    <div class="btns" style="justify-content:flex-start;margin-top:-4px">
+      <button type="button" id="sClean">Delete .old backups</button>
+      <button type="button" id="sUnhide">Show hidden files again</button>
+    </div>
+  </div></details>
   <div class="btns" style="justify-content:space-between">
-    <span><button type="button" id="sOpen">Open folder</button> <button type="button" class="danger ghost" id="sQuit">Quit DeckPort</button></span>
+    <span><button type="button" class="danger ghost" id="sQuit">Quit DeckPort</button></span>
     <span><button type="button" class="ghost" onclick="dSet.close()">Cancel</button> <button class="primary" type="submit">Save</button></span>
   </div>
 </form></dialog>
@@ -2214,7 +2199,7 @@ const ICON=(id,cls="")=>`<svg class="${cls}"><use href="#${id}"/></svg>`;
 const seen=new Set(), doneAt={}; let prevJobs={}, FILTER="all";
 try{FILTER=localStorage.getItem("deckport.filter")||"all"}catch(e){}
 
-// One status per card; it drives the icon, colour, badge text, sort order and filter.
+// One status per card; it drives the dot colour, sort order and filter.
 function status(a){
   const job=S.jobs[a.id], inst=a.installed&&a.exists;
   if(job&&job.state=="running") return "busy";
@@ -2224,16 +2209,13 @@ function status(a){
   return a.latest&&a.latest.tag?"ok":"busy";
 }
 const ORDER={update:0,busy:1,err:2,new:3,ok:4};
-const BADGE={update:["i-up","st-update"],ok:["i-ok","st-ok"],new:["i-get","st-new"],err:["i-err","st-err"],busy:["i-busy",""]};
+const STATE={update:"Update available",ok:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"};
 
 // Nightly builds are tagged with long hashes ("build-4024ea31e049f3…"): keep cards to one line.
 const short=t=>{t=String(t||"");return t.length>16?t.slice(0,14)+"…":t};
 function card(a,i){
-  const job=S.jobs[a.id], inst=a.installed, here=!!(inst&&a.exists), L=a.latest||{}, st=status(a), [icon]=BADGE[st];
+  const job=S.jobs[a.id], inst=a.installed, here=!!(inst&&a.exists), L=a.latest||{}, st=status(a);
   const running=job&&job.state=="running";
-  let label={update:`Update → ${esc(short(L.tag))}`,ok:a.skipped?`Skipped ${esc(short(L.tag))}`:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"}[st];
-  if(running) label=job.label=="Downloading"&&job.progress?`Downloading ${Math.round(job.progress*100)}%`:esc(job.label)+"…";
-  const badge=`<span class="badge ${st=="update"&&!seen.has(a.id)?"pulse":""}">${ICON(icon,st=="busy"?"spin":"")}${label}</span>`;
   let jobHtml="";
   if(job){
     if(running){
@@ -2244,14 +2226,14 @@ function card(a,i){
   }
   if(doneAt[a.id]&&Date.now()-doneAt[a.id]<4000&&!running)
     jobHtml=`<div class="done-check"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="rgba(134,239,172,.12)" stroke="currentColor" stroke-width="1.5"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Installed ${esc(inst&&inst.tag||"")}</div>`;
-  const mainBtn=!here?"Install":(a.has_update?"Update":null);
+  const mainBtn=st=="err"?"Edit":!here?"Install":(a.has_update?"Update":null);
   const isNew=!seen.has(a.id);
   // One line: the version you have and, if there is one, the version you'd get.
   const cur=here?(inst.tag=="unknown"?"your copy":inst.tag):"";
   let ver="";
   if(st=="update")ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(cur))} → <b>${esc(short(L.tag))}</b></span>`;
   else if(here)ver=`<span class="mono" title="${esc(inst.tag)}">${esc(short(cur))}</span>`+(a.skipped?`<span class="dim">${esc(short(L.tag))} skipped</span><a href="#" data-a="unskip" data-id="${a.id}">undo</a>`:"");
-  else if(L.tag)ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(L.tag))}</span>`+(L.asset&&L.asset.size?`<span class="dim">${mb(L.asset.size)}</span>`:"");
+  else if(L.tag)ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(L.tag))}</span>`+(L.asset&&L.asset.size?`<span class="dim">· ${mb(L.asset.size)}</span>`:"");
   if(ver&&L.prerelease)ver+='<span class="tag">pre-release</span>';
   if(st=="update"&&L.notes)ver+=`<a href="#" data-a="notes" data-id="${a.id}">What's new</a>`;
   if(here&&inst.verified)ver+=`<span class="tag ok" title="SHA-256 ${esc(inst.sha256)} (${esc(inst.verified_by)})">✓ verified</span>`;
@@ -2259,15 +2241,14 @@ function card(a,i){
   // A file the user brought keeps its own (often versioned) name, so show which one it is.
   const fname=a.target_path&&a.file_name?`<div class="fname mono" title="Your file, updated in place">${esc(a.file_name)}</div>`:"";
   return `<div class="card glass st-${st} ${isNew?"enter":""}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}">
-   <div class="top"><div class="avatar">${esc((a.name||"?").trim().charAt(0).toUpperCase())}</div>
-     <div style="min-width:0"><div class="name">${esc(a.name)}</div>
-     <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>${badge}</div>
+   <div class="top"><div class="name"><span class="dot" title="${STATE[st]}"></span>${esc(a.name)}</div>
+     <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>
    ${ver?`<div class="ver">${ver}</div>`:""}
    ${fname}
    ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
    ${jobHtml}
    <div class="actions">
-     ${mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
+     ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
      ${here?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
      <button class="ghost icon more" data-a="menu" data-id="${a.id}" title="More" aria-label="More actions for ${esc(a.name)}" aria-haspopup="menu">${ICON("i-more")}</button>
    </div></div>`;
@@ -2419,17 +2400,16 @@ function renderFound(){
   if(key==foundKey)return;  // keep the user's checkbox choices between polls
   foundKey=key;
   const known=F.filter(f=>f.src),unknown=F.filter(f=>!f.src);
-  if(!known.length&&!foundOpen){
-    // Only files DeckPort can't name: one quiet line instead of a big banner.
-    box.innerHTML=`<div class="found-line glass"><span>${F.length} AppImage${F.length>1?"s":""} in ${esc(S.settings.install_dir_short||"")} DeckPort doesn't recognize</span>
+  if(!foundOpen){
+    // One quiet line; Review opens the list.
+    box.innerHTML=`<div class="found-line glass"><span>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</span>
       <button type="button" class="ghost" id="fOpen">Review</button><button type="button" class="ghost" id="fHideAll">Hide</button></div>`;
     return;
   }
   const row=f=>f.src
     ?`<label class="frow"><input type="checkbox" data-p="${esc(f.path)}" checked><span><b>${esc(f.name)}</b> <span class="dim">${f.app_id?"for the "+esc(f.name)+" entry you added":esc(f.display)}</span><small class="mono">${esc(f.file)} · ${mb(f.size)}</small></span></label>`
     :`<div class="frow"><span><span class="mono">${esc(f.file)}</span><small>Not recognized · ${mb(f.size)}</small></span><button type="button" data-link="${esc(f.path)}">Choose repo…</button><button type="button" class="ghost" data-ign="${esc(f.path)}">Hide</button></div>`;
-  box.innerHTML=`<div class="found glass"><h3>Found ${F.length} AppImage${F.length>1?"s":""} in ${esc(S.settings.install_dir_short||"")}</h3>
-    <div class="hint">DeckPort can keep these up to date. Updates keep the same file name, so Steam shortcuts to them keep working.</div>
+  box.innerHTML=`<div class="found glass"><h3>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</h3>
     <div class="rows">${known.map(row).join("")}${unknown.map(row).join("")}</div>
     <div class="btns"><button type="button" class="ghost" id="fLater">Not now</button>${known.length?`<button type="button" class="primary" id="fTrack">Keep ${known.length} up to date</button>`:""}</div></div>`;
 }
@@ -2442,7 +2422,7 @@ $("#found").addEventListener("click",async e=>{
   const byPath=p=>(S.found||[]).find(f=>f.path==p);
   if(t.id=="fLater"){foundLater=true;renderFound();render()}
   else if(t.id=="fOpen"){foundOpen=true;renderFound()}
-  else if(t.id=="fHideAll"){foundKey="";act("/api/scan_ignore",{paths:(S.found||[]).filter(f=>!f.src).map(f=>f.path)},"Hidden. Settings can show them again.")}
+  else if(t.id=="fHideAll"){if((S.found||[]).some(f=>f.src)){foundLater=true;renderFound();render();return}foundKey="";act("/api/scan_ignore",{paths:(S.found||[]).filter(f=>!f.src).map(f=>f.path)},"Hidden. Settings can show them again.")}
   else if(t.id=="fTrack"){
     const items=[...$("#found").querySelectorAll("input[data-p]:checked")].map(i=>byPath(i.dataset.p)).filter(Boolean)
       .map(f=>({path:f.path,src:f.src,name:f.name,app_id:f.app_id||""}));
@@ -2468,7 +2448,7 @@ function openAdd(a,adopt){
   editId=a?a.id:null;ADOPT=adopt||null;
   $("#addTitle").textContent=a?"Edit "+a.name:"Add app";
   $("#aSave").textContent=a?"Save":"Add";
-  $("#aRepoLbl").firstChild.textContent=a?"Repository":"Search popular apps, or paste a release link (GitHub, GitLab, Codeberg, Gitea, Forgejo)";
+  $("#aRepoLbl").firstChild.textContent=a?"Repository":"Search apps or paste a release link";
   // Non-GitHub repos need their host, or the preview would look them up on GitHub.
   $("#aRepo").value=a?(a.host&&a.host!="github.com"?`https://${a.host}/${a.repo}`:a.repo):"";$("#aRepo").disabled=!!a;
   PICKED=false;
