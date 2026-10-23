@@ -23,6 +23,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -528,6 +529,87 @@ def pinned_path(app):
     return app.get("target_path") or (app.get("installed") or {}).get("path") or None
 
 
+_NOT_MAIN_DIRS = {"lib", "lib32", "lib64", "libs", "plugins", "platforms", "share", "python"}
+
+
+def find_main_exe(folder, wants):
+    """The program inside a folder port: an ELF/.sh/.x86_64 file, preferring one named like the app."""
+    wants = {w for w in wants if len(w) >= 3}
+    best = None
+    for root, dirs, files in os.walk(folder):
+        depth = 0 if root == folder else os.path.relpath(root, folder).count(os.sep) + 1
+        dirs[:] = [] if depth >= 3 else [d for d in dirs if d.lower() not in _NOT_MAIN_DIRS]
+        for fn in files:
+            p, low = os.path.join(root, fn), fn.lower()
+            try:
+                st = os.lstat(p)
+                if not stat.S_ISREG(st.st_mode) or re.search(r"\.so(\.\d+)*$", low):
+                    continue
+                with open(p, "rb") as f:
+                    elf = f.read(4) == b"\x7fELF"
+            except OSError:
+                continue
+            ext = os.path.splitext(low)[1]
+            if not (elf and (st.st_mode & 0o111 or not ext) or low.endswith((".sh", ".x86_64"))):
+                continue
+            st_ = stem_of(re.sub(r"\.sh$", "", fn))
+            named = 2 if st_ in wants else int(len(st_) >= 3 and any(st_.startswith(w) or w.startswith(st_) for w in wants))
+            key = (named, int(elf or low.endswith(".x86_64")), -depth, st.st_size)
+            if best is None or key > best[0]:
+                best = (key, p)
+    return best[1] if best else None
+
+
+def write_launcher(app, install_dir, folder):
+    """A stable <install_dir>/<name>.sh that runs the folder port's current executable. The path is
+    pinned in app["launcher"], so renames never move it and a Steam shortcut to it survives updates."""
+    exe = find_main_exe(folder, (stem_of(app["name"]), stem_of((app.get("repo") or "").split("/")[-1])))
+    if not exe:
+        return None
+    path = app.get("launcher")
+    if not path:
+        base, n = safe_name(app["name"]), 0
+        path = os.path.join(install_dir, base + ".sh")
+        while os.path.lexists(path):
+            n += 1
+            path = os.path.join(install_dir, "%s-%d.sh" % (base, n))
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("#!/bin/sh\ncd %s || exit 1\nexec ./%s \"$@\"\n" % (
+            shlex.quote(os.path.dirname(exe)), shlex.quote(os.path.basename(exe))))
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, path)
+    app["launcher"] = path
+    return path
+
+
+def prune_stale(dest, old, new):
+    """Delete files the previous release shipped and the new one doesn't (and folders left empty).
+    Only paths from the old manifest are touched, so saves and configs stay."""
+    keep = set(new)
+    keep_dirs = {d for rel in new for d in _parents(rel)}
+    gone = set()
+    for rel in old:
+        p = os.path.join(dest, rel)
+        if rel in keep or not _inside(dest, os.path.dirname(p)) or not (os.path.islink(p) or os.path.isfile(p)):
+            continue
+        os.remove(p)
+        gone.update(_parents(rel))
+    for d in sorted(gone - keep_dirs, key=len, reverse=True):
+        try:
+            os.rmdir(os.path.join(dest, d))
+        except OSError:
+            pass
+
+
+def _parents(rel):
+    out, d = [], os.path.dirname(rel)
+    while d:
+        out.append(d)
+        d = os.path.dirname(d)
+    return out
+
+
 def install_app(app, settings, progress=None, phase=None):
     latest = app.get("latest") or {}
     asset = latest.get("asset")
@@ -538,6 +620,8 @@ def install_app(app, settings, progress=None, phase=None):
     install_dir.mkdir(parents=True, exist_ok=True)
     base = safe_name(app["name"])
     pinned = pinned_path(app)
+    old_files = (app.get("installed") or {}).get("files")
+    manifest = None
     work = Path(tempfile.mkdtemp(prefix=".deckport-", dir=install_dir))
     try:
         dl = work / safe_name(asset["name"])
@@ -574,8 +658,11 @@ def install_app(app, settings, progress=None, phase=None):
                 entries = list(ex.iterdir())
                 root = entries[0] if len(entries) == 1 and entries[0].is_dir() else ex
                 dest_dir = Path(pinned) if pinned and os.path.isdir(pinned) else install_dir / base
+                manifest = sorted(os.path.relpath(os.path.join(r, f), root) for r, _d, fs in os.walk(root) for f in fs)
                 copy_over(str(root), str(dest_dir))
                 path = str(dest_dir)
+                if old_files and (app.get("installed") or {}).get("path") == path:
+                    prune_stale(path, old_files, manifest)
 
         if kind in ("appimage", "file"):
             suffix = ".AppImage" if kind == "appimage" else ""
@@ -607,7 +694,14 @@ def install_app(app, settings, progress=None, phase=None):
         "verified_by": source,
         "size": disk_size(path),
     }
+    if manifest is not None:
+        app["installed"]["files"] = manifest
+        try:
+            write_launcher(app, str(install_dir), path)
+        except OSError:
+            pass
     app["error"] = ""
+    app.pop("notice", None)
     return path
 
 
@@ -752,6 +846,8 @@ def remove_app(cfg, app, delete_files=False):
         if kept not in ign:
             ign.append(kept)
     if delete_files:
+        if app.get("launcher") and os.path.isfile(app["launcher"]):
+            os.remove(app["launcher"])
         p = (app.get("installed") or {}).get("path")
         if p and os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
@@ -848,7 +944,11 @@ def launch_app(app):
     if not p or not os.path.exists(p):
         raise RuntimeError("Not installed")
     if os.path.isdir(p):
-        open_path(p)
+        launcher = app.get("launcher")
+        if launcher and os.path.isfile(launcher):
+            subprocess.Popen([launcher], cwd=p, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        else:
+            open_path(p)
     else:
         subprocess.Popen([p], cwd=os.path.dirname(p), stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
@@ -1126,8 +1226,13 @@ def steam_shortcut_exes():
 
 
 def add_to_steam(app, shortcuts=None):
-    """Add the installed AppImage as a Non-Steam game. Returns False if it was already there."""
+    """Add the installed AppImage (or a folder port's launcher) as a Non-Steam game. Returns False if it was already there."""
     path = (app.get("installed") or {}).get("path") or ""
+    start = os.path.dirname(path)
+    if path and os.path.isdir(path):
+        path, start = app.get("launcher") or "", path
+        if not os.path.isfile(path):
+            raise RuntimeError("%s has no launcher (no program found in its folder), so it can't be added to Steam" % app["name"])
     if not path or not os.path.isfile(path):
         raise RuntimeError("Install %s first" % app["name"])
     f = shortcuts or steam_shortcuts_file()
@@ -1147,7 +1252,7 @@ def add_to_steam(app, shortcuts=None):
     nxt = max([int(k) for _t, k, _v in lst if k.isdigit()] + [-1]) + 1
     lst.append((0, str(nxt), [
         (2, "appid", appid), (1, "AppName", name), (1, "Exe", exe),
-        (1, "StartDir", '"%s"' % os.path.dirname(path)), (1, "icon", ""), (1, "ShortcutPath", ""),
+        (1, "StartDir", '"%s"' % start), (1, "icon", ""), (1, "ShortcutPath", ""),
         (1, "LaunchOptions", ""), (2, "IsHidden", 0), (2, "AllowDesktopConfig", 1), (2, "AllowOverlay", 1),
         (2, "OpenVR", 0), (2, "Devkit", 0), (1, "DevkitGameID", ""), (2, "DevkitOverrideAppID", 0),
         (2, "LastPlayTime", 0), (1, "FlatpakAppID", ""), (0, "tags", []),
@@ -1159,6 +1264,54 @@ def add_to_steam(app, shortcuts=None):
     tmp.write_bytes(vdf_dump(root))
     os.replace(tmp, f)
     return True
+
+
+def rename_app_file(app, shortcuts=None):
+    """Give an AppImage the clean name <App>.AppImage (and its .old), repointing a Steam shortcut to it."""
+    inst = app.get("installed") or {}
+    old = inst.get("path") or ""
+    if inst.get("kind") != "appimage" or not os.path.isfile(old):
+        raise RuntimeError("%s has no AppImage file to rename" % app["name"])
+    new = os.path.join(os.path.dirname(old), safe_name(app["name"]) + ".AppImage")
+    if new == old:
+        raise RuntimeError("%s already has that name" % os.path.basename(old))
+    if os.path.lexists(new):
+        raise RuntimeError("%s already exists, so %s keeps its name" % (os.path.basename(new), os.path.basename(old)))
+    f = shortcuts or steam_shortcuts_file()
+    f = Path(f) if f else None
+    root, hits, data = None, [], b""
+    if f and f.exists():
+        data = f.read_bytes()
+        try:
+            root = vdf_load(data) if data else []
+        except (ValueError, IndexError, struct.error):
+            raise RuntimeError("Can't read Steam's shortcuts file, so %s can't be renamed safely" % os.path.basename(old))
+        hits = [e for t, _k, e in _shortcut_list(root) if t == 0 and _shortcut_exe(e) == old]
+    if hits and shortcuts is None and steam_running():
+        raise RuntimeError("Close Steam first (Steam menu > Exit), then rename: a Steam shortcut points at this file.")
+    for e in hits:
+        for i, (t, k, v) in enumerate(e):
+            if t == 1 and k.lower() == "exe":
+                e[i] = (t, k, '"%s"' % new)
+            elif t == 1 and k.lower() == "startdir" and v.strip().strip('"') in (old, os.path.dirname(old)):
+                e[i] = (t, k, '"%s"' % (new if v.strip().strip('"') == old else os.path.dirname(new)))
+    os.replace(old, new)
+    if os.path.exists(old + ".old"):
+        os.replace(old + ".old", new + ".old")
+    if hits:
+        try:
+            shutil.copy2(f, str(f) + ".deckport.bak")
+            tmp = f.with_suffix(".vdf.tmp")
+            tmp.write_bytes(vdf_dump(root))
+            os.replace(tmp, f)
+        except OSError:
+            os.replace(new, old)
+            if os.path.exists(new + ".old"):
+                os.replace(new + ".old", old + ".old")
+            raise
+    app["target_path"] = inst["path"] = new
+    app.pop("notice", None)
+    return new
 
 
 # --------------------------------------------------------------------------- web server
@@ -1249,7 +1402,11 @@ class Server:
                 d["has_backup"] = bool(p and os.path.isfile(p + ".old"))
                 d["file_name"] = os.path.basename(p or a.get("target_path") or "")
                 d["skipped"] = d["exists"] and is_skipped(a) and has_update(a, honor_skip=False)
-                d["in_steam"] = bool(p) and p in in_steam
+                lnch = a.get("launcher") if os.path.isdir(p) else p
+                d["has_launcher"] = bool(os.path.isdir(p) and lnch and os.path.isfile(lnch))
+                d["in_steam"] = bool(lnch) and lnch in in_steam
+                clean = safe_name(a["name"]) + ".AppImage"
+                d["rename_to"] = clean if d["exists"] and inst.get("kind") == "appimage" and os.path.basename(p) != clean else ""
                 d["disk"] = (os.path.getsize(p) if os.path.isfile(p) else inst.get("size", 0)) if d["exists"] else 0
                 d["old_disk"] = os.path.getsize(p + ".old") if d["has_backup"] else 0
                 apps.append(d)
@@ -1269,13 +1426,20 @@ class Server:
                 raise RuntimeError(app["error"])
         return self.jobs.start(app["id"], "Checking", fn)
 
-    def adopt(self, app, path):
+    def adopt(self, app, path, rename=False):
         def fn(job):
             check_app(app, self.gh_token())
             if app.get("error"):
                 raise RuntimeError(app["error"])
             adopt_app(app, path)
             self.save()
+            if rename and os.path.basename(path) != safe_name(app["name"]) + ".AppImage":
+                try:
+                    with _lock:
+                        rename_app_file(app)
+                except (OSError, RuntimeError) as e:
+                    app["notice"] = "Kept the file name: %s" % e  # adoption itself worked
+                self.save()
         return self.jobs.start(app["id"], "Checking", fn)
 
     def install(self, app):
@@ -1339,7 +1503,7 @@ class Server:
                     app["target_path"] = path_
                 self.save()
             for app, path_ in plan:
-                self.adopt(app, path_)
+                self.adopt(app, path_, body.get("rename", False))
             return {"ok": True, "count": len(plan)}
 
         if path == "/api/scan_ignore":
@@ -1365,7 +1529,7 @@ class Server:
                 cfg["apps"].append(app)
                 self.save()
             if adopt:
-                self.adopt(app, adopt)
+                self.adopt(app, adopt, body.get("rename", False))
             else:
                 self.check(app)
             return {"ok": True, "id": app["id"]}
@@ -1387,7 +1551,7 @@ class Server:
                 app["latest"] = None
                 self.save()
             if adopt:
-                self.adopt(app, adopt)
+                self.adopt(app, adopt, body.get("rename", False))
             else:
                 self.check(app)
             return {"ok": True}
@@ -1429,6 +1593,15 @@ class Server:
             added = add_to_steam(app)
             return {"ok": True, "added": added}
 
+        if path == "/api/rename":
+            app = self._app(body)
+            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+                raise ValueError("Wait for %s to finish first" % app["name"])
+            with _lock:
+                new = rename_app_file(app)
+                self.save()
+            return {"ok": True, "file": os.path.basename(new)}
+
         if path == "/api/clean_backups":
             removed = freed = 0
             with _lock:
@@ -1457,6 +1630,13 @@ class Server:
 
         if path == "/api/launch":
             launch_app(self._app(body))
+            return {"ok": True}
+
+        if path == "/api/open_folder":
+            p = (self._app(body).get("installed") or {}).get("path") or ""
+            if not os.path.isdir(p):
+                raise ValueError("Not installed")
+            open_path(p)
             return {"ok": True}
 
         if path == "/api/open":
@@ -1751,6 +1931,19 @@ def cmd_remove(args):
     print("Removed", a["name"])
 
 
+def cmd_rename(args):
+    cfg = load_config()
+    a = find_app(cfg, args.name)
+    if not a:
+        sys.exit("Unknown app: %s" % args.name)
+    try:
+        new = rename_app_file(a)
+    except RuntimeError as e:
+        sys.exit(str(e))
+    save_config(cfg)
+    print("Renamed to", new)
+
+
 def cmd_scan(args):
     cfg = load_config()
     found = scan_folder(cfg)
@@ -1839,6 +2032,10 @@ def main():
     s.add_argument("name")
     s.add_argument("--delete-files", action="store_true")
     s.set_defaults(fn=cmd_remove)
+
+    s = sub.add_parser("rename", help="give an AppImage the clean name <App>.AppImage (updates its Steam shortcut)")
+    s.add_argument("name")
+    s.set_defaults(fn=cmd_rename)
 
     s = sub.add_parser("export", help="save the app list to share or back up (no tokens)")
     s.add_argument("file", nargs="?", help="output file (default: print)")
@@ -2109,6 +2306,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <div class="cat" id="aCat"></div>
   <div class="hint" id="aInfo"></div>
   <div class="using" id="aUsing" hidden></div>
+  <label class="row" id="aRenL" hidden><input type="checkbox" id="aRen" checked> <span>Rename to <span class="mono" id="aRenName"></span></span></label>
   <details class="adv" id="aAdv"><summary>Advanced: name, asset, pre-releases</summary><div>
     <label>Name<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
     <label>Asset pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
@@ -2246,10 +2444,11 @@ function card(a,i){
    ${ver?`<div class="ver">${ver}</div>`:""}
    ${fname}
    ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
+   ${a.notice&&!a.error&&!job?`<div class="fname">${esc(a.notice)}</div>`:""}
    ${jobHtml}
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
-     ${here?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"?"Open":"Launch"}</button>`:""}
+     ${here?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"&&!a.has_launcher?"Open":"Launch"}</button>`:""}
      <button class="ghost icon more" data-a="menu" data-id="${a.id}" title="More" aria-label="More actions for ${esc(a.name)}" aria-haspopup="menu">${ICON("i-more")}</button>
    </div></div>`;
 }
@@ -2327,6 +2526,8 @@ async function doAction(k,a,el){
   else if(k=="release"){const u=(a.latest&&a.latest.url)||a.web_url;APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
   else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. DeckPort will tell you about the next version.`);
   else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
+  else if(k=="folder")act("/api/open_folder",{id});
+  else if(k=="rename")act("/api/rename",{id},r=>`Renamed to ${r.file}`);
   else if(k=="steam")act("/api/steam_add",{id},r=>r.added?`${a.name} added to Steam. Start Steam to see it.`:`${a.name} is already in Steam`);
 }
 $("#list").addEventListener("click",e=>{
@@ -2347,8 +2548,11 @@ function openMenu(btn,a){
   if(st=="update")rows.push(it("skip",`Skip ${esc(L.tag||"")}`,{hint:"Get told about the next version instead"}));
   if(a.skipped)rows.push(it("unskip",`Offer ${esc(L.tag||"")} again`));
   if(a.has_backup)rows.push(it("rollback","Roll back to previous version",{off:running}));
-  if(S.steam&&here&&a.installed.kind!="archive"&&!a.in_steam)
+  if(S.steam&&here&&(a.installed.kind!="archive"||a.has_launcher)&&!a.in_steam)
     rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":"Adds it as a Non-Steam game"}));
+  if(here&&a.installed.kind=="archive")rows.push(it("folder","Open folder"));
+  if(a.rename_to){const lock=a.in_steam&&S.steam_running;
+    rows.push(it("rename",`Rename file to ${esc(a.rename_to)}`,{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":a.in_steam?"Also updates its Steam shortcut":""}))}
   rows.push(it("release","Open release page"),"<hr>",it("edit","Edit"),it("remove","Remove…",{danger:true}));
   menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
@@ -2411,6 +2615,7 @@ function renderFound(){
     :`<div class="frow"><span><span class="mono">${esc(f.file)}</span><small>Not recognized · ${mb(f.size)}</small></span><button type="button" data-link="${esc(f.path)}">Choose repo…</button><button type="button" class="ghost" data-ign="${esc(f.path)}">Hide</button></div>`;
   box.innerHTML=`<div class="found glass"><h3>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</h3>
     <div class="rows">${known.map(row).join("")}${unknown.map(row).join("")}</div>
+    ${known.length?`<label class="frow"><input type="checkbox" id="fRen" checked><span>Rename to clean names <span class="dim">(Name.AppImage)</span></span></label>`:""}
     <div class="btns"><button type="button" class="ghost" id="fLater">Not now</button>${known.length?`<button type="button" class="primary" id="fTrack">Keep ${known.length} up to date</button>`:""}</div></div>`;
 }
 $("#found").addEventListener("change",()=>{
@@ -2427,7 +2632,7 @@ $("#found").addEventListener("click",async e=>{
     const items=[...$("#found").querySelectorAll("input[data-p]:checked")].map(i=>byPath(i.dataset.p)).filter(Boolean)
       .map(f=>({path:f.path,src:f.src,name:f.name,app_id:f.app_id||""}));
     t.disabled=true;foundKey="";
-    act("/api/track_found",{items},r=>`Tracking ${r.count} app(s), checking for updates…`);
+    act("/api/track_found",{items,rename:!!($("#fRen")&&$("#fRen").checked)},r=>`Tracking ${r.count} app(s), checking for updates…`);
   }
   else if(t.dataset.link){const f=byPath(t.dataset.link);if(f)openAdd(null,{path:f.path,file:f.file})}
   else if(t.dataset.ign){foundKey="";act("/api/scan_ignore",{paths:[t.dataset.ign]},"Hidden. Settings can show it again.")}
@@ -2455,11 +2660,13 @@ function openAdd(a,adopt){
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
-  $("#aUsing").hidden=!ADOPT;
+  $("#aUsing").hidden=$("#aRenL").hidden=!ADOPT;$("#aRen").checked=true;renName();
   if(ADOPT)$("#aUsing").innerHTML=`DeckPort will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
   renderCat();dAdd.showModal();
   if(a)preview();else $("#aRepo").focus();
 }
+function renName(){$("#aRenName").textContent=($("#aName").value.trim().replace(/[^\w.-]+/g,"-").replace(/^-+|-+$/g,"")||"Name")+".AppImage"}
+$("#aName").addEventListener("input",renName);
 $("#btnAdd").onclick=()=>openAdd(null);
 function renderCat(){
   const q=$("#aRepo").value.trim().toLowerCase(),box=$("#aCat");
@@ -2510,7 +2717,7 @@ $("#fAdd").onsubmit=async e=>{
     if(b)b.click();else toast("Pick an app from the list, or paste a link",true);
     return;
   }
-  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,adopt_path:ADOPT?ADOPT.path:""};
+  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,adopt_path:ADOPT?ADOPT.path:"",rename:!!ADOPT&&$("#aRen").checked};
   try{
     if(editId)await api("/api/edit",{id:editId,...body});
     else await api("/api/add",{repo:$("#aRepo").value,...body});

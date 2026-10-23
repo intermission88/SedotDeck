@@ -141,6 +141,113 @@ pa = dp.install_app(app, settings)
 eq(pa, os.path.join(tmp, "Dir-Pinned.AppImage"), "dir pin + AppImage release falls back to name")
 eq(os.path.isdir(dpin), True, "pinned folder untouched")
 
+# --- folder apps: stable launcher, stale-file cleanup
+def zip_of(files):
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        for n, (data, mode) in files.items():
+            zi = zipfile.ZipInfo(n)
+            zi.external_attr = mode << 16
+            z.writestr(zi, data)
+    return b.getvalue()
+
+
+ELF = b"\x7fELF\x02\x01\x01" + b"\x00" * 200
+def mkfolder(url, tag):
+    return {"name": "Fold Game", "repo": "me/foldgame", "latest": {"tag": tag, "asset": {
+        "id": 1, "name": "fold.zip", "size": 1, "updated_at": tag, "download_url": url, "sha256": ""}}}
+
+
+FILES["https://x/fold1"] = zip_of({"FoldGame-v1/FoldGame-1.0.x86_64": (ELF, 0o755), "FoldGame-v1/libfoo.so.1": (ELF, 0o755),
+                                   "FoldGame-v1/lib/helper": (ELF * 50, 0o755), "FoldGame-v1/old.dat": (b"old", 0o644),
+                                   "FoldGame-v1/data/a/old.txt": (b"x", 0o644), "FoldGame-v1/data/keep.txt": (b"k", 0o644)})
+FILES["https://x/fold2"] = zip_of({"FoldGame-v2/FoldGame-2.0.x86_64": (ELF, 0o755), "FoldGame-v2/data/keep.txt": (b"k2", 0o644)})
+ftmp = tempfile.mkdtemp()
+fset = {"install_dir": ftmp, "keep_backup": True}
+fapp = mkfolder("https://x/fold1", "v1")
+fdir = dp.install_app(fapp, fset)
+fl = fapp["launcher"]
+eq(fl, os.path.join(ftmp, "Fold-Game.sh"), "launcher next to the folder")
+eq(os.access(fl, os.X_OK), True, "launcher executable")
+eq(Path(fl).read_text(), "#!/bin/sh\ncd %s || exit 1\nexec ./FoldGame-1.0.x86_64 \"$@\"\n" % fdir, "launcher content")
+eq(sorted(fapp["installed"]["files"])[:2], ["FoldGame-1.0.x86_64", "data/a/old.txt"], "manifest recorded")
+eq(dp.find_main_exe(fdir, ["fold"]), os.path.join(fdir, "FoldGame-1.0.x86_64"), "main exe skips libs")
+
+# user save + rename + update with a new exe name
+os.makedirs(os.path.join(fdir, "saves")); Path(fdir, "saves", "slot1.sav").write_text("save")
+fapp["name"] = "Totally Renamed"
+fapp["latest"] = mkfolder("https://x/fold2", "v2")["latest"]
+eq(dp.install_app(fapp, fset), fdir, "folder path unchanged")
+eq(fapp["launcher"], fl, "launcher path stays after rename")
+eq("FoldGame-2.0.x86_64" in Path(fl).read_text() and "1.0" not in Path(fl).read_text(), True, "launcher repointed")
+eq((os.path.exists(os.path.join(fdir, "FoldGame-1.0.x86_64")), os.path.exists(os.path.join(fdir, "old.dat")),
+    os.path.isdir(os.path.join(fdir, "data", "a"))), (False, False, False), "stale release files and empty dirs removed")
+eq((Path(fdir, "saves", "slot1.sav").read_text(), Path(fdir, "data", "keep.txt").read_text()), ("save", "k2"), "user files and new files stay")
+eq(os.path.exists(os.path.join(fdir, "lib", "helper")), False, "old lib file removed too (it was in the old release)")
+
+# no previous manifest: delete nothing
+fapp2 = mkfolder("https://x/fold1", "v1"); fapp2["name"] = "Legacy Fold"
+fdir2 = os.path.join(ftmp, "LegacyDir"); os.mkdir(fdir2); Path(fdir2, "stale.bin").write_text("s")
+fapp2["installed"] = {"path": fdir2, "kind": "archive"}
+dp.install_app(fapp2, fset)
+eq(os.path.exists(os.path.join(fdir2, "stale.bin")), True, "no manifest, nothing deleted")
+eq("files" in fapp2["installed"], True, "manifest starts with this install")
+
+# an unrelated file at the launcher path is never overwritten
+Path(ftmp, "Other-Fold.sh").write_text("mine")
+fapp3 = mkfolder("https://x/fold1", "v1"); fapp3["name"] = "Other Fold"
+dp.install_app(fapp3, fset)
+eq((Path(ftmp, "Other-Fold.sh").read_text(), os.path.basename(fapp3["launcher"])), ("mine", "Other-Fold-1.sh"), "existing file kept")
+# no executable found: no launcher
+FILES["https://x/fold3"] = zip_of({"Data-v1/readme.txt": (b"hi", 0o644)})
+fapp4 = mkfolder("https://x/fold3", "v1"); fapp4["name"] = "Docs Only"
+dp.install_app(fapp4, fset)
+eq("launcher" in fapp4, False, "no launcher without an executable")
+# remove with files deletes the launcher
+fapp["id"] = "f1"
+fcfg = {"settings": fset, "apps": [fapp]}
+dp.remove_app(fcfg, fapp, delete_files=True)
+eq((os.path.exists(fl), os.path.exists(fdir)), (False, False), "launcher removed with the app")
+# a folder app goes to Steam through its launcher
+sv = Path(tempfile.mkdtemp(), "shortcuts.vdf")
+eq(dp.add_to_steam(fapp3, sv), True, "folder app added to steam")
+ent = dict((k_, v) for _t, k_, v in dp.vdf_load(sv.read_bytes())[0][2][0][2])
+eq((ent["Exe"], ent["StartDir"]), ('"%s"' % fapp3["launcher"], '"%s"' % fapp3["installed"]["path"]), "steam uses launcher + app folder")
+try:
+    dp.add_to_steam(fapp4, sv); raise AssertionError("no launcher should fail")
+except RuntimeError:
+    ok += 1
+
+# --- rename_app_file: clean name, .old, Steam shortcut
+rdir = tempfile.mkdtemp()
+rf = os.path.join(rdir, "Eden-Linux-v0.0.3-amd64.AppImage")
+Path(rf).write_bytes(appimage); Path(rf + ".old").write_bytes(b"old")
+rapp = {"name": "Eden", "target_path": rf, "installed": {"path": rf, "kind": "appimage"}}
+rsv = Path(tempfile.mkdtemp(), "shortcuts.vdf")
+rsv.write_bytes(dp.vdf_dump([(0, "shortcuts", [
+    (0, "0", [(2, "appid", -77), (1, "AppName", "Eden Emu"), (1, "Exe", '"%s"' % rf), (1, "StartDir", '"%s"' % rdir), (2, "LastPlayTime", 5)]),
+    (0, "1", [(2, "appid", -78), (1, "AppName", "Other"), (1, "Exe", '"/x/other"'), (1, "StartDir", '"/x"')])])]))
+rnew = dp.rename_app_file(rapp, rsv)
+eq(rnew, os.path.join(rdir, "Eden.AppImage"), "clean name")
+eq((os.path.exists(rf), os.path.exists(rf + ".old"), os.path.exists(rnew), os.path.exists(rnew + ".old")), (False, False, True, True), "file and .old renamed")
+eq((rapp["target_path"], rapp["installed"]["path"]), (rnew, rnew), "paths updated")
+sc = dp.vdf_load(rsv.read_bytes())[0][2]
+e0 = dict((k_, v) for _t, k_, v in sc[0][2]); e1 = dict((k_, v) for _t, k_, v in sc[1][2])
+eq((e0["Exe"], e0["StartDir"], e0["appid"], e0["AppName"], e0["LastPlayTime"]), ('"%s"' % rnew, '"%s"' % rdir, -77, "Eden Emu", 5), "shortcut rewritten, rest kept")
+eq(e1["Exe"], '"/x/other"', "other shortcut untouched")
+eq(Path(str(rsv) + ".deckport.bak").exists(), True, "shortcuts backup")
+try:
+    dp.rename_app_file(rapp, rsv); raise AssertionError("already named")
+except RuntimeError:
+    ok += 1
+other = os.path.join(rdir, "Taken.AppImage"); Path(other).write_bytes(appimage)
+Path(rdir, "Eden Beta.AppImage").write_bytes(appimage)
+tapp = {"name": "Taken", "installed": {"path": os.path.join(rdir, "Eden Beta.AppImage"), "kind": "appimage"}}
+try:
+    dp.rename_app_file(tapp, rsv); raise AssertionError("target exists")
+except RuntimeError as e:
+    eq("already exists" in str(e) and os.path.exists(os.path.join(rdir, "Eden Beta.AppImage")), True, "refused when target exists")
+
 # --- export / import
 cfg = {"settings": {"github_token": "SECRET"}, "apps": []}
 added, skipped = dp.import_apps(cfg, {"format": "deckport-apps", "apps": [

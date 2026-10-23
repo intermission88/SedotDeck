@@ -23,6 +23,8 @@ type App = {
   name: string;
   display_repo: string;
   installed: { tag: string; verified?: boolean; path: string; kind: string } | null;
+  has_launcher?: boolean;
+  launcher?: string;
   latest: { tag: string; asset: Asset | null } | null;
   error: string;
   has_update: boolean;
@@ -60,8 +62,9 @@ function describe(a: App): string {
 
 // Steam is running in Game Mode, so the shortcut goes through its own API instead of shortcuts.vdf.
 async function addToSteam(app: App) {
-  const exe = app.installed!.path;
-  const dir = exe.slice(0, exe.lastIndexOf("/"));
+  const folder = app.installed!.kind === "archive";
+  const exe = folder ? app.launcher! : app.installed!.path;
+  const dir = folder ? app.installed!.path : exe.slice(0, exe.lastIndexOf("/"));
   try {
     const id = await SteamClient.Apps.AddShortcut(app.name, `"${exe}"`, `"${dir}"`, "");
     SteamClient.Apps.SetShortcutName(id, app.name);
@@ -94,7 +97,7 @@ function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, b
         {app.skipped && (
           <MenuItem onSelected={() => act("/api/skip", { id: app.id, undo: true })}>Undo skip</MenuItem>
         )}
-        {installed && app.installed!.kind !== "archive" && !app.in_steam && (
+        {installed && (app.installed!.kind !== "archive" || app.has_launcher) && !app.in_steam && (
           <MenuItem onSelected={() => addToSteam(app)}>Add to Steam library</MenuItem>
         )}
         {app.has_backup && (
