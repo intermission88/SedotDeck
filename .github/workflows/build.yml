@@ -65,16 +65,16 @@ jobs:
         working-directory: desktop
         run: npm ci --no-audit --no-fund && npm run build
 
+      # No version in the name, so the file in ~/Applications and a Steam shortcut to it never change.
       - name: Collect AppImage
         run: |
-          VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' sedotdeck.py)"
           mkdir -p dist
-          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "dist/SedotDeck-$VERSION-x86_64.AppImage"
+          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist/SedotDeck-x86_64.AppImage
           chmod +x dist/*.AppImage
           ls -la dist
 
       - name: Smoke test AppImage (CLI mode)
-        run: APPIMAGE_EXTRACT_AND_RUN=1 dist/SedotDeck-*-x86_64.AppImage --version
+        run: APPIMAGE_EXTRACT_AND_RUN=1 dist/SedotDeck-x86_64.AppImage --version
 
       - name: Smoke test AppImage (window starts its backend)
         run: |
@@ -82,7 +82,7 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1 HOME="$(mktemp -d)" DISPLAY=:99
           Xvfb :99 -screen 0 1100x760x24 -nolisten tcp &
           sleep 2
-          dist/SedotDeck-*-x86_64.AppImage > app.log 2>&1 &
+          dist/SedotDeck-x86_64.AppImage > app.log 2>&1 &
           for i in $(seq 40); do
             ADDR="$(ss -ltnp | grep '"python3"' | grep -o '127\.0\.0\.1:[0-9]*' | head -1)"
             [ -n "$ADDR" ] && break
@@ -121,7 +121,13 @@ jobs:
         with:
           name: decky
           path: dist
+      # The notes are the annotated tag's message; a tag with a dash (v0.1.0-alpha) is a pre-release.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/SedotDeck-*-x86_64.AppImage dist/SedotDeck-decky-*.zip --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --generate-notes
+        run: |
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .message > notes.md || echo "SedotDeck $GITHUB_REF_NAME" > notes.md
+          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/SedotDeck-x86_64.AppImage dist/SedotDeck-decky-*.zip \
+            --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --notes-file notes.md $pre

@@ -1299,7 +1299,7 @@ def github_search(query, token="", tracked=(), by_stars=False):
 SELF_REPO = "intermission88/SedotDeck"
 SELF_CACHE = CONFIG_DIR / "self-update.json"
 SELF_MAX_AGE = 6 * 3600
-SELF_APPIMAGE = re.compile(r"SedotDeck-.+-x86_64\.AppImage$")
+SELF_APPIMAGE = re.compile(r"SedotDeck(-.+)?-x86_64\.AppImage$")
 
 
 def version_key(text):

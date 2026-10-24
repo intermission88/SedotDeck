@@ -40,14 +40,14 @@ All three share the same app list and `~/Applications` folder, so you can instal
 
 | Form | Runs in | Best for |
 |---|---|---|
-| **AppImage** `SedotDeck-x.y.z-x86_64.AppImage` | Desktop Mode | Its own window, no browser. **Recommended.** |
+| **AppImage** `SedotDeck-x86_64.AppImage` | Desktop Mode | Its own window, no browser. **Recommended.** |
 | **Decky plugin** `SedotDeck-decky-x.y.z.zip` | Game Mode | Updating without leaving Game Mode |
 | **Script** `install.sh` | Desktop Mode | Smallest (about 100 KB), opens in a browser |
 
 <details open>
 <summary><b>AppImage (Desktop Mode)</b></summary>
 
-1. Download `SedotDeck-…-x86_64.AppImage`.
+1. Download `SedotDeck-x86_64.AppImage`. Its name has no version in it, so a newer download simply replaces the old file and a Steam shortcut to it keeps working.
 2. Right-click it → **Properties** → **Permissions**, tick **Is executable**.
 3. Double-click it.
 
@@ -193,7 +193,7 @@ Steam rewrites `shortcuts.vdf` from memory when it exits. In Desktop Mode, exit 
 <details>
 <summary><b>The AppImage won't open</b></summary>
 
-Make sure **Is executable** is ticked (or run `chmod +x SedotDeck-*.AppImage`). *"SedotDeck needs Python 3"* means your system has no `python3`; SteamOS includes it.
+Make sure **Is executable** is ticked (or run `chmod +x SedotDeck-x86_64.AppImage`). *"SedotDeck needs Python 3"* means your system has no `python3`; SteamOS includes it.
 </details>
 
 <details>
