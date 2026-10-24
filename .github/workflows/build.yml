@@ -112,11 +112,16 @@ jobs:
     needs: [decky, appimage]
     runs-on: ubuntu-24.04
     steps:
+      # Only the two downloads; the CI screenshots artifact stays out of the release.
       - uses: actions/download-artifact@v4
         with:
+          name: appimage
           path: dist
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: decky
+          path: dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "DeckPort $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/DeckPort-*-x86_64.AppImage dist/DeckPort-decky-*.zip --repo "$GITHUB_REPOSITORY" --title "DeckPort $GITHUB_REF_NAME" --generate-notes
