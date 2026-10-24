@@ -2688,7 +2688,7 @@ function openMenu(btn,a){
     rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":a.steam_exe?"Adds it as a Non-Steam game":"Pick its program first"}));
   if(here&&a.installed.kind=="archive"){
     const lc=a.launch||{};
-    rows.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):"None found yet"}));
+    rows.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):a.has_launcher?"Automatic":"Not chosen yet"}));
     rows.push(it("folder","Open folder"));
   }
   if(a.rename_to){const lock=a.in_steam&&S.steam_running;
