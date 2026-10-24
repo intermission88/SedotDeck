@@ -948,7 +948,7 @@ def new_app(repo_text, name="", pattern="", prerelease=False, src=None):
         re.compile(pattern)  # validate early
     return {
         "id": uuid.uuid4().hex[:10],
-        "name": name.strip() or (catalog_entry(src) or {}).get("name") or src["repo"].split("/")[-1],
+        "name": name.strip() or src["repo"].split("/")[-1],
         "provider": src["provider"],
         "host": src["host"],
         "repo": src["repo"],
@@ -1030,46 +1030,10 @@ def launch_app(app):
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-# --------------------------------------------------------------------------- catalog & folder scan
-
-# Popular Deck apps whose releases were checked to have a Linux build DeckPort picks correctly.
-# "match" finds a file the user downloaded by hand (lower-case file name), so a scan can name it.
-CATALOG = [
-    {"name": "PCSX2", "about": "PS2", "src": "PCSX2/pcsx2", "match": r"pcsx2"},
-    {"name": "RPCS3", "about": "PS3", "src": "RPCS3/rpcs3-binaries-linux", "match": r"^rpcs3"},
-    {"name": "shadPS4", "about": "PS4", "src": "shadps4-emu/shadPS4", "match": r"shadps4"},
-    {"name": "DuckStation", "about": "PS1", "src": "stenzek/duckstation", "match": r"duckstation"},
-    {"name": "PPSSPP", "about": "PSP", "src": "hrydgard/ppsspp", "match": r"ppsspp"},
-    {"name": "Vita3K", "about": "PS Vita", "src": "Vita3K/Vita3K", "match": r"vita3k"},
-    {"name": "Cemu", "about": "Wii U", "src": "cemu-project/Cemu", "match": r"^cemu"},
-    {"name": "Azahar", "about": "3DS", "src": "azahar-emu/azahar", "match": r"azahar"},
-    {"name": "melonDS", "about": "DS", "src": "melonDS-emu/melonDS", "match": r"melonds"},
-    {"name": "mGBA", "about": "GBA", "src": "mgba-emu/mgba", "match": r"^mgba"},
-    {"name": "xemu", "about": "Xbox", "src": "xemu-project/xemu", "match": r"^xemu"},
-    {"name": "Flycast", "about": "Dreamcast", "src": "flyinghead/flycast", "match": r"^flycast"},
-    {"name": "ES-DE", "about": "Frontend", "src": "https://gitlab.com/es-de/emulationstation-de", "match": r"^es-de|emulationstation"},
-    {"name": "Heroic", "about": "Epic/GOG launcher", "src": "Heroic-Games-Launcher/HeroicGamesLauncher", "match": r"^heroic"},
-    {"name": "Ship of Harkinian", "about": "Ocarina of Time port", "src": "HarbourMasters/Shipwright", "match": r"^soh[-_.]|shipwright"},
-    {"name": "2 Ship 2 Harkinian", "about": "Majora's Mask port", "src": "HarbourMasters/2ship2harkinian", "match": r"^2ship"},
-    {"name": "Zelda 64: Recompiled", "about": "Majora's Mask recomp", "src": "Zelda64Recomp/Zelda64Recomp", "match": r"zelda64recomp"},
-]
-
-
-# What the Add dialog needs; "key" (host/repo) tells it which entries are already tracked.
-CATALOG_UI = [dict(c, key=("%s/%s" % parse_source(c["src"])[1:]).lower()) for c in CATALOG]
-
+# --------------------------------------------------------------------------- folder scan
 
 def _src_key(provider, host, repo):
     return (provider or "", (host or "").lower(), (repo or "").lower())
-
-
-def catalog_entry(src):
-    """The catalog entry for a {provider, host, repo} source, if any."""
-    want = _src_key(src.get("provider"), src.get("host"), src.get("repo"))
-    for c in CATALOG:
-        if _src_key(*parse_source(c["src"])) == want:
-            return c
-    return None
 
 
 def read_update_info(path):
@@ -1111,20 +1075,11 @@ _ident_cache = {}
 
 
 def identify_file(path):
-    """(source text, catalog entry or None, how) for an AppImage on disk; how is "embedded",
-    "catalog" or "" when DeckPort can't tell which repo it came from."""
+    """The repo an AppImage on disk came from, read from its embedded update info, or ""."""
     st = os.stat(path)
     key = (path, st.st_size, st.st_mtime_ns)
     if key not in _ident_cache:
-        src = source_from_update_info(read_update_info(path))
-        if src:
-            entry = catalog_entry(dict(zip(("provider", "host", "repo"), parse_source(src))))
-            result = (src, entry, "embedded")
-        else:
-            low = os.path.basename(path).lower()
-            entry = next((c for c in CATALOG if re.search(c["match"], low)), None)
-            result = (entry["src"], entry, "catalog") if entry else ("", None, "")
-        _ident_cache[key] = result
+        _ident_cache[key] = source_from_update_info(read_update_info(path))
     return _ident_cache[key]
 
 
@@ -1146,15 +1101,14 @@ def scan_folder(cfg):
                 or not os.path.isfile(p) or os.path.realpath(p) in taken or p in ignored):
             continue
         try:
-            src, entry, how = identify_file(p)
+            src = identify_file(p)
         except OSError:
             continue
-        item = {"path": p, "file": f, "size": os.path.getsize(p), "src": src, "how": how,
-                "name": entry["name"] if entry else "", "about": entry["about"] if entry else ""}
+        item = {"path": p, "file": f, "size": os.path.getsize(p), "src": src, "name": ""}
         if src:
             prov, host, repo = parse_source(src)
             item["display"] = repo if host == "github.com" else "%s/%s" % (host, repo)
-            item["name"] = item["name"] or repo.split("/")[-1]
+            item["name"] = repo.split("/")[-1]
             owner = by_src.get(_src_key(prov or "", host, repo))
             if owner:
                 inst = owner.get("installed") or {}
@@ -1492,7 +1446,7 @@ class Server:
             s["scan_ignored"] = len(s.get("scan_ignored") or [])
             s["install_dir_short"] = short_home(os.path.expanduser(s["install_dir"]))
             return {"apps": apps, "settings": s, "jobs": self.jobs.snapshot(), "version": VERSION,
-                    "found": scan_folder(self.cfg), "catalog": CATALOG_UI, "steam": bool(steam_shortcuts_file()),
+                    "found": scan_folder(self.cfg), "steam": bool(steam_shortcuts_file()),
                     "steam_running": steam_running(max_age=10)}
 
     def check(self, app):
@@ -2333,10 +2287,6 @@ label.frow{flex-direction:row;cursor:pointer} label.frow:hover{background:rgba(5
 .frow button{min-height:34px;padding:5px 11px;font-size:13px}
 .found .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 
-/* ---- catalog in the Add dialog */
-.cat{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;max-height:228px;overflow:auto}
-.cat button{text-align:left;min-height:52px;padding:7px 11px;display:flex;flex-direction:column;align-items:flex-start;gap:1px}
-.cat button small{color:var(--faint);font-size:11.5px;font-weight:400}
 details.adv{border-radius:14px;border:1px solid var(--edge);background:rgba(5,8,20,.3)}
 details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim);list-style-position:inside}
 details.adv[open]>summary{border-bottom:1px solid var(--edge)}
@@ -2399,9 +2349,8 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 
 <dialog id="dAdd"><form class="dlg" method="dialog" id="fAdd">
   <h2 id="addTitle">Add app</h2>
-  <label id="aRepoLbl">Search apps or paste a release link
-    <input type="text" id="aRepo" placeholder="e.g. pcsx2, or https://github.com/owner/repo" autocomplete="off" spellcheck="false" required></label>
-  <div class="cat" id="aCat"></div>
+  <label id="aRepoLbl">Release link
+    <input type="text" id="aRepo" placeholder="owner/repo, or https://github.com/owner/repo" autocomplete="off" spellcheck="false" required></label>
   <div class="hint" id="aInfo"></div>
   <div class="using" id="aUsing" hidden></div>
   <label class="row" id="aRenL" hidden><input type="checkbox" id="aRen" checked> <span>Rename to <span class="mono" id="aRenName"></span></span></label>
@@ -2787,40 +2736,26 @@ if(APP){
   });
 }
 
-let ADOPT=null,prevTimer=null,lastPrev="",PICKED=false;
-const isLink=v=>/[\/.]/.test(v.trim());  // owner/repo or a URL; anything else is a catalog search
+let ADOPT=null,prevTimer=null,lastPrev="";
+const isLink=v=>/[\/.]/.test(v.trim());  // owner/repo or a URL
 function openAdd(a,adopt){
   editId=a?a.id:null;ADOPT=adopt||null;
   $("#addTitle").textContent=a?"Edit "+a.name:"Add app";
   $("#aSave").textContent=a?"Save":"Add";
-  $("#aRepoLbl").firstChild.textContent=a?"Repository":"Search apps or paste a release link";
+  $("#aRepoLbl").firstChild.textContent=a?"Repository":"Release link";
   // Non-GitHub repos need their host, or the preview would look them up on GitHub.
   $("#aRepo").value=a?(a.host&&a.host!="github.com"?`https://${a.host}/${a.repo}`:a.repo):"";$("#aRepo").disabled=!!a;
-  PICKED=false;
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
   $("#aUsing").hidden=$("#aRenL").hidden=!ADOPT;$("#aRen").checked=true;renName();
   if(ADOPT)$("#aUsing").innerHTML=`DeckPort will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
-  renderCat();dAdd.showModal();
+  dAdd.showModal();
   if(a)preview();else $("#aRepo").focus();
 }
 function renName(){$("#aRenName").textContent=($("#aName").value.trim().replace(/[^\w.-]+/g,"-").replace(/^-+|-+$/g,"")||"Name")+".AppImage"}
 $("#aName").addEventListener("input",renName);
 $("#btnAdd").onclick=()=>openAdd(null);
-function renderCat(){
-  const q=$("#aRepo").value.trim().toLowerCase(),box=$("#aCat");
-  if(editId||isLink(q)){box.hidden=true;return}
-  const have=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
-  const list=(S.catalog||[]).map((c,i)=>({...c,i})).filter(c=>!q||(c.name+" "+c.about).toLowerCase().includes(q));
-  box.hidden=!list.length;
-  box.innerHTML=list.map(c=>{const t=have.has(c.key);
-    return `<button type="button" data-c="${c.i}" ${t?"disabled":""}>${esc(c.name)}<small>${esc(c.about)}${t?" · already added":""}</small></button>`}).join("");
-}
-$("#aCat").onclick=e=>{
-  const b=e.target.closest("[data-c]");if(!b)return;const c=S.catalog[b.dataset.c];
-  $("#aRepo").value=c.src;$("#aName").value=c.name;PICKED=true;renderCat();preview();
-};
 const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 function patternFor(name){
   // Replace version-like chunks with wildcards so the pattern keeps matching future releases.
@@ -2828,9 +2763,6 @@ function patternFor(name){
 }
 function previewSoon(){clearTimeout(prevTimer);prevTimer=setTimeout(preview,600)}
 $("#aRepo").oninput=()=>{
-  // Typing after picking from the catalog starts over: don't keep that app's name.
-  if(PICKED){PICKED=false;$("#aName").value=""}
-  renderCat();
   if(isLink($("#aRepo").value))previewSoon();
   else{clearTimeout(prevTimer);lastPrev="";$("#aInfo").textContent="";$("#aAssets").hidden=true;$("#aTip").hidden=true}
 };
@@ -2852,9 +2784,7 @@ $("#aAssets").onclick=e=>{const d=e.target.closest("[data-n]");if(!d)return;$("#
 $("#fAdd").onsubmit=async e=>{
   e.preventDefault();
   if(!editId&&!isLink($("#aRepo").value)){
-    // Enter in the search box picks the first match instead of adding "pcsx2" as a repo.
-    const b=document.querySelector("#aCat button:not(:disabled)");
-    if(b)b.click();else toast("Pick an app from the list, or paste a link",true);
+    toast("Paste a release link: owner/repo or the repo's URL",true);
     return;
   }
   const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,adopt_path:ADOPT?ADOPT.path:"",rename:!!ADOPT&&$("#aRen").checked};

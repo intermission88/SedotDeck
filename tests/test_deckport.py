@@ -405,7 +405,7 @@ eq(dp.release_info(g, None)["notes"], "## Fixes\n- crash", "github notes")
 eq(dp._norm_gitlab({"tag_name": "v2", "description": "notes"}, "gitlab.com", "a/b")["body"], "notes", "gitlab notes")
 
 
-# --- folder scan: name AppImages the user already has (embedded update info, then the catalog)
+# --- folder scan: name AppImages the user already has (embedded update info)
 def fake_elf(upd):
     names = b"\0.shstrtab\0.upd_info\0"
     upd = upd.encode() + b"\0" * 8
@@ -425,7 +425,7 @@ Path(sdir, "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage").write_bytes(appimage)
 Path(sdir, "Mystery-1.0.AppImage").write_bytes(appimage)
 Path(sdir, "Hidden.AppImage").write_bytes(appimage)
 Path(sdir, "DeckPort-1.5.0-x86_64.AppImage").write_bytes(appimage)
-Path(sdir, "Cemu.AppImage").write_bytes(appimage)
+Path(sdir, "Cemu.AppImage").write_bytes(fake_elf("gh-releases-zsync|cemu-project|Cemu|latest|*.zsync"))
 eq(dp.read_update_info(os.path.join(sdir, "weird-name.AppImage")), "gh-releases-zsync|hrydgard|ppsspp|latest|*.zsync", "upd_info")
 eq(dp.read_update_info(os.path.join(sdir, "Mystery-1.0.AppImage")), "", "no upd_info")
 scfg = {"settings": {"install_dir": sdir, "scan_ignored": [os.path.join(sdir, "Hidden.AppImage")]}, "apps": [
@@ -435,14 +435,12 @@ scfg = {"settings": {"install_dir": sdir, "scan_ignored": [os.path.join(sdir, "H
 found = {f["file"]: f for f in dp.scan_folder(scfg)}
 eq(sorted(found), ["Mystery-1.0.AppImage", "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage", "weird-name.AppImage"],
    "scan skips DeckPort itself, hidden files and spare copies of installed apps")
-eq((found["weird-name.AppImage"]["src"], found["weird-name.AppImage"]["name"], found["weird-name.AppImage"]["how"]),
-   ("hrydgard/ppsspp", "PPSSPP", "embedded"), "identified by update info")
-eq((found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["how"], found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["app_id"]),
-   ("catalog", scfg["apps"][0]["id"]), "catalog match offered for the tracked app")
+eq((found["weird-name.AppImage"]["src"], found["weird-name.AppImage"]["name"]),
+   ("hrydgard/ppsspp", "ppsspp"), "identified by update info")
+eq(found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["src"], "", "a file name alone doesn't identify a repo")
 eq(found["Mystery-1.0.AppImage"]["src"], "", "unknown file")
 
-# --- added by link: a catalog app gets its catalog name, not the repo's ("rpcs3-binaries-linux")
-eq(dp.new_app("https://github.com/RPCS3/rpcs3-binaries-linux")["name"], "RPCS3", "catalog name")
+# --- added by link: named after the repo
 eq(dp.new_app("", src={"provider": "github", "host": "github.com", "repo": "me/my-port"})["name"], "my-port", "repo name")
 
 # --- removing an app but keeping its file: the scan doesn't offer it straight back
