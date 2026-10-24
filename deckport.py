@@ -41,7 +41,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765

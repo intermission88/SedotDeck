@@ -14,7 +14,7 @@ Mirip Obtainium, tapi untuk Steam Deck: tempel link rilisnya atau pilih recomp d
 
 [Install](#-install) · [Cara pakai](#-cara-pakai) · [Recomp Haven](#-recomp-haven) · [Port berbentuk folder](#-port-berbentuk-folder-zip--targz) · [Sudah punya AppImage?](#-sudah-punya-appimage-nya) · [CLI](#-cli) · [FAQ](#-faq)
 
-<img src="docs/screenshots/overview.jpg" alt="DeckPort: daftar app dengan status update, up to date, belum terpasang, dan error" width="860">
+<img src="docs/screenshots/overview.jpg" alt="DeckPort: daftar app per kategori, dengan status update, up to date, dan belum terpasang" width="860">
 
 </div>
 
@@ -24,7 +24,7 @@ PC port dan emulator di GitHub rilis update terus. Tanpa DeckPort, setiap update
 
 DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otomatis dari Game Mode.
 
-## 🆕 Yang baru (di `main`, belum dirilis)
+## 🆕 Yang baru di v1.6.0
 
 - **Tab Recomp Haven.** Jelajahi ratusan recomp dan PC port yang punya rilis Linux, lengkap dengan tier, cover, dan konsolnya, lalu tambahkan dengan satu klik. Datanya dari [Recomp Haven](https://recomphaven.com/). [Selengkapnya](#-recomp-haven)
 - **Port berbentuk folder bisa masuk Steam.** Pilih sendiri program yang dijalankan (`.sh`, binary Linux, atau `.exe` lewat Proton) dengan **Choose program…**. [Selengkapnya](#-port-berbentuk-folder-zip--targz)
@@ -151,6 +151,8 @@ Kartu hanya menampilkan yang penting: status, versi, tombol **Install/Update** d
 - Beri app kategori lewat **⋯** → **Category…** (atau di **Edit**). Begitu ada kategori, daftar app dikelompokkan per kategori; app tanpa kategori masuk ke **Other**.
 - Klik **Select** di kanan atas daftar, lalu klik kartu-kartu yang mau dipilih. Bar di bawah berisi **Check**, **Update**, **Category…**, dan **Remove…** untuk semua yang dipilih.
 
+<img src="docs/screenshots/select.jpg" alt="Mode Select: tiga app dipilih, dengan bar aksi di bawah" width="720">
+
 ### Memilih rilis
 
 Di **⋯** → **Edit** → **Advanced**:
@@ -172,9 +174,12 @@ Preview di dialog langsung menunjukkan rilis dan file mana yang akan dipakai.
 
 <a href="https://recomphaven.com/"><b>Recomp Haven</b></a> (oleh [rikuwru](https://github.com/rikuwru/recomphaven)) melacak semua game recompilation dan PC port, lengkap dengan tier kualitas, stage, dan apa yang dibutuhkan untuk memainkannya. DeckPort punya tab **Recomp Haven** sendiri yang menampilkan daftar itu.
 
+<img src="docs/screenshots/recomphaven.jpg" alt="Tab Recomp Haven: recomp dengan cover, tier, konsol, dan tombol Add" width="860">
+
 - Yang ditampilkan hanya project dengan **rilis Linux di GitHub**, diurutkan dari tier terbaik (**S · Definitive**, **A · Complete**, **B · Playable**, **C–D · Early**). Project yang ketahuan membagikan file game (ROM/ISO) tidak ditampilkan, sama seperti di situsnya.
 - Cari berdasarkan nama game, project, atau konsol, saring per tier, atau tampilkan yang bertanda **Steam Deck** saja.
 - Klik **Add** dan app-nya langsung masuk ke **My apps**. **Details ↗** membuka halaman game-nya di recomphaven.com.
+- Beberapa project hanya merilis build Linux dalam bentuk Flatpak (misalnya Sonic Unleashed Recompiled). DeckPort tidak memakai Flatpak, jadi app seperti itu akan menampilkan error "No matching Linux asset".
 - Datanya diambil dari [data publik Recomp Haven](https://github.com/rikuwru/recomphaven) dan disimpan sehari (`~/.config/deckport/recomphaven.json`). Tombol **Refresh** mengambil ulang. Kalau sedang offline, daftar yang tersimpan tetap tampil.
 
 Daftar, tier, dan ringkasannya milik Recomp Haven (berbasis [Recompendium](https://github.com/nio03/unricopie), lisensi MIT). Box art milik publisher masing-masing game. Setiap recomp butuh salinan game milikmu sendiri: DeckPort hanya mengunduh program recomp-nya.
@@ -184,7 +189,9 @@ Daftar, tier, dan ringkasannya milik Recomp Haven (berbasis [Recompendium](https
 Banyak port dirilis sebagai arsip, bukan AppImage. DeckPort mengekstraknya ke `~/Applications/<Nama>/` dan, saat update, menimpa file lama tanpa menyentuh save dan config.
 
 - DeckPort mencari program utamanya sendiri, lalu membuat launcher tetap `~/Applications/<Nama>.sh`. Shortcut Steam menunjuk ke launcher ini, jadi tetap jalan setelah update.
-- Tebakannya salah? **⋯** → **Choose program…** menampilkan semua program di folder itu (binary Linux, skrip `.sh`, dan `.exe`). Pilihanmu diingat di setiap update.
+- Tebakannya salah? **⋯** → **Choose program…** menampilkan semua program di folder itu (binary Linux, skrip `.sh`, dan `.exe`). Pilihanmu diingat di setiap update. Contohnya OpenGOAL: rilisnya berisi `goalc` (compiler), `gk` (game-nya), dan `extractor`, jadi pilih `gk`.
+
+<img src="docs/screenshots/program.jpg" alt="Dialog Choose program untuk OpenGOAL dengan gk dipilih" width="720">
 - Memilih **`.exe`** berarti game Windows: **Add to Steam** membuat shortcut langsung ke `.exe` itu. Dari plugin Decky, Proton Experimental langsung diaktifkan. Dari Desktop Mode, aktifkan sendiri di Steam: **Properties** → **Compatibility** → **Force Proton**.
 
 ## 📁 Sudah punya AppImage-nya?
