@@ -250,6 +250,10 @@ DeckPort berdiri di atas karya orang lain:
 | Jendela desktop (AppImage) | [Tauri](https://v2.tauri.app) dan WebKitGTK |
 | Plugin Game Mode | [Decky Loader](https://decky.xyz) (`@decky/api`, `@decky/ui`) dan [react-icons](https://react-icons.github.io/react-icons/) |
 | Game Windows lewat Proton | [Proton](https://github.com/ValveSoftware/Proton) oleh Valve |
-| Kode, dokumentasi, dan screenshot | Dibuat bersama [Claude](https://claude.com/claude-code) (Anthropic); commit-nya bertanda `Co-Authored-By: Claude` |
+| Kode, dokumentasi, dan screenshot | [Claude](https://claude.com/claude-code) oleh Anthropic (lihat di bawah) |
 
 Emulator dan port yang kamu install lewat DeckPort adalah karya developer masing-masing. Dukung mereka di repo aslinya.
+
+### 🤖 Dibuat dengan Claude
+
+DeckPort dibuat menggunakan [Claude](https://claude.com/claude-code), model AI dari Anthropic, lewat Claude Code. Arah proyek dan keputusannya dari aku ([intermission88](https://github.com/intermission88)), dan setiap fiturnya aku tes sendiri. Commit yang dibuat dengan Claude bertanda `Co-Authored-By: Claude`.
