@@ -5,14 +5,14 @@
 # DeckPort
 
 **Satu tempat untuk meng-update semua AppImage dan PC port di Steam Deck.**<br>
-Mirip Obtainium, tapi untuk Steam Deck: pilih app-nya dari katalog atau tempel link rilisnya, DeckPort yang cek, download, verifikasi, dan ganti file lamanya.
+Mirip Obtainium, tapi untuk Steam Deck: tempel link rilisnya atau pilih recomp dari [Recomp Haven](https://recomphaven.com/), DeckPort yang cek, download, verifikasi, dan ganti file lamanya.
 
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1e40af?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-2563eb?style=flat-square&logo=steam&logoColor=white)
 ![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-3b82f6?style=flat-square)
 ![Decky](https://img.shields.io/badge/Decky%20Loader-plugin-60a5fa?style=flat-square)
 
-[Install](#-install) · [Cara pakai](#-cara-pakai) · [Katalog](#-katalog-app) · [Sudah punya AppImage?](#-sudah-punya-appimage-nya) · [CLI](#-cli) · [FAQ](#-faq)
+[Install](#-install) · [Cara pakai](#-cara-pakai) · [Recomp Haven](#-recomp-haven) · [Port berbentuk folder](#-port-berbentuk-folder-zip--targz) · [Sudah punya AppImage?](#-sudah-punya-appimage-nya) · [CLI](#-cli) · [FAQ](#-faq)
 
 <img src="docs/screenshots/overview.jpg" alt="DeckPort: daftar app dengan status update, up to date, belum terpasang, dan error" width="860">
 
@@ -24,30 +24,42 @@ PC port dan emulator di GitHub rilis update terus. Tanpa DeckPort, setiap update
 
 DeckPort mengerjakan semua itu dengan satu klik **Update all**, atau bahkan otomatis dari Game Mode.
 
-## 🆕 Yang baru di v1.5.0
+## 🆕 Yang baru (di `main`, belum dirilis)
 
-- **AppImage yang sudah ada langsung ketemu.** DeckPort memindai `~/Applications` dan menawarkan untuk meng-update file-file itu di tempatnya. Tidak perlu lagi tempel link dulu. [Selengkapnya](#-sudah-punya-appimage-nya)
-- **Katalog 17 app populer** di dialog **Add app**: ketik `pcsx2`, klik, selesai. [Daftarnya](#-katalog-app)
+- **Tab Recomp Haven.** Jelajahi ratusan recomp dan PC port yang punya rilis Linux, lengkap dengan tier, cover, dan konsolnya, lalu tambahkan dengan satu klik. Datanya dari [Recomp Haven](https://recomphaven.com/). [Selengkapnya](#-recomp-haven)
+- **Port berbentuk folder bisa masuk Steam.** Pilih sendiri program yang dijalankan (`.sh`, binary Linux, atau `.exe` lewat Proton) dengan **Choose program…**. [Selengkapnya](#-port-berbentuk-folder-zip--targz)
+- **Pilih rilis dengan lebih teliti:** lewati rilis bernama *nightly* atau *beta* dengan regex, atau pakai hanya rilis yang ditandai **Latest** oleh developernya.
+- **Repo pindah atau ganti nama?** Kartu app menawarkan **Use new link**.
+- **Kategori dan mode Select:** kelompokkan app-mu, lalu Check, Update, ubah kategori, atau Remove beberapa app sekaligus.
+- Katalog 17 app bawaan dihapus, digantikan oleh Recomp Haven dan link repo.
+
+<details>
+<summary><b>Yang baru di v1.5.0</b></summary>
+
+- **AppImage yang sudah ada langsung ketemu.** DeckPort memindai `~/Applications` dan menawarkan untuk meng-update file-file itu di tempatnya. [Selengkapnya](#-sudah-punya-appimage-nya)
 - **Add to Steam** dari Desktop Mode maupun dari plugin Decky di Game Mode.
 - **What's new** untuk membaca catatan rilis, dan **Skip** untuk melewati satu versi.
 - DeckPort **cek update sendiri** saat dibuka, dan **Settings** menunjukkan pemakaian disk serta bisa menghapus backup `.old`.
 - Dialog **Add app** lebih ringkas: preview jalan sendiri, opsi lanjutan pindah ke **Advanced**, dan tombolnya selalu kelihatan di layar Deck.
 - Pemilihan file lebih tepat: build *debug* dilewati (xemu), AppImage di dalam zip dikenali (melonDS), build x64 diutamakan di atas SSE2 (DuckStation).
+</details>
 
 ## ✨ Fitur
 
 **Update tanpa ribet**
-- **Katalog app populer** (PCSX2, RPCS3, shadPS4, DuckStation, PPSSPP, Cemu, Azahar, xemu, ES-DE, Heroic, dan lainnya): ketik namanya di **Add app**, klik, selesai. Tidak perlu cari link.
+- **Recomp Haven di dalam DeckPort**: tab tersendiri berisi recomp dan PC port dengan rilis Linux, dari [recomphaven.com](https://recomphaven.com/). Klik **Add**, selesai.
 - Mendukung **GitHub, GitLab, Codeberg, Gitea, dan Forgejo**. Server self-hosted pun dideteksi otomatis.
 - **Memilih file Linux yang benar dengan sendirinya**: AppImage dulu, lalu build `linux`/`steamdeck` di zip/tar. Build Windows, macOS, ARM, dan Flatpak dilewati. Kalau perlu, pilihannya bisa diatur dengan regex.
-- Rilis *nightly* atau *continuous* tetap terdeteksi, walaupun nama tag-nya sama.
+- Rilis *nightly* atau *continuous* tetap terdeteksi, walaupun nama tag-nya sama. Tidak mau ikut nightly? Lewati lewat **Skip releases named**, atau pakai hanya rilis **Latest**.
+- Repo yang pindah atau ganti nama dikenali, dan link-nya bisa diperbarui dengan satu klik.
+- **Kategori** untuk mengelompokkan app, dan mode **Select** untuk meng-update, mengecek, atau menghapus banyak app sekaligus.
 - **Update all** sekali klik, dengan progress per app. DeckPort juga cek update sendiri saat dibuka (paling sering sejam sekali).
 - **What's new**: baca catatan rilis sebelum meng-update. Ada rilis yang bermasalah? **Skip** versi itu, dan DeckPort baru mengabari lagi saat versi berikutnya keluar.
 
 **Ramah Steam**
 - **Path file tidak berubah** (`~/Applications/NamaGame.AppImage`), jadi shortcut *Non-Steam Game* tidak rusak setelah update.
 - **Menemukan AppImage yang sudah kamu punya**: DeckPort memindai `~/Applications`, mengenali app-nya, lalu menawarkan untuk meng-update file itu di tempatnya, dengan nama yang sama. Cukup satu klik.
-- **Add to Steam**: jadikan app sebagai *Non-Steam Game* langsung dari DeckPort, tanpa lewat menu Steam.
+- **Add to Steam**: jadikan app sebagai *Non-Steam Game* langsung dari DeckPort, tanpa lewat menu Steam. Ini juga berlaku untuk port berbentuk folder, termasuk game Windows (`.exe`) yang dijalankan lewat Proton.
 - **Plugin Decky** untuk Game Mode: update dan *Add to Steam library* tanpa pindah ke Desktop, ditambah cek otomatis tiap 6 jam dengan notifikasi.
 
 **Aman**
@@ -116,12 +128,10 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 
 ## 🚀 Cara pakai
 
-1. Klik **Add app**, lalu ketik nama app-nya (misalnya `pcsx2`) dan klik hasilnya. App yang tidak ada di katalog? Tempel link repo-nya, misalnya `https://github.com/owner/repo`, `https://gitlab.com/group/project`, atau `https://codeberg.org/owner/repo`.
+1. Klik **Add app**, lalu tempel link repo-nya, misalnya `https://github.com/owner/repo` (atau cukup `owner/repo`), `https://gitlab.com/group/project`, atau `https://codeberg.org/owner/repo`. Mencari recomp? Buka tab **Recomp Haven** dan klik **Add**.
 2. DeckPort langsung menunjukkan file mana yang akan di-download. Kalau pilihannya salah, buka **Advanced** dan klik file yang benar.
 3. Klik **Add**, lalu **Install**. Untuk seterusnya, cukup **Update all**.
 4. **Supaya bisa dimainkan dari Game Mode:** buka menu **⋯** di kartu app-nya lalu pilih **Add to Steam** (tutup Steam dulu, lihat [FAQ](#-faq)), atau dari Game Mode lewat plugin Decky. Cukup sekali saja, karena path file-nya tidak pernah berubah.
-
-<img src="docs/screenshots/add.jpg" alt="Dialog Add app dengan katalog app populer" width="720">
 
 ### Arti status
 
@@ -134,37 +144,48 @@ Setelah itu buka **DeckPort** dari menu aplikasi (*Utilities*) atau dari ikon di
 | **Error** | ⚠ merah | Misalnya tidak ada file Linux di rilis itu. Pilih file yang benar lewat **⋯** → **Edit** → **Advanced**. |
 | **Downloading 45%** | spinner | Sedang proses. Launch dan Rollback dinonaktifkan sampai selesai. |
 
-Kartu hanya menampilkan yang penting: status, versi, tombol **Install/Update** dan **Launch**. Sisanya (Check, Skip, Rollback, Add to Steam, Edit, Remove) ada di menu **⋯**. App yang butuh update selalu tampil paling atas, dan kalau app-mu sudah 8 atau lebih, muncul chip filter (**All · Updates · Up to date · Not installed**).
+Kartu hanya menampilkan yang penting: status, versi, tombol **Install/Update** dan **Launch**. Sisanya (Check, Skip, Rollback, Add to Steam, Choose program, Category, Edit, Remove) ada di menu **⋯**. App yang butuh update selalu tampil paling atas, dan kalau app-mu sudah 8 atau lebih, muncul chip filter (**All · Updates · Up to date · Not installed**).
+
+### Kategori dan mode Select
+
+- Beri app kategori lewat **⋯** → **Category…** (atau di **Edit**). Begitu ada kategori, daftar app dikelompokkan per kategori; app tanpa kategori masuk ke **Other**.
+- Klik **Select** di kanan atas daftar, lalu klik kartu-kartu yang mau dipilih. Bar di bawah berisi **Check**, **Update**, **Category…**, dan **Remove…** untuk semua yang dipilih.
+
+### Memilih rilis
+
+Di **⋯** → **Edit** → **Advanced**:
+
+| Opsi | Gunanya |
+|---|---|
+| **Skip releases named (regex)** | Lewati rilis yang judul atau tag-nya cocok, misalnya `nightly\|beta`. |
+| **Only the release the developer marked "Latest"** | Pakai hanya rilis berlabel Latest, tidak pernah mundur ke rilis lain. Di GitHub label ini sudah dipakai secara default (kecuali pre-release dicentang); opsi ini membuatnya ketat dan juga berlaku di Codeberg, Gitea, Forgejo, dan GitLab. |
+| **Asset pattern (regex)** | Pilih file tertentu dari rilis. Klik file di daftar dan pattern-nya terisi sendiri. |
+| **Include pre-releases / nightlies** | Ikut memantau pre-release. |
+
+Preview di dialog langsung menunjukkan rilis dan file mana yang akan dipakai.
 
 | Sedang download | Sudah terpasang |
 |---|---|
 | ![Download berjalan](docs/screenshots/downloading.jpg) | ![Terpasang dan terverifikasi](docs/screenshots/installed.jpg) |
 
-## 📚 Katalog app
+## 🎮 Recomp Haven
 
-Ketik namanya (atau konsolnya, misalnya `ps2` atau `3ds`) di **Add app**. Semua repo di bawah ini sudah dicek punya build Linux yang dipilih DeckPort dengan benar.
+<a href="https://recomphaven.com/"><b>Recomp Haven</b></a> (oleh [rikuwru](https://github.com/rikuwru/recomphaven)) melacak semua game recompilation dan PC port, lengkap dengan tier kualitas, stage, dan apa yang dibutuhkan untuk memainkannya. DeckPort punya tab **Recomp Haven** sendiri yang menampilkan daftar itu.
 
-| App | Untuk | Repo |
-|---|---|---|
-| PCSX2 | PS2 | [PCSX2/pcsx2](https://github.com/PCSX2/pcsx2) |
-| RPCS3 | PS3 | [RPCS3/rpcs3-binaries-linux](https://github.com/RPCS3/rpcs3-binaries-linux) |
-| shadPS4 | PS4 | [shadps4-emu/shadPS4](https://github.com/shadps4-emu/shadPS4) |
-| DuckStation | PS1 | [stenzek/duckstation](https://github.com/stenzek/duckstation) |
-| PPSSPP | PSP | [hrydgard/ppsspp](https://github.com/hrydgard/ppsspp) |
-| Vita3K | PS Vita | [Vita3K/Vita3K](https://github.com/Vita3K/Vita3K) |
-| Cemu | Wii U | [cemu-project/Cemu](https://github.com/cemu-project/Cemu) |
-| Azahar | 3DS | [azahar-emu/azahar](https://github.com/azahar-emu/azahar) |
-| melonDS | DS | [melonDS-emu/melonDS](https://github.com/melonDS-emu/melonDS) |
-| mGBA | GBA | [mgba-emu/mgba](https://github.com/mgba-emu/mgba) |
-| xemu | Xbox | [xemu-project/xemu](https://github.com/xemu-project/xemu) |
-| Flycast | Dreamcast | [flyinghead/flycast](https://github.com/flyinghead/flycast) |
-| ES-DE | Frontend | [es-de/emulationstation-de](https://gitlab.com/es-de/emulationstation-de) (GitLab) |
-| Heroic | Launcher Epic/GOG | [Heroic-Games-Launcher/HeroicGamesLauncher](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) |
-| Ship of Harkinian | Port Ocarina of Time | [HarbourMasters/Shipwright](https://github.com/HarbourMasters/Shipwright) |
-| 2 Ship 2 Harkinian | Port Majora's Mask | [HarbourMasters/2ship2harkinian](https://github.com/HarbourMasters/2ship2harkinian) |
-| Zelda 64: Recompiled | Recomp Majora's Mask | [Zelda64Recomp/Zelda64Recomp](https://github.com/Zelda64Recomp/Zelda64Recomp) |
+- Yang ditampilkan hanya project dengan **rilis Linux di GitHub**, diurutkan dari tier terbaik (**S · Definitive**, **A · Complete**, **B · Playable**, **C–D · Early**). Project yang ketahuan membagikan file game (ROM/ISO) tidak ditampilkan, sama seperti di situsnya.
+- Cari berdasarkan nama game, project, atau konsol, saring per tier, atau tampilkan yang bertanda **Steam Deck** saja.
+- Klik **Add** dan app-nya langsung masuk ke **My apps**. **Details ↗** membuka halaman game-nya di recomphaven.com.
+- Datanya diambil dari [data publik Recomp Haven](https://github.com/rikuwru/recomphaven) dan disimpan sehari (`~/.config/deckport/recomphaven.json`). Tombol **Refresh** mengambil ulang. Kalau sedang offline, daftar yang tersimpan tetap tampil.
 
-App lain tetap bisa ditambahkan dengan menempel link repo-nya.
+Daftar, tier, dan ringkasannya milik Recomp Haven (berbasis [Recompendium](https://github.com/nio03/unricopie), lisensi MIT). Box art milik publisher masing-masing game. Setiap recomp butuh salinan game milikmu sendiri: DeckPort hanya mengunduh program recomp-nya.
+
+## 🗂️ Port berbentuk folder (.zip / .tar.gz)
+
+Banyak port dirilis sebagai arsip, bukan AppImage. DeckPort mengekstraknya ke `~/Applications/<Nama>/` dan, saat update, menimpa file lama tanpa menyentuh save dan config.
+
+- DeckPort mencari program utamanya sendiri, lalu membuat launcher tetap `~/Applications/<Nama>.sh`. Shortcut Steam menunjuk ke launcher ini, jadi tetap jalan setelah update.
+- Tebakannya salah? **⋯** → **Choose program…** menampilkan semua program di folder itu (binary Linux, skrip `.sh`, dan `.exe`). Pilihanmu diingat di setiap update.
+- Memilih **`.exe`** berarti game Windows: **Add to Steam** membuat shortcut langsung ke `.exe` itu. Dari plugin Decky, Proton Experimental langsung diaktifkan. Dari Desktop Mode, aktifkan sendiri di Steam: **Properties** → **Compatibility** → **Force Proton**.
 
 ## 📁 Sudah punya AppImage-nya?
 
@@ -174,8 +195,8 @@ Banyak orang sudah punya, misalnya `pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage`
 
 - Klik **Keep … up to date**. DeckPort lalu mengecek versinya (lewat SHA-256): kalau sudah terbaru statusnya langsung *Up to date*, kalau belum tinggal klik **Update**.
 - Versi baru ditulis ke **path dan nama file yang sama**, jadi shortcut Steam-mu tetap jalan. Yang lama disimpan sebagai `.old`.
-- Cara DeckPort mengenali file: pertama dari info update yang tertanam di AppImage (misalnya Vita3K dan PPSSPP), lalu dari nama file yang dicocokkan dengan katalog.
-- File yang tidak dikenali? Klik **Choose repo…** lalu pilih app-nya atau tempel link-nya. Atau klik **Hide** kalau memang tidak mau dilacak (bisa dimunculkan lagi di **⚙ Settings**).
+- DeckPort mengenali file dari info update yang tertanam di AppImage (misalnya Vita3K dan PPSSPP).
+- File yang tidak dikenali? Klik **Choose repo…** lalu tempel link repo-nya. Atau klik **Hide** kalau memang tidak mau dilacak (bisa dimunculkan lagi di **⚙ Settings**).
 
 Lewat CLI:
 
@@ -231,6 +252,18 @@ Cek baris **File** di kartu app. Shortcut Steam harus mengarah ke file itu. Kala
 </details>
 
 <details>
+<summary><b>DeckPort ikut men-download rilis nightly/beta</b></summary>
+
+Buka **⋯** → **Edit** → **Advanced**, lalu isi **Skip releases named** dengan misalnya `nightly|beta`. Atau centang **Only the release the developer marked "Latest"**.
+</details>
+
+<details>
+<summary><b>Port berbentuk folder tidak bisa di-Add to Steam</b></summary>
+
+DeckPort belum tahu program mana yang harus dijalankan. Pilih **⋯** → **Choose program…** (atau langsung **Add to Steam**, yang akan menanyakannya), lalu pilih `.sh`, binary, atau `.exe`-nya. Lihat [Port berbentuk folder](#-port-berbentuk-folder-zip--targz).
+</details>
+
+<details>
 <summary><b>Kenapa harus menutup Steam untuk "Add to Steam"?</b></summary>
 
 Steam menyimpan daftar *Non-Steam Game* di `shortcuts.vdf`, dan menimpa file itu dari memorinya saat keluar. Jadi di Desktop Mode, keluar dulu dari Steam (menu **Steam** → **Exit**), pilih **⋯** → **Add to Steam** (selama Steam masih jalan, pilihan ini abu-abu), lalu buka Steam lagi. Sebelum mengubah file itu, DeckPort selalu menyimpan salinannya sebagai `shortcuts.vdf.deckport.bak`.
@@ -242,10 +275,11 @@ Di Game Mode tidak perlu: plugin Decky memakai API Steam sendiri (tekan app-nya 
 <summary><b>Data DeckPort disimpan di mana?</b></summary>
 
 - Daftar app dan pengaturan: `~/.config/deckport/config.json`
+- Daftar Recomp Haven (cache sehari): `~/.config/deckport/recomphaven.json`
 - File game: `~/Applications/` (bisa diganti di **⚙ Settings**)
 - Shortcut Steam: DeckPort hanya mengubah `~/.steam/steam/userdata/<id>/config/shortcuts.vdf` saat kamu menekan **Add to Steam**, dan selalu menyimpan salinan sebelumnya sebagai `shortcuts.vdf.deckport.bak`.
 
-Ketiga bentuk DeckPort (AppImage, Decky, script) membaca file yang sama. DeckPort tidak mengirim telemetri; yang dihubungi hanya API forge tempat rilisnya berada.
+Ketiga bentuk DeckPort (AppImage, Decky, script) membaca file yang sama. DeckPort tidak mengirim telemetri. Yang dihubungi hanya API forge tempat rilisnya berada, dan, saat tab **Recomp Haven** dibuka, data serta cover dari Recomp Haven.
 </details>
 
 ## 🛠️ Cara kerja
@@ -259,10 +293,11 @@ flowchart LR
   P -- "download + SHA-256" --> L["~/Applications"]
   L -- "scan: recognize existing AppImages" --> P
   P -- "Add to Steam" --> V["Steam shortcuts.vdf"]
+  R["Recomp Haven<br/>(recomp list)"] -- "Recomp Haven tab" --> P
   P <--> C["~/.config/deckport"]
 ```
 
-Semua logika ada di [`deckport.py`](deckport.py), yang hanya memakai Python standard library (termasuk katalog app, pemindai folder, dan penulis `shortcuts.vdf`). AppImage-nya hanyalah cangkang [Tauri](https://v2.tauri.app) ([`desktop/`](desktop)) yang menjalankan script itu dan menampilkan UI-nya di jendela native. Plugin Decky ([`decky-plugin/`](decky-plugin)) memanggil kode yang sama.
+Semua logika ada di [`deckport.py`](deckport.py), yang hanya memakai Python standard library (termasuk pemindai folder, pembaca daftar Recomp Haven, dan penulis `shortcuts.vdf`). AppImage-nya hanyalah cangkang [Tauri](https://v2.tauri.app) ([`desktop/`](desktop)) yang menjalankan script itu dan menampilkan UI-nya di jendela native. Plugin Decky ([`decky-plugin/`](decky-plugin)) memanggil kode yang sama.
 
 <details>
 <summary><b>Build sendiri</b></summary>
