@@ -27,9 +27,10 @@ type App = {
   installed: { tag: string; verified?: boolean; path: string; kind: string } | null;
   has_launcher?: boolean;
   launch?: { file: string; kind: string; manual: boolean };
-  // What a Steam shortcut starts: the AppImage, a folder app's .sh launcher, or its .exe (proton).
+  // What a Steam shortcut starts: the AppImage, a folder app's .sh launcher, its .exe (proton), or flatpak with steam_args.
   steam_exe: string;
   steam_dir: string;
+  steam_args?: string;
   proton: boolean;
   latest: { tag: string; asset: Asset | null } | null;
   error: string;
@@ -39,15 +40,15 @@ type App = {
   skipped: boolean;
   in_steam: boolean;
 };
-// An AppImage in ~/Applications that DeckPort could keep up to date (src is "" when unrecognized).
+// An AppImage in ~/Applications that SedotDeck could keep up to date (src is "" when unrecognized).
 type Found = { path: string; file: string; src: string; name: string; app_id?: string };
 type State = { apps: App[]; jobs: Record<string, Job>; version: string; found: Found[] };
 
-// One backend entry point; main.py forwards to DeckPort's Server.handle (an allowlisted subset).
+// One backend entry point; main.py forwards to SedotDeck's Server.handle (an allowlisted subset).
 const call = callable<[path: string, body: Record<string, unknown>], any>("call");
 
 const fail = (e: unknown) =>
-  toaster.toast({ title: "DeckPort", body: e instanceof Error ? e.message : String(e) });
+  toaster.toast({ title: "SedotDeck", body: e instanceof Error ? e.message : String(e) });
 
 function statusOf(a: App, job?: Job): string {
   if (job?.state === "running") return job.label + "…";
@@ -66,17 +67,18 @@ function describe(a: App): string {
   return inst === latest ? inst + check : `${inst} → ${latest}${check}`;
 }
 
-type Target = { steam_exe: string; steam_dir: string; proton: boolean };
+type Target = { steam_exe: string; steam_dir: string; steam_args?: string; proton: boolean };
 
 // Steam is running in Game Mode, so the shortcut goes through its own API instead of shortcuts.vdf.
 async function addToSteam(name: string, t: Target) {
   try {
-    const id = await SteamClient.Apps.AddShortcut(name, `"${t.steam_exe}"`, `"${t.steam_dir}"`, "");
+    const id = await SteamClient.Apps.AddShortcut(name, `"${t.steam_exe}"`, `"${t.steam_dir}"`, t.steam_args || "");
     SteamClient.Apps.SetShortcutName(id, name);
     SteamClient.Apps.SetShortcutExe(id, `"${t.steam_exe}"`);
     SteamClient.Apps.SetShortcutStartDir(id, `"${t.steam_dir}"`);
+    if (t.steam_args) SteamClient.Apps.SetAppLaunchOptions(id, t.steam_args);
     if (t.proton) SteamClient.Apps.SpecifyCompatTool(id, "proton_experimental");
-    toaster.toast({ title: "DeckPort", body: `${name} added to your library` + (t.proton ? " (runs with Proton)" : "") });
+    toaster.toast({ title: "SedotDeck", body: `${name} added to your library` + (t.proton ? " (runs with Proton)" : "") });
   } catch (e) {
     fail(e);
   }
@@ -99,9 +101,9 @@ function ChooseProgram({ app, thenSteam, done, closeModal }: {
     closeModal?.();
     try {
       const s = await call("/api/set_launch", { id: app.id, file });
-      if (!s.launch) toaster.toast({ title: "DeckPort", body: `No program found in ${app.name}` });
+      if (!s.launch) toaster.toast({ title: "SedotDeck", body: `No program found in ${app.name}` });
       else if (thenSteam) await addToSteam(app.name, s);
-      else toaster.toast({ title: "DeckPort", body: `${app.name} starts ${s.launch.file}` });
+      else toaster.toast({ title: "SedotDeck", body: `${app.name} starts ${s.launch.file}` });
     } catch (e) {
       fail(e);
     }
@@ -181,7 +183,7 @@ function AppRows({ app, job, act, refresh }: {
             showModal(
               <ConfirmModal
                 strTitle={`Remove ${app.name}?`}
-                strDescription="DeckPort stops tracking it. Downloaded files stay in ~/Applications."
+                strDescription="SedotDeck stops tracking it. Downloaded files stay in ~/Applications."
                 strOKButtonText="Remove"
                 onOK={() => act("/api/remove", { id: app.id }, `${app.name} removed`)}
               />,
@@ -246,7 +248,7 @@ function Content() {
         if (prev.state === "running" && now && now.state !== "running" && prev.label !== "Checking") {
           const app = s.apps.find((a) => a.id === id);
           toaster.toast({
-            title: "DeckPort",
+            title: "SedotDeck",
             body: now.state === "error" ? `${app?.name}: ${now.message}` : `${app?.name} updated to ${app?.installed?.tag}`,
           });
         }
@@ -268,7 +270,7 @@ function Content() {
   const act = async (path: string, body: object, ok?: string) => {
     try {
       await call(path, body as Record<string, unknown>);
-      if (ok) toaster.toast({ title: "DeckPort", body: ok });
+      if (ok) toaster.toast({ title: "SedotDeck", body: ok });
     } catch (e) {
       fail(e);
     }
@@ -281,7 +283,7 @@ function Content() {
     try {
       await call("/api/add", { repo: url.trim() });
       setUrl("");
-      toaster.toast({ title: "DeckPort", body: "Added, checking for releases…" });
+      toaster.toast({ title: "SedotDeck", body: "Added, checking for releases…" });
     } catch (e) {
       fail(e);
     }
@@ -319,7 +321,7 @@ function Content() {
         <PanelSection title="Found in ~/Applications">
           <PanelSectionRow>
             <Field
-              description={`${found.map((f) => f.name).join(", ")}. DeckPort can update these in place, so Steam shortcuts keep working.`}
+              description={`${found.map((f) => f.name).join(", ")}. SedotDeck can update these in place, so Steam shortcuts keep working.`}
               bottomSeparator="none"
             />
           </PanelSectionRow>
@@ -343,7 +345,7 @@ function Content() {
       <PanelSection title="Apps">
         {state.apps.length === 0 && (
           <PanelSectionRow>
-            <Field description="No apps yet. Add a repo link below, or use DeckPort in Desktop Mode." />
+            <Field description="No apps yet. Add a repo link below, or use SedotDeck in Desktop Mode." />
           </PanelSectionRow>
         )}
         {state.apps.map((a) => (
@@ -367,7 +369,7 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           <Field
-            description={`DeckPort ${state.version}. Asset patterns, settings and GitHub token: open DeckPort in Desktop Mode.`}
+            description={`SedotDeck ${state.version}. Asset patterns, settings and GitHub token: open SedotDeck in Desktop Mode.`}
             bottomSeparator="none"
           />
         </PanelSectionRow>
@@ -379,14 +381,14 @@ function Content() {
 export default definePlugin(() => {
   const listener = addEventListener<[names: string[]]>("updates_available", (names) => {
     toaster.toast({
-      title: "DeckPort: updates available",
+      title: "SedotDeck: updates available",
       body: names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`,
     });
   });
 
   return {
-    name: "DeckPort",
-    titleView: <div className={staticClasses.Title}>DeckPort</div>,
+    name: "SedotDeck",
+    titleView: <div className={staticClasses.Title}>SedotDeck</div>,
     content: <Content />,
     icon: <FaSyncAlt />,
     onDismount() {

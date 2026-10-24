@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DeckPort",
+  "productName": "SedotDeck",
   "version": "0.0.1-alpha",
-  "identifier": "io.github.intermission88.deckport",
+  "identifier": "io.github.intermission88.sedotdeck",
   "build": {
     "frontendDist": "../dist"
   },
@@ -24,7 +24,7 @@
       "icons/icon.png"
     ],
     "resources": {
-      "../../deckport.py": "deckport.py"
+      "../../sedotdeck.py": "sedotdeck.py"
     },
     "linux": {
       "appimage": {

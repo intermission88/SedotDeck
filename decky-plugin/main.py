@@ -5,7 +5,7 @@ import sys
 import decky
 
 # Decky starts plugins without our user's environment. Point HOME at the deck user so the
-# plugin shares DeckPort's config (~/.config/deckport) and install folder (~/Applications)
+# plugin shares SedotDeck's config (~/.config/sedotdeck) and install folder (~/Applications)
 # with the desktop app, and give urllib the system CA bundle for HTTPS.
 os.environ["HOME"] = decky.DECKY_USER_HOME
 os.environ.pop("XDG_CONFIG_HOME", None)
@@ -14,7 +14,7 @@ for _ca in ("/etc/ssl/certs/ca-certificates.crt", "/etc/ca-certificates/extracte
         os.environ["SSL_CERT_FILE"] = _ca
 sys.path.insert(0, os.path.join(decky.DECKY_PLUGIN_DIR, "py_modules"))
 
-import deckport  # noqa: E402  (bundled copy of deckport.py)
+import sedotdeck  # noqa: E402  (bundled copy of sedotdeck.py)
 
 # What the Game Mode panel may do. Launching apps, settings (token) and quitting stay in the desktop UI.
 # Adding to Steam goes through SteamClient in the frontend: Steam is running in Game Mode.
@@ -49,9 +49,9 @@ class Plugin:
             await asyncio.sleep(CHECK_EVERY)
 
     async def _main(self):
-        self.srv = deckport.Server()
+        self.srv = sedotdeck.Server()
         self.task = asyncio.get_running_loop().create_task(self._background_checks())
-        decky.logger.info("DeckPort %s loaded, config at %s", deckport.VERSION, deckport.CONFIG_FILE)
+        decky.logger.info("SedotDeck %s loaded, config at %s", sedotdeck.VERSION, sedotdeck.CONFIG_FILE)
 
     async def _unload(self):
         task = getattr(self, "task", None)

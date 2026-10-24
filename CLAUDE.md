@@ -1,6 +1,6 @@
-# DeckPort
+# SedotDeck
 
-AppImage/PC-port updater for Steam Deck. Core: `deckport.py` (stdlib-only Python). Frontends: `decky-plugin/` (Decky Loader, TypeScript) and `desktop/` (Tauri). Tests: `python3 -I tests/test_deckport.py deckport.py`.
+AppImage/PC-port updater for Steam Deck. Core: `sedotdeck.py` (stdlib-only Python). Frontends: `decky-plugin/` (Decky Loader, TypeScript) and `desktop/` (Tauri). Tests: `python3 -I tests/test_sedotdeck.py sedotdeck.py`.
 
 ## Agent orchestration
 
@@ -13,7 +13,7 @@ The main session (Opus) plans, decides and reviews. Delegate the legwork to the 
 | `builder` | Sonnet | Implementing a change once the approach is decided and can be briefed precisely |
 
 Rules:
-- Keep design decisions, ambiguous bugs, cross-cutting changes (CLI/JSON contract between `deckport.py` and the frontends) and anything touching git in the main session.
+- Keep design decisions, ambiguous bugs, cross-cutting changes (CLI/JSON contract between `sedotdeck.py` and the frontends) and anything touching git in the main session.
 - Small edits (a few lines, one file) are faster done directly; don't spin up `builder` for them.
 - Brief `builder` with files, intended behavior and what done looks like. Independent changes in different files can go to parallel `builder` agents; changes to the same file never run in parallel.
 - After `builder` finishes, review its diff yourself, then send `checker` to verify. Agent reports are claims, not proof.

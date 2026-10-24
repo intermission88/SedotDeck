@@ -1,8 +1,8 @@
-//! DeckPort desktop app: a native window around deckport.py.
+//! SedotDeck desktop app: a native window around sedotdeck.py.
 //!
 //! The Python script keeps all the update logic. This shell starts it as a child process on a
 //! free localhost port, then shows its UI in a webview window. With command-line arguments it
-//! just runs the script's CLI, so `DeckPort.AppImage update` keeps working.
+//! just runs the script's CLI, so `SedotDeck.AppImage update` keeps working.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -13,32 +13,32 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-const READY_PREFIX: &str = "DECKPORT_READY ";
+const READY_PREFIX: &str = "SEDOTDECK_READY ";
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The running deckport.py server.
+/// The running sedotdeck.py server.
 struct Backend(Mutex<Option<Child>>);
 
-/// Where deckport.py was bundled. Tauri puts resources in different places per platform
+/// Where sedotdeck.py was bundled. Tauri puts resources in different places per platform
 /// (AppImage: usr/lib/<product>/, macOS: Contents/Resources/, dev builds: next to the binary).
 fn script_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(p) = std::env::var("DECKPORT_SCRIPT") {
+    if let Ok(p) = std::env::var("SEDOTDECK_SCRIPT") {
         out.push(PathBuf::from(p));
     }
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
-        out.push(dir.join("deckport.py"));
-        out.push(dir.join("../lib/DeckPort/deckport.py"));
-        out.push(dir.join("../lib/deckport/deckport.py"));
-        out.push(dir.join("../Resources/deckport.py"));
-        out.push(dir.join("../../../deckport.py")); // `cargo run` from desktop/src-tauri
+        out.push(dir.join("sedotdeck.py"));
+        out.push(dir.join("../lib/SedotDeck/sedotdeck.py"));
+        out.push(dir.join("../lib/sedotdeck/sedotdeck.py"));
+        out.push(dir.join("../Resources/sedotdeck.py"));
+        out.push(dir.join("../../../sedotdeck.py")); // `cargo run` from desktop/src-tauri
     }
     out
 }
 
 fn find_script(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
     if let Some(app) = app {
-        if let Ok(p) = app.path().resolve("deckport.py", tauri::path::BaseDirectory::Resource) {
+        if let Ok(p) = app.path().resolve("sedotdeck.py", tauri::path::BaseDirectory::Resource) {
             if p.is_file() {
                 return Some(p);
             }
@@ -48,7 +48,7 @@ fn find_script(app: Option<&tauri::AppHandle>) -> Option<PathBuf> {
 }
 
 /// Variables an AppImage's AppRun (and its GTK hook) point into the bundle. Inherited as-is they
-/// make the system python3 load the wrong stdlib, and they would leak into games DeckPort launches.
+/// make the system python3 load the wrong stdlib, and they would leak into games SedotDeck launches.
 const APPIMAGE_VARS: &[&str] = &[
     "PYTHONHOME", "PYTHONPATH", "PERLLIB", "LD_LIBRARY_PATH", "QT_PLUGIN_PATH", "GSETTINGS_SCHEMA_DIR",
     "GTK_DATA_PREFIX", "GTK_EXE_PREFIX", "GTK_PATH", "GTK_IM_MODULE_FILE", "GTK_THEME", "GDK_BACKEND",
@@ -73,10 +73,10 @@ fn python_command() -> Command {
     cmd
 }
 
-/// CLI mode: hand everything to `python3 deckport.py <args>`.
+/// CLI mode: hand everything to `python3 sedotdeck.py <args>`.
 fn run_cli(args: Vec<String>) -> ! {
     let Some(script) = find_script(None) else {
-        eprintln!("DeckPort: bundled deckport.py not found");
+        eprintln!("SedotDeck: bundled sedotdeck.py not found");
         std::process::exit(1);
     };
     let mut cmd = python_command();
@@ -85,7 +85,7 @@ fn run_cli(args: Vec<String>) -> ! {
     {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec(); // only returns on failure
-        eprintln!("DeckPort needs Python 3 (python3 not found: {err})");
+        eprintln!("SedotDeck needs Python 3 (python3 not found: {err})");
         std::process::exit(127);
     }
     #[cfg(not(unix))]
@@ -93,7 +93,7 @@ fn run_cli(args: Vec<String>) -> ! {
         match cmd.status() {
             Ok(s) => std::process::exit(s.code().unwrap_or(1)),
             Err(err) => {
-                eprintln!("DeckPort needs Python 3 (python3 not found: {err})");
+                eprintln!("SedotDeck needs Python 3 (python3 not found: {err})");
                 std::process::exit(127);
             }
         }
@@ -103,16 +103,16 @@ fn run_cli(args: Vec<String>) -> ! {
 fn fail(app: &tauri::AppHandle, message: &str) {
     app.dialog()
         .message(message)
-        .title("DeckPort")
+        .title("SedotDeck")
         .kind(MessageDialogKind::Error)
         .blocking_show();
     app.exit(1);
 }
 
-/// Start deckport.py, wait for its ready line, then point the window at it.
+/// Start sedotdeck.py, wait for its ready line, then point the window at it.
 fn start_backend(app: tauri::AppHandle, origin: Arc<Mutex<Option<String>>>) {
     let Some(script) = find_script(Some(&app)) else {
-        return fail(&app, "DeckPort is damaged: the bundled deckport.py is missing.");
+        return fail(&app, "SedotDeck is damaged: the bundled sedotdeck.py is missing.");
     };
     let spawned = python_command()
         .arg(&script)
@@ -126,7 +126,7 @@ fn start_backend(app: tauri::AppHandle, origin: Arc<Mutex<Option<String>>>) {
         Err(_) => {
             return fail(
                 &app,
-                "DeckPort needs Python 3, but python3 was not found.\n\nSteamOS includes it by default; on other systems install python3 and try again.",
+                "SedotDeck needs Python 3, but python3 was not found.\n\nSteamOS includes it by default; on other systems install python3 and try again.",
             )
         }
     };
@@ -145,10 +145,10 @@ fn start_backend(app: tauri::AppHandle, origin: Arc<Mutex<Option<String>>>) {
 
     let url = match rx.recv_timeout(START_TIMEOUT) {
         Ok(u) => u,
-        Err(_) => return fail(&app, "DeckPort's backend did not start within 15 seconds."),
+        Err(_) => return fail(&app, "SedotDeck's backend did not start within 15 seconds."),
     };
     let Ok(parsed) = Url::parse(&format!("{url}?app=1")) else {
-        return fail(&app, "DeckPort's backend reported an invalid address.");
+        return fail(&app, "SedotDeck's backend reported an invalid address.");
     };
     *origin.lock().unwrap() = Some(parsed.origin().ascii_serialization());
     if let Some(win) = app.get_webview_window("main") {
@@ -187,7 +187,7 @@ fn main() {
             move |app| {
                 let nav_origin = origin.clone();
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("DeckPort")
+                    .title("SedotDeck")
                     .inner_size(1100.0, 760.0)
                     .min_inner_size(720.0, 520.0)
                     .center()
@@ -205,7 +205,7 @@ fn main() {
             }
         })
         .build(tauri::generate_context!())
-        .expect("error while building DeckPort")
+        .expect("error while building SedotDeck")
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 stop_backend(app);

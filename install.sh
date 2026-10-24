@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
-# Install DeckPort for the current user (no sudo, survives SteamOS updates).
+# Install SedotDeck for the current user (no sudo, survives SteamOS updates).
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$HOME/.local/share/deckport"
+DEST="$HOME/.local/share/sedotdeck"
 BIN="$HOME/.local/bin"
 APPS="$HOME/.local/share/applications"
 
+# SedotDeck was called DeckPort: drop the old copy and menu entries (its config moves on first start).
+rm -rf "$HOME/.local/share/deckport"
+rm -f "$BIN/deckport" "$APPS/deckport.desktop" "$HOME/Desktop/deckport.desktop" \
+  "$HOME/.local/share/icons/hicolor/scalable/apps/deckport.svg"
+
 mkdir -p "$DEST" "$BIN" "$APPS"
-cp "$SRC/deckport.py" "$DEST/deckport.py"
-chmod +x "$DEST/deckport.py"
-ln -sf "$DEST/deckport.py" "$BIN/deckport"
+cp "$SRC/sedotdeck.py" "$DEST/sedotdeck.py"
+chmod +x "$DEST/sedotdeck.py"
+ln -sf "$DEST/sedotdeck.py" "$BIN/sedotdeck"
 ICONS="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$ICONS"
-cp "$SRC/assets/icon.svg" "$ICONS/deckport.svg"
+cp "$SRC/assets/icon.svg" "$ICONS/sedotdeck.svg"
 
-cat > "$APPS/deckport.desktop" <<EOF
+cat > "$APPS/sedotdeck.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=DeckPort
+Name=SedotDeck
 Comment=Update AppImages and PC ports from GitHub Releases
-Exec=python3 $DEST/deckport.py serve --window --exit-when-closed
-Icon=deckport
+Exec=python3 $DEST/sedotdeck.py serve --window --exit-when-closed
+Icon=sedotdeck
 Terminal=false
 Categories=Utility;
 EOF
-chmod +x "$APPS/deckport.desktop"
+chmod +x "$APPS/sedotdeck.desktop"
 
 # Desktop shortcut too, if there is a Desktop folder.
 if [ -d "$HOME/Desktop" ]; then
-  cp "$APPS/deckport.desktop" "$HOME/Desktop/deckport.desktop"
-  chmod +x "$HOME/Desktop/deckport.desktop"
+  cp "$APPS/sedotdeck.desktop" "$HOME/Desktop/sedotdeck.desktop"
+  chmod +x "$HOME/Desktop/sedotdeck.desktop"
 fi
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
 
-echo "DeckPort installed."
-echo "  Open it from the app menu (Utilities > DeckPort) or the Desktop icon."
-echo "  CLI: $BIN/deckport --help"
+echo "SedotDeck installed."
+echo "  Open it from the app menu (Utilities > SedotDeck) or the Desktop icon."
+echo "  CLI: $BIN/sedotdeck --help"

@@ -1,8 +1,8 @@
 {
-  "name": "deckport-desktop",
+  "name": "sedotdeck-desktop",
   "version": "0.0.1-alpha",
   "private": true,
-  "description": "DeckPort desktop app (Tauri shell around deckport.py)",
+  "description": "SedotDeck desktop app (Tauri shell around sedotdeck.py)",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

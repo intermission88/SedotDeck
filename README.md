@@ -1,257 +1,256 @@
 <div align="center">
 
-<img src="assets/icon.svg" width="96" height="96" alt="DeckPort icon">
+<img src="assets/icon.svg" width="96" height="96" alt="SedotDeck icon">
 
-# DeckPort
+# SedotDeck
 
-**Satu tempat untuk meng-update semua AppImage dan PC port di Steam Deck.**<br>
-Tempel link rilisnya atau pilih recomp dari [Recomp Haven](https://recomphaven.com/). DeckPort yang cek, download, verifikasi, dan ganti file lamanya, tanpa merusak shortcut Steam.
+**One place to keep every AppImage, Flatpak bundle and PC port on your Steam Deck up to date.**<br>
+Paste a release link, search GitHub by a game's name, or pick a recomp from [Recomp Haven](https://recomphaven.com/). SedotDeck checks, downloads, verifies and swaps the old version out without breaking your Steam shortcuts.
 
-![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1e40af?style=flat-square&logo=steamdeck&logoColor=white)
-![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-2563eb?style=flat-square&logo=steam&logoColor=white)
-![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-3b82f6?style=flat-square)
-![Decky](https://img.shields.io/badge/Decky%20Loader-plugin-60a5fa?style=flat-square)
+![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1a9fff?style=flat-square&logo=steamdeck&logoColor=white)
+![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
+![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-23272e?style=flat-square)
 
-[Install](#-install) · [Cara pakai](#-cara-pakai) · [Recomp Haven](#-recomp-haven) · [Port folder](#️-port-berbentuk-folder) · [FAQ](#-faq) · [Credit](#-credit)
-
-<img src="docs/screenshots/overview.jpg" alt="DeckPort: daftar app per kategori, dengan status update, up to date, dan belum terpasang" width="860">
+[Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit)
 
 </div>
 
-## ✨ Fitur
+> SedotDeck is in alpha (0.0.x). It was called DeckPort before; your app list moves over by itself on first start.
 
-- **Update all** sekali klik untuk semua emulator dan port, dari **GitHub, GitLab, Codeberg, Gitea, dan Forgejo**.
-- **File Linux yang benar dipilih sendiri**: AppImage dulu, lalu build `linux`/`steamdeck` di zip/tar. Windows, macOS, ARM, dan Flatpak dilewati.
-- **Path file tidak pernah berubah**, jadi shortcut Steam tetap jalan setelah update. Ada **Add to Steam** juga, termasuk untuk game Windows (`.exe`) lewat Proton.
-- **Tab Recomp Haven**: ratusan recomp dan PC port dengan rilis Linux, tinggal klik **Add**.
-- **AppImage yang sudah kamu punya** di `~/Applications` dikenali dan di-update di tempatnya.
-- **Aman**: verifikasi SHA-256, backup `.old` dengan **Rollback**, dan save/config di port folder tidak tersentuh.
-- **Kontrol rilis**: lewati rilis *nightly*, pakai hanya rilis **Latest**, **Skip** satu versi, dan baca **What's new** dulu.
-- **Kategori** dan mode **Select** untuk mengurus banyak app sekaligus.
-- **Plugin Decky** untuk Game Mode, dengan cek otomatis tiap 6 jam.
-- **Ringan**: satu file Python dengan Python bawaan SteamOS. Tanpa `pip`, tanpa `sudo`.
+## Features
 
-## 🆕 Yang baru di v0.0.1-alpha
+- **Update all** in one click, for apps released on **GitHub, GitLab, Codeberg, Gitea and Forgejo**.
+- **Picks the right Linux file by itself**: an AppImage first, then a `.flatpak` bundle, then a `linux`/`steamdeck` build in a zip or tar. Windows, macOS and ARM builds are skipped.
+- **Discover**: search GitHub for a game or port by name and see each project's stars before you add it.
+- **Recomp Haven tab**: hundreds of recomps and PC ports with a Linux release, filterable by tier and system.
+- **File paths never change**, so Steam shortcuts keep working after updates. **Add to Steam** works for AppImages, Flatpaks, folder ports and Windows `.exe` games through Proton.
+- **AppImages you already have** in `~/Applications` are recognized and updated in place.
+- **Safe**: SHA-256 verification, a `.old` backup with **Rollback**, and saves and configs in port folders are never touched.
+- **Release control**: skip nightly releases, follow only the release marked **Latest**, **Skip** one version, and read **What's new** first.
+- **Categories** and a **Select** mode for handling many apps at once.
+- **Updates itself**: when a new SedotDeck release is out, it asks on start whether to update.
+- **Decky plugin** for Game Mode, checking every 6 hours.
+- **Light**: one Python file that runs on SteamOS's own Python. No `pip`, no `sudo`.
 
-- **Tab Recomp Haven** dengan tier, cover, dan konsol. [Lihat](#-recomp-haven)
-- **Port berbentuk folder** bisa masuk Steam, dengan **Choose program…** untuk memilih `.sh`, binary, atau `.exe`. [Lihat](#️-port-berbentuk-folder)
-- **Skip releases named** dan **Only the release marked Latest** untuk memilih rilis. [Lihat](#memilih-rilis)
-- **Repo pindah atau ganti nama** dikenali, dengan tombol **Use new link**.
-- **Kategori dan mode Select.** Katalog bawaan diganti oleh Recomp Haven.
+## Install
 
-## 📦 Install
+All three share the same app list and `~/Applications` folder, so you can install more than one. Downloads are on the [Releases](https://github.com/intermission88/SedotDeck/releases) page.
 
-Ketiga bentuk memakai daftar app dan folder `~/Applications` yang sama, jadi boleh dipasang bersamaan. File-nya ada di [Releases](https://github.com/intermission88/deckport/releases).
-
-| Bentuk | Dipakai di | Cocok untuk |
+| Form | Runs in | Best for |
 |---|---|---|
-| **AppImage** `DeckPort-x.y.z-x86_64.AppImage` | Desktop Mode | Jendela sendiri, tanpa browser. **Direkomendasikan.** |
-| **Plugin Decky** `DeckPort-decky-x.y.z.zip` | Game Mode | Update tanpa keluar dari Game Mode |
-| **Script** `install.sh` | Desktop Mode | Paling ringan (±90 KB), tampil di browser |
+| **AppImage** `SedotDeck-x.y.z-x86_64.AppImage` | Desktop Mode | Its own window, no browser. **Recommended.** |
+| **Decky plugin** `SedotDeck-decky-x.y.z.zip` | Game Mode | Updating without leaving Game Mode |
+| **Script** `install.sh` | Desktop Mode | Smallest (about 100 KB), opens in a browser |
 
 <details open>
 <summary><b>AppImage (Desktop Mode)</b></summary>
 
-1. Download `DeckPort-…-x86_64.AppImage`.
-2. Klik kanan → **Properties** → **Permissions**, centang **Is executable**.
-3. Klik dua kali.
+1. Download `SedotDeck-…-x86_64.AppImage`.
+2. Right-click it → **Properties** → **Permissions**, tick **Is executable**.
+3. Double-click it.
 
-<img src="docs/screenshots/app-window.png" alt="Jendela AppImage DeckPort" width="720"><br>
-<sub>Diambil otomatis oleh CI dari AppImage yang berjalan di Linux.</sub>
-
-Ukurannya sekitar 80 MB karena WebKitGTK ikut dibundel; dari sistem hanya butuh `python3`, yang sudah ada di SteamOS. AppImage ini juga bisa dipakai sebagai [CLI](#️-cli).
+It's about 80 MB because WebKitGTK is bundled; the only thing it needs from the system is `python3`, which SteamOS ships. The AppImage also works as a [CLI](#cli), and it can replace itself when you accept an update.
 </details>
 
 <details>
-<summary><b>Plugin Decky (Game Mode)</b></summary>
+<summary><b>Decky plugin (Game Mode)</b></summary>
 
-Butuh [Decky Loader](https://decky.xyz).
+Needs [Decky Loader](https://decky.xyz).
 
-1. Download `DeckPort-decky-….zip` ke Deck. **Jangan diekstrak.**
-2. **⋯** → **Decky** → ⚙ **Settings** → **Developer**, aktifkan **Developer mode**.
-3. **Install Plugin from ZIP File**, pilih file ZIP tadi.
+1. Download `SedotDeck-decky-….zip` to the Deck. **Don't unzip it.**
+2. **⋯** → **Decky** → **Settings** → **Developer**, turn on **Developer mode**.
+3. **Install Plugin from ZIP File** and pick the ZIP.
 
-Asset pattern dan GitHub token diatur dari versi Desktop dan ikut terpakai di plugin.
+Asset patterns and the GitHub token are set in the desktop version and the plugin uses them too. If you had the DeckPort plugin, uninstall it from Decky after installing this one.
 </details>
 
 <details>
 <summary><b>Script (install.sh)</b></summary>
 
-Copy folder repo ini ke Deck (misalnya `~/deckport`), lalu di **Konsole**:
+Copy this repository to the Deck (for example to `~/sedotdeck`), then in **Konsole**:
 
 ```bash
-bash ~/deckport/install.sh
+bash ~/sedotdeck/install.sh
 ```
 
-Buka **DeckPort** dari menu aplikasi (*Utilities*).
+Open **SedotDeck** from the app menu (*Utilities*). The script also removes an older DeckPort install.
 </details>
 
-## 🚀 Cara pakai
+## Using it
 
-1. Klik **Add app** dan tempel link repo-nya (`owner/repo` saja juga bisa), atau buka tab **Recomp Haven** dan klik **Add**.
-2. Preview menunjukkan file yang akan di-download. Salah? Buka **Advanced** dan klik file yang benar.
-3. **Install**, lalu untuk seterusnya cukup **Update all**.
-4. **⋯** → **Add to Steam** sekali saja (di Desktop Mode, tutup Steam dulu; lihat [FAQ](#-faq)).
+1. Press **Add app** and paste the repository link (`owner/repo` works too), search for it under **Discover**, or press **Add** in the **Recomp Haven** tab.
+2. The preview shows which file will be downloaded. Wrong one? Open **Advanced** and pick the right file.
+3. **Install**. From then on, **Update all** is enough.
+4. **⋯** → **Add to Steam**, once (in Desktop Mode, close Steam first; see the [FAQ](#faq)).
 
-| Sedang download | Sudah terpasang |
+Each row shows the app's status, its version, **Install/Update** and **Launch**. Everything else (Check, Skip, Rollback, Add to Steam, Choose program, Category, Edit, Remove) is in the **⋯** menu.
+
+### Categories and Select mode
+
+Give an app a category with **⋯** → **Category…** and the list is grouped by it. Press **Select**, pick a few apps, then **Check**, **Update**, **Category…** or **Remove…** them together.
+
+### Choosing releases
+
+In **⋯** → **Edit** → **Advanced**. The preview updates as you type.
+
+| Option | What it does |
 |---|---|
-| ![Download berjalan](docs/screenshots/downloading.jpg) | ![Terpasang dan terverifikasi](docs/screenshots/installed.jpg) |
+| **Skip releases named** | Ignores releases whose title or tag match a regex, for example `nightly\|beta`. |
+| **Only the release marked "Latest"** | Follows only the release the developer labelled Latest. |
+| **Asset pattern** | Picks a specific file; click a file in the list and the pattern is filled in for you. |
+| **Include pre-releases** | Also follows pre-releases. |
 
-Kartu hanya menampilkan status, versi, **Install/Update**, dan **Launch**. Sisanya (Check, Skip, Rollback, Add to Steam, Choose program, Category, Edit, Remove) ada di menu **⋯**.
+## Discover: search GitHub
 
-### Kategori dan mode Select
+The **Discover** tab searches GitHub repositories by name and description, for example `bloodborne` or `god of war 3`. Each result shows its stars, language and when it was last updated, and you can sort by **Best match** or **Most stars**. **Add** opens the usual dialog, which looks at the project's latest release and shows the file it would download before anything is saved.
 
-Beri kategori lewat **⋯** → **Category…**, dan daftar app langsung dikelompokkan. Klik **Select**, pilih beberapa kartu, lalu **Check**, **Update**, **Category…**, atau **Remove…** sekaligus.
+Without a GitHub token, GitHub allows 10 searches a minute.
 
-<img src="docs/screenshots/select.jpg" alt="Mode Select: tiga app dipilih, dengan bar aksi di bawah" width="720">
+## Recomp Haven
 
-### Memilih rilis
+[Recomp Haven](https://recomphaven.com/) tracks every game recompilation and PC port. SedotDeck's **Recomp Haven** tab lists the ones with a Linux release on GitHub, using the site's own logo, box art and tiers.
 
-Di **⋯** → **Edit** → **Advanced**. Preview langsung menunjukkan hasilnya.
+- Search by game or project, filter by **system** (console) or tier, or show only the ones marked **Steam Deck**.
+- Sort by tier, system (grouped under a heading per console), stars, name or newest release.
+- **Add** puts it in **My apps**; **Details ↗** opens its page on recomphaven.com.
+- Projects that hand out game files (ROMs or ISOs) are not shown. Every recomp needs your own copy of the game.
 
-| Opsi | Gunanya |
-|---|---|
-| **Skip releases named** | Lewati rilis yang judul atau tag-nya cocok dengan regex, misalnya `nightly\|beta`. |
-| **Only the release marked "Latest"** | Pakai hanya rilis berlabel Latest dari developernya. |
-| **Asset pattern** | Pilih file tertentu; klik file di daftar dan pattern-nya terisi sendiri. |
-| **Include pre-releases** | Ikut memantau pre-release. |
+## Folder ports
 
-## 🎮 Recomp Haven
+A port released as a `.zip` or `.tar.gz` is extracted to `~/Applications/<Name>/`. Updates overwrite the release's files and delete files the old release had and the new one doesn't, without touching saves or configs.
 
-[Recomp Haven](https://recomphaven.com/) melacak semua game recompilation dan PC port. Tab **Recomp Haven** di DeckPort menampilkan yang punya rilis Linux di GitHub, diurutkan dari tier terbaik.
+To start it, SedotDeck writes a small launcher, `sedotdeck-launch.sh`, **inside that folder**. It changes into the game's folder and runs the program, so the Steam shortcut points at a path that never changes, even when a release renames its binary (`Game-1.0.x86_64` to `Game-1.1.x86_64`). Updates leave the launcher alone because it isn't part of any release.
 
-<img src="docs/screenshots/recomphaven.jpg" alt="Tab Recomp Haven: recomp dengan cover, tier, konsol, dan tombol Add" width="860">
+Older versions put the launcher next to the folder as `~/Applications/<Name>.sh`. On the next update or program change, SedotDeck moves it into the folder, unless a Steam shortcut still points at the old one; then it stays so the shortcut keeps working. Remove that shortcut and use **Add to Steam** again to switch.
 
-- Cari per nama, project, atau konsol; saring per tier atau yang bertanda **Steam Deck**.
-- **Add** memasukkannya ke **My apps**; **Details ↗** membuka halamannya di recomphaven.com.
-- Project yang membagikan file game (ROM/ISO) tidak ditampilkan. Setiap recomp butuh salinan game milikmu sendiri.
-- Project yang build Linux-nya hanya Flatpak (misalnya Sonic Unleashed Recompiled) belum bisa di-install.
+**⋯** → **Choose program…** picks which program runs, and the choice is kept across updates. With OpenGOAL, for example, pick `gk` (the game), not `goalc` (the compiler).
 
-## 🗂️ Port berbentuk folder
+Picking an **`.exe`** means a Windows game. The Decky plugin turns Proton on for you. In Desktop Mode, turn it on yourself in Steam: **Properties** → **Compatibility** → **Force Proton**.
 
-Port yang dirilis sebagai `.zip`/`.tar.gz` diekstrak ke `~/Applications/<Nama>/`. Saat update, file lama ditimpa tanpa menyentuh save dan config, dan launcher tetap `~/Applications/<Nama>.sh` dipakai untuk shortcut Steam.
+## Flatpak bundles
 
-**⋯** → **Choose program…** memilih program yang dijalankan, dan pilihan itu diingat setiap update. Contohnya OpenGOAL: pilih `gk` (game-nya), bukan `goalc` (compiler).
+When a release ships a `.flatpak` bundle and no AppImage, SedotDeck installs it with `flatpak install --user`, and updates reinstall the new bundle. Your app data in `~/.var/app` stays. **Launch** and **Add to Steam** start it with `flatpak run <app id>`. Removing it with "Also delete its downloaded files" uninstalls it. Flatpaks have no `.old` backup, so Rollback isn't available for them.
 
-<img src="docs/screenshots/program.jpg" alt="Dialog Choose program untuk OpenGOAL dengan gk dipilih" width="720">
+Apps you installed from Flathub (through the KDE Discover store, say) are updated by Flatpak itself and aren't shown here.
 
-Memilih **`.exe`** berarti game Windows. Dari plugin Decky, Proton langsung diaktifkan. Dari Desktop Mode, aktifkan sendiri di Steam: **Properties** → **Compatibility** → **Force Proton**.
+## Already have the AppImage?
 
-## 📁 Sudah punya AppImage-nya?
+SedotDeck scans `~/Applications` and recognizes AppImages from the update information embedded in them (Vita3K and PPSSPP, for example). Press **Keep … up to date**: new versions are written to the same path and file name, so your Steam shortcut keeps working. Files it doesn't recognize can be linked with **Choose repo…** or hidden with **Hide**.
 
-DeckPort memindai `~/Applications` dan mengenali AppImage dari info update yang tertanam di dalamnya (misalnya Vita3K dan PPSSPP).
-
-<img src="docs/screenshots/found.jpg" alt="DeckPort menemukan AppImage yang sudah ada di ~/Applications" width="720">
-
-Klik **Keep … up to date**: versi baru ditulis ke path dan nama file yang sama, jadi shortcut Steam-mu tetap jalan. File yang tidak dikenali bisa ditautkan lewat **Choose repo…** atau disembunyikan dengan **Hide**.
-
-## ⌨️ CLI
+## CLI
 
 <details>
-<summary><b>Perintah <code>deckport</code></b> (dari <code>install.sh</code>) atau <code>./DeckPort-…AppImage</code></summary>
+<summary><b>The <code>sedotdeck</code> command</b> (from <code>install.sh</code>) or <code>./SedotDeck-…AppImage</code></summary>
 
 ```bash
-deckport add https://github.com/owner/repo --name "My Port"
-deckport add <repo> --pattern 'linux.*\.AppImage$'   # pilih asset manual (regex)
-deckport add <repo> --pre                            # ikut memantau pre-release
-deckport add <repo> --adopt ~/Applications/Game-v1.1.AppImage
-deckport list
-deckport scan [--track]         # cari AppImage yang sudah ada di ~/Applications
-deckport check
-deckport update                 # update semua yang ada versi barunya
-deckport update "My Port"       # update satu app
-deckport remove "My Port" --delete-files
-deckport export daftar.json     # backup/bagikan daftar app
-deckport import daftar.json     # gabungkan; yang sudah ada dilewati
+sedotdeck add https://github.com/owner/repo --name "My Port"
+sedotdeck add <repo> --pattern 'linux.*\.AppImage$'   # pick the asset yourself (regex)
+sedotdeck add <repo> --pre                            # also follow pre-releases
+sedotdeck add <repo> --adopt ~/Applications/Game-v1.1.AppImage
+sedotdeck list
+sedotdeck scan [--track]         # find AppImages already in ~/Applications
+sedotdeck check
+sedotdeck update                 # update everything that has a new version
+sedotdeck update "My Port"       # update one app
+sedotdeck remove "My Port" --delete-files
+sedotdeck export apps.json       # back up or share the app list
+sedotdeck import apps.json       # merge; apps already tracked are skipped
 ```
 </details>
 
-## ❓ FAQ
+## FAQ
 
 <details>
-<summary><b>Muncul "GitHub rate limit hit"</b></summary>
+<summary><b>"GitHub rate limit hit"</b></summary>
 
-Tanpa login, GitHub hanya mengizinkan 60 request per jam. Buat token *fine-grained* (akses *public repositories* read-only) di <https://github.com/settings/tokens> dan tempel di **⚙ Settings**. Token tidak pernah ikut di export.
+Without signing in, GitHub allows 60 requests an hour (10 searches a minute). Create a *fine-grained* token with read-only access to public repositories at <https://github.com/settings/tokens> and paste it in **Settings**. The token is never included in exports.
 </details>
 
 <details>
-<summary><b>DeckPort memilih file atau rilis yang salah</b></summary>
+<summary><b>SedotDeck picked the wrong file or release</b></summary>
 
-**⋯** → **Edit** → **Advanced**: klik file yang benar, atau isi **Skip releases named** (misalnya `nightly|beta`). Lihat [Memilih rilis](#memilih-rilis).
+**⋯** → **Edit** → **Advanced**: click the right file, or fill in **Skip releases named** (for example `nightly|beta`). See [Choosing releases](#choosing-releases).
 </details>
 
 <details>
-<summary><b>Port berbentuk folder tidak bisa di-Add to Steam</b></summary>
+<summary><b>A folder port can't be added to Steam</b></summary>
 
-DeckPort belum tahu program mana yang dijalankan. Pilih **⋯** → **Choose program…** dan pilih `.sh`, binary, atau `.exe`-nya.
+SedotDeck doesn't know which program to start yet. Use **⋯** → **Choose program…** and pick its `.sh`, binary or `.exe`.
 </details>
 
 <details>
-<summary><b>Kenapa harus menutup Steam untuk "Add to Steam"?</b></summary>
+<summary><b>Why do I have to close Steam for "Add to Steam"?</b></summary>
 
-Steam menimpa `shortcuts.vdf` dari memorinya saat keluar. Di Desktop Mode, keluar dulu dari Steam, pilih **Add to Steam**, lalu buka Steam lagi. Salinan lama selalu disimpan sebagai `shortcuts.vdf.deckport.bak`. Di Game Mode tidak perlu: plugin Decky memakai API Steam.
+Steam rewrites `shortcuts.vdf` from memory when it exits. In Desktop Mode, exit Steam first, press **Add to Steam**, then start Steam again. The previous file is always kept as `shortcuts.vdf.sedotdeck.bak`. In Game Mode there's no need: the Decky plugin uses Steam's own API.
 </details>
 
 <details>
-<summary><b>AppImage tidak mau terbuka</b></summary>
+<summary><b>The AppImage won't open</b></summary>
 
-Pastikan **Is executable** dicentang (atau `chmod +x DeckPort-*.AppImage`). Pesan *"DeckPort needs Python 3"* berarti sistemmu tidak punya `python3`; SteamOS sudah menyertakannya.
+Make sure **Is executable** is ticked (or run `chmod +x SedotDeck-*.AppImage`). *"SedotDeck needs Python 3"* means your system has no `python3`; SteamOS includes it.
 </details>
 
 <details>
-<summary><b>Data DeckPort disimpan di mana?</b></summary>
+<summary><b>How do SedotDeck's own updates work?</b></summary>
 
-- Daftar app dan pengaturan: `~/.config/deckport/config.json`
-- Cache Recomp Haven (sehari): `~/.config/deckport/recomphaven.json`
-- File game: `~/Applications/` (bisa diganti di **⚙ Settings**)
-
-DeckPort tidak mengirim telemetri. Yang dihubungi hanya API forge tempat rilisnya berada, dan Recomp Haven saat tab-nya dibuka.
+On start, SedotDeck asks GitHub for its newest release (at most every 6 hours). If it's newer, you get **Update now**, **Later** or **Skip this version**. The AppImage downloads the new AppImage and replaces itself; the `install.sh` version replaces `sedotdeck.py`. Restart SedotDeck to use the new version. The Decky plugin can't replace itself, so it links to the release instead. You can check any time in **Settings**.
 </details>
 
-## 🛠️ Cara kerja
+<details>
+<summary><b>Where does SedotDeck keep its data?</b></summary>
+
+- App list and settings: `~/.config/sedotdeck/config.json` (moved from `~/.config/deckport` if you used DeckPort)
+- Recomp Haven cache (one day): `~/.config/sedotdeck/recomphaven.json`
+- Games and apps: `~/Applications/` (change it in **Settings**)
+
+SedotDeck sends no telemetry. It only contacts the forge APIs where releases live, GitHub's search when you use Discover, and Recomp Haven when its tab is open.
+</details>
+
+## How it works
 
 <details>
-<summary><b>Arsitektur dan build sendiri</b></summary>
+<summary><b>Architecture and building it yourself</b></summary>
 
 ```mermaid
 flowchart LR
-  A["AppImage<br/>(Tauri window)"] -- "starts on a free localhost port" --> P["deckport.py"]
+  A["AppImage<br/>(Tauri window)"] -- "starts on a free localhost port" --> P["sedotdeck.py"]
   S["install.sh<br/>(browser)"] --> P
   D["Decky plugin<br/>(Game Mode)"] -- "imports" --> P
-  P -- "release API" --> F["GitHub · GitLab · Codeberg<br/>Gitea · Forgejo"]
+  P -- "release + search API" --> F["GitHub · GitLab · Codeberg<br/>Gitea · Forgejo"]
   P -- "download + SHA-256" --> L["~/Applications"]
+  P -- "flatpak install --user" --> K["Flatpak"]
   P -- "Add to Steam" --> V["Steam shortcuts.vdf"]
   R["Recomp Haven"] -- "recomp list" --> P
-  P <--> C["~/.config/deckport"]
+  P <--> C["~/.config/sedotdeck"]
 ```
 
-Semua logika ada di [`deckport.py`](deckport.py) (hanya Python standard library). [`desktop/`](desktop) adalah cangkang Tauri yang menampilkan UI-nya di jendela native, dan [`decky-plugin/`](decky-plugin) memanggil kode yang sama dari Game Mode.
+All the logic is in [`sedotdeck.py`](sedotdeck.py) (Python standard library only). [`desktop/`](desktop) is a Tauri shell that shows its UI in a native window, and [`decky-plugin/`](decky-plugin) calls the same code from Game Mode.
 
-- **AppImage**: `cd desktop && npm ci && npm run build` (butuh Rust, Node.js, dan [dependensi Tauri](https://v2.tauri.app/start/prerequisites/#linux)).
-- **Plugin Decky**: `decky-plugin/package.sh` (butuh Node.js 20+ dan `zip`).
-- **Tes**: `python3 -I tests/test_deckport.py deckport.py`.
+- **AppImage**: `cd desktop && npm ci && npm run build` (needs Rust, Node.js and the [Tauri dependencies](https://v2.tauri.app/start/prerequisites/#linux)).
+- **Decky plugin**: `decky-plugin/package.sh` (needs Node.js 20+ and `zip`).
+- **Tests**: `python3 -I tests/test_sedotdeck.py sedotdeck.py` (on Linux).
 
-GitHub Actions mem-build keduanya di setiap push ke `main`, dan tag `v*` dipublish sebagai Release.
+GitHub Actions builds both on every push to `main`, and `v*` tags are published as a Release.
 </details>
 
-## 🙏 Credit
+## Credit
 
-DeckPort berdiri di atas karya orang lain:
+SedotDeck is built on other people's work:
 
-| Fitur | Credit |
+| Feature | Credit |
 |---|---|
-| Tab Recomp Haven (daftar, tier, ringkasan, label konsol) | [Recomp Haven](https://recomphaven.com/) oleh [rikuwru](https://github.com/rikuwru/recomphaven) |
-| Data dasar Recomp Haven | [Recompendium](https://github.com/nio03/unricopie) (MIT) |
-| Box art di tab Recomp Haven | Milik publisher masing-masing game, dikumpulkan Recomp Haven dari [libretro thumbnails](https://thumbnails.libretro.com/) dan Wikipedia |
-| Ide dasar DeckPort, filter judul rilis, rilis "Latest", deteksi repo pindah, kategori, dan aksi massal | [Obtainium](https://github.com/ImranR98/Obtainium) oleh ImranR98 |
-| Pengenalan AppImage dari info update yang tertanam | Spesifikasi update information dari [AppImage](https://github.com/AppImage/AppImageSpec) |
-| Jendela desktop (AppImage) | [Tauri](https://v2.tauri.app) dan WebKitGTK |
-| Plugin Game Mode | [Decky Loader](https://decky.xyz) (`@decky/api`, `@decky/ui`) dan [react-icons](https://react-icons.github.io/react-icons/) |
-| Game Windows lewat Proton | [Proton](https://github.com/ValveSoftware/Proton) oleh Valve |
-| Kode, dokumentasi, dan screenshot | [Claude](https://claude.com/claude-code) oleh Anthropic (lihat di bawah) |
+| Recomp Haven tab (list, tiers, summaries, system labels, logo) | [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) |
+| Recomp Haven's base data | [Recompendium](https://github.com/nio03/unricopie) (MIT) |
+| Box art in the Recomp Haven tab | Belongs to each game's publisher, collected by Recomp Haven from [libretro thumbnails](https://thumbnails.libretro.com/) and Wikipedia |
+| The idea behind SedotDeck, release title filters, "Latest" releases, moved-repo detection, categories and bulk actions | [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98 |
+| Recognizing AppImages from embedded update information | The update information spec from [AppImage](https://github.com/AppImage/AppImageSpec) |
+| Desktop window (AppImage) | [Tauri](https://v2.tauri.app) and WebKitGTK |
+| Game Mode plugin | [Decky Loader](https://decky.xyz) (`@decky/api`, `@decky/ui`) and [react-icons](https://react-icons.github.io/react-icons/) |
+| Windows games through Proton | [Proton](https://github.com/ValveSoftware/Proton) by Valve |
+| Code and documentation | [Claude](https://claude.com/claude-code) by Anthropic (see below) |
 
-Emulator dan port yang kamu install lewat DeckPort adalah karya developer masing-masing. Dukung mereka di repo aslinya.
+The emulators and ports you install with SedotDeck are their developers' work. Support them in their own repositories.
 
-### 🤖 Dibuat dengan Claude
+### Made with Claude
 
-DeckPort dibuat menggunakan [Claude](https://claude.com/claude-code), model AI dari Anthropic, lewat Claude Code. Arah proyek dan keputusannya dari aku ([intermission88](https://github.com/intermission88)), dan setiap fiturnya aku tes sendiri. Commit yang dibuat dengan Claude bertanda `Co-Authored-By: Claude`.
+SedotDeck is built with [Claude](https://claude.com/claude-code), Anthropic's AI model, through Claude Code. The direction and decisions are mine ([intermission88](https://github.com/intermission88)), and I test every feature myself. Commits made with Claude carry `Co-Authored-By: Claude`.

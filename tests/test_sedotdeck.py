@@ -1,8 +1,8 @@
-"""Offline tests for deckport.py. Usage: python3 -I tests/test_deckport.py deckport.py"""
+"""Offline tests for sedotdeck.py. Usage: python3 -I tests/test_sedotdeck.py sedotdeck.py"""
 import hashlib, importlib.util, io, json, os, sys, tempfile, time, zipfile
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("deckport", sys.argv[1])
+spec = importlib.util.spec_from_file_location("sedotdeck", sys.argv[1])
 dp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dp)
 ok = 0
@@ -98,7 +98,7 @@ try:
 except RuntimeError as e:
     eq("SHA-256 mismatch" in str(e), True, "mismatch message")
 eq(Path(path).read_bytes(), before, "old file untouched")
-eq([f for f in os.listdir(tmp) if f.startswith(".deckport-")], [], "temp cleaned up")
+eq([f for f in os.listdir(tmp) if f.startswith(".sedotdeck-")], [], "temp cleaned up")
 
 # no checksum anywhere: installs, flagged unverified
 app = mkapp()
@@ -167,7 +167,8 @@ fset = {"install_dir": ftmp, "keep_backup": True}
 fapp = mkfolder("https://x/fold1", "v1")
 fdir = dp.install_app(fapp, fset)
 fl = fapp["launcher"]
-eq(fl, os.path.join(ftmp, "Fold-Game.sh"), "launcher next to the folder")
+eq(fl, os.path.join(fdir, dp.LAUNCHER_NAME), "launcher inside the app folder")
+eq(dp.LAUNCHER_NAME in [c["file"] for c in dp.launch_candidates(fdir)], False, "own launcher is never a candidate")
 eq(os.access(fl, os.X_OK), True, "launcher executable")
 eq(Path(fl).read_text(), "#!/bin/sh\ncd %s || exit 1\nexec ./FoldGame-1.0.x86_64 \"$@\"\n" % fdir, "launcher content")
 eq(sorted(fapp["installed"]["files"])[:2], ["FoldGame-1.0.x86_64", "data/a/old.txt"], "manifest recorded")
@@ -178,7 +179,7 @@ os.makedirs(os.path.join(fdir, "saves")); Path(fdir, "saves", "slot1.sav").write
 fapp["name"] = "Totally Renamed"
 fapp["latest"] = mkfolder("https://x/fold2", "v2")["latest"]
 eq(dp.install_app(fapp, fset), fdir, "folder path unchanged")
-eq(fapp["launcher"], fl, "launcher path stays after rename")
+eq((fapp["launcher"], os.path.isfile(fl)), (fl, True), "launcher stays after rename and update")
 eq("FoldGame-2.0.x86_64" in Path(fl).read_text() and "1.0" not in Path(fl).read_text(), True, "launcher repointed")
 eq((os.path.exists(os.path.join(fdir, "FoldGame-1.0.x86_64")), os.path.exists(os.path.join(fdir, "old.dat")),
     os.path.isdir(os.path.join(fdir, "data", "a"))), (False, False, False), "stale release files and empty dirs removed")
@@ -193,11 +194,17 @@ dp.install_app(fapp2, fset)
 eq(os.path.exists(os.path.join(fdir2, "stale.bin")), True, "no manifest, nothing deleted")
 eq("files" in fapp2["installed"], True, "manifest starts with this install")
 
-# an unrelated file at the launcher path is never overwritten
-Path(ftmp, "Other-Fold.sh").write_text("mine")
+# a launcher from before, next to the folder, moves inside unless a Steam shortcut still points at it
 fapp3 = mkfolder("https://x/fold1", "v1"); fapp3["name"] = "Other Fold"
+legacy = os.path.join(ftmp, "Other-Fold.sh"); Path(legacy).write_text("old")
+fapp3["launcher"] = legacy
+real_exes, dp.steam_shortcut_exes = dp.steam_shortcut_exes, lambda: {legacy}
 dp.install_app(fapp3, fset)
-eq((Path(ftmp, "Other-Fold.sh").read_text(), os.path.basename(fapp3["launcher"])), ("mine", "Other-Fold-1.sh"), "existing file kept")
+eq((fapp3["launcher"], "exec ./" in Path(legacy).read_text()), (legacy, True), "launcher a Steam shortcut uses stays put")
+dp.steam_shortcut_exes = lambda: set()
+dp.install_app(fapp3, fset)
+eq((os.path.dirname(fapp3["launcher"]), os.path.exists(legacy)), (fapp3["installed"]["path"], False), "unused old launcher moved inside")
+dp.steam_shortcut_exes = real_exes
 # no executable found: no launcher
 FILES["https://x/fold3"] = zip_of({"Data-v1/readme.txt": (b"hi", 0o644)})
 fapp4 = mkfolder("https://x/fold3", "v1"); fapp4["name"] = "Docs Only"
@@ -285,7 +292,7 @@ sc = dp.vdf_load(rsv.read_bytes())[0][2]
 e0 = dict((k_, v) for _t, k_, v in sc[0][2]); e1 = dict((k_, v) for _t, k_, v in sc[1][2])
 eq((e0["Exe"], e0["StartDir"], e0["appid"], e0["AppName"], e0["LastPlayTime"]), ('"%s"' % rnew, '"%s"' % rdir, -77, "Eden Emu", 5), "shortcut rewritten, rest kept")
 eq(e1["Exe"], '"/x/other"', "other shortcut untouched")
-eq(Path(str(rsv) + ".deckport.bak").exists(), True, "shortcuts backup")
+eq(Path(str(rsv) + ".sedotdeck.bak").exists(), True, "shortcuts backup")
 try:
     dp.rename_app_file(rapp, rsv); raise AssertionError("already named")
 except RuntimeError:
@@ -300,7 +307,7 @@ except RuntimeError as e:
 
 # --- export / import
 cfg = {"settings": {"github_token": "SECRET"}, "apps": []}
-added, skipped = dp.import_apps(cfg, {"format": "deckport-apps", "apps": [
+added, skipped = dp.import_apps(cfg, {"format": "sedotdeck-apps", "apps": [
     {"name": "A", "provider": "github", "host": "github.com", "repo": "a/b", "pattern": "", "prerelease": False},
     {"name": "V", "provider": "gitlab", "host": "gitlab.com", "repo": "veloren/veloren"},
     {"name": "dup", "provider": "github", "host": "github.com", "repo": "A/B"},
@@ -309,9 +316,9 @@ eq((len(added), skipped), (2, 1), "import merge")
 exp = dp.export_apps(cfg)
 eq("SECRET" in json.dumps(exp), False, "no token in export")
 eq(dp.import_apps(cfg, exp), ([], 2), "re-import is a no-op")
-for bad in ({"apps": []}, {"format": "deckport-apps", "apps": [{"provider": "evil", "host": "x.y", "repo": "a/b"}]},
-            {"format": "deckport-apps", "apps": [{"provider": "github", "host": "github.com", "repo": "../../etc"}]},
-            {"format": "deckport-apps", "apps": [{"provider": "github", "host": "github.com", "repo": "a/b", "pattern": "("}]}):
+for bad in ({"apps": []}, {"format": "sedotdeck-apps", "apps": [{"provider": "evil", "host": "x.y", "repo": "a/b"}]},
+            {"format": "sedotdeck-apps", "apps": [{"provider": "github", "host": "github.com", "repo": "../../etc"}]},
+            {"format": "sedotdeck-apps", "apps": [{"provider": "github", "host": "github.com", "repo": "a/b", "pattern": "("}]}):
     n = len(cfg["apps"])
     try:
         dp.import_apps(cfg, bad); raise AssertionError("should reject %r" % bad)
@@ -326,7 +333,7 @@ c = dp.load_config()
 eq((c["apps"][0]["provider"], c["apps"][0]["host"]), ("github", "github.com"), "migration")
 eq(dp.web_url(c["apps"][0]), "https://github.com/o/r/releases", "web url")
 
-# --- a running Server picks up changes another DeckPort saved (desktop UI <-> Decky plugin)
+# --- a running Server picks up changes another SedotDeck saved (desktop UI <-> Decky plugin)
 srv = dp.Server()
 eq([a["name"] for a in srv.handle("/api/state", {})["apps"]], ["Old"], "server sees config")
 time.sleep(0.01)
@@ -424,7 +431,7 @@ Path(sdir, "weird-name.AppImage").write_bytes(fake_elf("gh-releases-zsync|hrydga
 Path(sdir, "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage").write_bytes(appimage)
 Path(sdir, "Mystery-1.0.AppImage").write_bytes(appimage)
 Path(sdir, "Hidden.AppImage").write_bytes(appimage)
-Path(sdir, "DeckPort-1.5.0-x86_64.AppImage").write_bytes(appimage)
+Path(sdir, "SedotDeck-1.5.0-x86_64.AppImage").write_bytes(appimage)
 Path(sdir, "Cemu.AppImage").write_bytes(fake_elf("gh-releases-zsync|cemu-project|Cemu|latest|*.zsync"))
 eq(dp.read_update_info(os.path.join(sdir, "weird-name.AppImage")), "gh-releases-zsync|hrydgard|ppsspp|latest|*.zsync", "upd_info")
 eq(dp.read_update_info(os.path.join(sdir, "Mystery-1.0.AppImage")), "", "no upd_info")
@@ -434,7 +441,7 @@ scfg = {"settings": {"install_dir": sdir, "scan_ignored": [os.path.join(sdir, "H
          installed={"path": old_file})]}
 found = {f["file"]: f for f in dp.scan_folder(scfg)}
 eq(sorted(found), ["Mystery-1.0.AppImage", "pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage", "weird-name.AppImage"],
-   "scan skips DeckPort itself, hidden files and spare copies of installed apps")
+   "scan skips SedotDeck itself, hidden files and spare copies of installed apps")
 eq((found["weird-name.AppImage"]["src"], found["weird-name.AppImage"]["name"]),
    ("hrydgard/ppsspp", "ppsspp"), "identified by update info")
 eq(found["pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage"]["src"], "", "a file name alone doesn't identify a repo")
@@ -483,19 +490,19 @@ new = dict((k_, v) for _t, k_, v in lst[1][2])
 eq((len(lst), lst[0][2], lst[1][1], new["Exe"], new["AppName"]), (2, existing[0][2][0][2], "1", '"%s"' % old_file, "Game"),
    "existing shortcut kept, ours appended")
 eq(new["appid"] < 0 and (new["appid"] + (1 << 32)) & 0x80000000 != 0, True, "shortcut appid has the high bit")
-eq(Path(str(vdf_path) + ".deckport.bak").exists(), True, "vdf backup")
+eq(Path(str(vdf_path) + ".sedotdeck.bak").exists(), True, "vdf backup")
 
 # --- desktop-app mode: the way the Tauri shell runs the server
 import re, subprocess, urllib.error, urllib.request
 home = tempfile.mkdtemp()
 env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=os.path.join(home, ".config"))
-Path(env["XDG_CONFIG_HOME"], "deckport").mkdir(parents=True)
-Path(env["XDG_CONFIG_HOME"], "deckport", "config.json").write_text(json.dumps(
+Path(env["XDG_CONFIG_HOME"], "sedotdeck").mkdir(parents=True)
+Path(env["XDG_CONFIG_HOME"], "sedotdeck", "config.json").write_text(json.dumps(
     {"settings": {"github_token": "SECRET"}, "apps": [{"id": "x", "name": "A", "repo": "a/b"}]}))
 proc = subprocess.Popen([sys.executable, "-I", sys.argv[1], "serve", "--no-browser", "--port", "0", "--exit-on-stdin-close"],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
 line = proc.stdout.readline().strip()
-eq(line.startswith("DECKPORT_READY http://127.0.0.1:") and not line.endswith(":0/"), True, "ready line with real port")
+eq(line.startswith("SEDOTDECK_READY http://127.0.0.1:") and not line.endswith(":0/"), True, "ready line with real port")
 base = line.split(" ", 1)[1]
 html = urllib.request.urlopen(base + "?app=1", timeout=5).read().decode()
 token = re.search(r'const TOKEN="([^"]+)"', html).group(1)
@@ -503,7 +510,7 @@ token = re.search(r'const TOKEN="([^"]+)"', html).group(1)
 
 def post(path, body):
     req = urllib.request.Request(base.rstrip("/") + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", "X-DeckPort-Token": token})
+                                 headers={"Content-Type": "application/json", "X-SedotDeck-Token": token})
     try:
         return 200, json.loads(urllib.request.urlopen(req, timeout=5).read())
     except urllib.error.HTTPError as e:
@@ -593,7 +600,7 @@ except ValueError as e:
 dp.apply_options(oapp, {"skip_titles": "", "latest_only": False, "category": ""})
 eq([k for k in ("skip_titles", "latest_only", "category") if k in oapp], [], "cleared options are dropped")
 
-# --- Recomp Haven: what DeckPort lists from its data file
+# --- Recomp Haven: what SedotDeck lists from its data file
 RH_JS = """/* header */
 window.RECOMPHAVEN_META = {"snapshot": "2026-10-23"};
 
@@ -627,5 +634,81 @@ dp._rh_get = offline
 d = dp.recomphaven(refresh=True)
 eq((len(d["items"]), "offline" in d["stale"]), (2, True), "stale cache when the refresh fails")
 dp.RH_CACHE, dp._rh_get = real_cache, real_get
+
+# --- Flatpak bundles
+eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-linux.tar.gz", "Game.flatpakref"))["name"], "Game-x86_64.flatpak", "bundle beats a tarball")
+eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-x86_64.AppImage"))["name"], "Game-x86_64.AppImage", "AppImage still wins")
+FILES["https://x/game.flatpak"] = b"flatpak\x00" + b"\x00" * 40 + b"app/org.example.Game/x86_64/stable\x00" + b"\x00" * 100
+fp_tmp, fp_calls = tempfile.mkdtemp(), []
+real_cmd, real_dir = dp.flatpak_cmd, dp.flatpak_dir
+dp.flatpak_cmd = lambda *a, **k: fp_calls.append(a) or ""
+dp.flatpak_dir = lambda app_id: os.makedirs(os.path.join(fp_tmp, app_id), exist_ok=True) or os.path.join(fp_tmp, app_id)
+fpapp = {"id": "fp1", "name": "Flat Game", "repo": "me/flat", "latest": {"tag": "v1", "asset": {
+    "id": 9, "name": "game.flatpak", "size": 1, "updated_at": "t", "download_url": "https://x/game.flatpak", "sha256": ""}}}
+fp_path = dp.install_app(fpapp, {"install_dir": fp_tmp, "keep_backup": True})
+eq((fp_path, fpapp["installed"]["kind"], fpapp["installed"]["flatpak_id"]),
+   (os.path.join(fp_tmp, "org.example.Game"), "flatpak", "org.example.Game"), "bundle installed through flatpak")
+eq((fp_calls[0][0], "--user" in fp_calls[0], "--bundle" in fp_calls[0]), ("install", True, True), "flatpak install --user --bundle")
+eq([f for f in os.listdir(fp_tmp) if f.startswith(".sedotdeck-")], [], "bundle download cleaned up")
+eq((dp.steam_target(fpapp)[2], dp.steam_args(fpapp)), (False, "run org.example.Game"), "Steam starts flatpak run")
+sv3 = Path(tempfile.mkdtemp(), "shortcuts.vdf")
+eq(dp.add_to_steam(fpapp, sv3), True, "flatpak added to Steam")
+ent = dict((k_, v) for _t, k_, v in dp.vdf_load(sv3.read_bytes())[0][2][0][2])
+eq(ent["LaunchOptions"], "run org.example.Game", "launch options carry the app id")
+eq(dp.add_to_steam(fpapp, sv3), False, "same flatpak not added twice")
+try:
+    dp.rollback_app(fpapp); raise AssertionError("flatpak rollback")
+except RuntimeError:
+    ok += 1
+dp.remove_app({"settings": {}, "apps": [fpapp]}, fpapp, delete_files=True)
+eq((fp_calls[-1][0], fp_calls[-1][-1]), ("uninstall", "org.example.Game"), "remove uninstalls it")
+dp.flatpak_cmd, dp.flatpak_dir = real_cmd, real_dir
+
+# --- versions, SedotDeck's own updates, GitHub search
+vk = dp.version_key
+eq(vk("0.0.1-alpha") < vk("0.0.1-alpha.2") < vk("0.0.1-beta") < vk("0.0.1") < vk("v0.0.2-alpha") < vk("0.1"), True, "version order")
+eq(vk("nightly"), None, "not a version")
+real_self, real_json, real_ver = dp.SELF_CACHE, dp.http_json, dp.VERSION
+dp.SELF_CACHE, dp.VERSION = Path(tempfile.mkdtemp(), "self.json"), "0.0.1-alpha"
+dp.http_json = lambda url, token="", service="": [
+    {"tag_name": "v9.0.0", "draft": True, "assets": []},
+    {"tag_name": "v0.0.2-alpha", "html_url": "https://x/r", "body": "notes", "assets": []},
+    {"tag_name": "v0.0.1-alpha", "assets": []}]
+info = dp.self_update_check()
+eq((info["latest"], info["newer"], info["notes"]), ("v0.0.2-alpha", True, "notes"), "newest release that isn't a draft")
+def no_network(*a, **k):
+    raise AssertionError("should come from the cache")
+dp.http_json = no_network
+eq(dp.self_update_check()["latest"], "v0.0.2-alpha", "cached for a while")
+dp.VERSION = "0.0.2-alpha"
+eq(dp.self_update_check()["newer"], False, "same version is not an update")
+def fake_search(url, token="", service=""):
+    assert "in%3Aname%2Cdescription" in url and "sort=" not in url, url
+    return {"total_count": 2, "items": [
+        {"full_name": "a/bloodborne-port", "name": "bloodborne-port", "description": "d", "stargazers_count": 1500,
+         "html_url": "https://github.com/a/bloodborne-port"},
+        {"full_name": "../evil", "name": "x"}]}
+dp.http_json = fake_search
+r = dp.github_search("  bloodborne ", tracked=["A/Bloodborne-Port"])
+eq([(i["repo"], i["stars"], i["tracked"]) for i in r["items"]], [("a/bloodborne-port", 1500, True)], "search results, tracked marked")
+try:
+    dp.github_search("x"); raise AssertionError("one letter searched")
+except ValueError:
+    ok += 1
+dp.SELF_CACHE, dp.http_json, dp.VERSION = real_self, real_json, real_ver
+
+# --- the rename: DeckPort's config and exports carry over
+mig = Path(tempfile.mkdtemp())
+real_dirs = dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR, dp.CONFIG_FILE
+dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR = mig / "sedotdeck", mig / "deckport"
+dp.CONFIG_FILE = dp.CONFIG_DIR / "config.json"
+dp.LEGACY_CONFIG_DIR.mkdir()
+(dp.LEGACY_CONFIG_DIR / "config.json").write_text(json.dumps({"apps": [{"id": "x", "name": "Old", "repo": "a/b"}]}))
+eq([a["name"] for a in dp.load_config()["apps"]], ["Old"], "DeckPort config moved over")
+eq((dp.LEGACY_CONFIG_DIR.exists(), dp.CONFIG_FILE.exists()), (False, True), "old folder renamed")
+dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR, dp.CONFIG_FILE = real_dirs
+added, _ = dp.import_apps({"settings": {}, "apps": []}, {"format": "deckport-apps", "apps": [
+    {"name": "A", "provider": "github", "host": "github.com", "repo": "a/b"}]})
+eq(len(added), 1, "DeckPort exports still import")
 
 print("all %d checks passed" % ok)

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-DeckPort - Obtainium-style updater for AppImages & PC ports on Steam Deck.
+SedotDeck - Obtainium-style updater for AppImages & PC ports on Steam Deck.
 
 Track GitHub Releases, check for updates, and download/replace them in one place.
 Pure Python standard library: no pip installs needed on SteamOS.
 
 Usage:
-  deckport.py serve                 # open the web UI (default)
-  deckport.py add <github-url>      # track a repo
-  deckport.py list
-  deckport.py scan [--track]        # find AppImages you already have
-  deckport.py check
-  deckport.py update [name ...]     # update given apps, or everything with an update
-  deckport.py remove <name>
+  sedotdeck.py serve                 # open the web UI (default)
+  sedotdeck.py add <github-url>      # track a repo
+  sedotdeck.py list
+  sedotdeck.py scan [--track]        # find AppImages you already have
+  sedotdeck.py check
+  sedotdeck.py update [name ...]     # update given apps, or everything with an update
+  sedotdeck.py remove <name>
 """
 
 import argparse
@@ -42,17 +42,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 VERSION = "0.0.1-alpha"
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "deckport"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sedotdeck"
+LEGACY_CONFIG_DIR = CONFIG_DIR.with_name("deckport")  # SedotDeck was called DeckPort before 0.0.1-alpha
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
-USER_AGENT = "DeckPort/" + VERSION
+USER_AGENT = "SedotDeck/" + VERSION
 
 ARCHIVE_EXTS = (".zip", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar")
 # Assets that are clearly not for a Steam Deck (x86_64 Linux).
 NOT_FOR_DECK = re.compile(
     r"(windows|win32|win64|[-_.]win[-_.]|\.exe$|\.msi$|macos|mac[-_.]?os|darwin|osx|\.dmg$|\.pkg$"
     r"|android|\.apk$|[-_.]ios[-_.]|aarch64|arm64|armhf|armv\d|[-_.]arm([-_.]?\d+|el)?([-_. )]|$)|i386|i686|riscv|ppc64|s390x|\.zsync$|\.sha\d*(sum)?$|\.sig$|\.asc$"
-    r"|checksums?|\.blockmap$|\.txt$|\.json$|\.ya?ml$|\.deb$|\.rpm$|flatpak|\.snap$|debug|[-_.]dbg([-_.]|$)|symbols|\.pdb$)",
+    r"|checksums?|\.blockmap$|\.txt$|\.json$|\.ya?ml$|\.deb$|\.rpm$|flatpak(?!$)|\.snap$|debug|[-_.]dbg([-_.]|$)|symbols|\.pdb$)",
     re.I,
 )
 
@@ -73,8 +74,18 @@ def default_config():
     }
 
 
+def migrate_legacy_config():
+    """Move ~/.config/deckport to ~/.config/sedotdeck once, so the app list survives the rename."""
+    if not CONFIG_DIR.exists() and LEGACY_CONFIG_DIR.is_dir():
+        try:
+            os.replace(LEGACY_CONFIG_DIR, CONFIG_DIR)
+        except OSError as e:
+            print("Warning: could not move %s (%s)" % (LEGACY_CONFIG_DIR, e), file=sys.stderr)
+
+
 def load_config():
     with _lock:
+        migrate_legacy_config()
         cfg = default_config()
         if CONFIG_FILE.exists():
             try:
@@ -322,6 +333,8 @@ def score_asset(name):
     s = 0
     if n.endswith(".appimage"):
         s += 100
+    elif n.endswith(".flatpak"):
+        s += 60  # installs cleanly, but an AppImage needs no runtime download
     elif n.endswith(ARCHIVE_EXTS):
         s += 10
     if "linux" in n:
@@ -443,6 +456,8 @@ def asset_kind(name):
     n = name.lower()
     if n.endswith(".appimage"):
         return "appimage"
+    if n.endswith(".flatpak"):
+        return "flatpak"
     if n.endswith(ARCHIVE_EXTS):
         return "archive"
     return "file"
@@ -450,6 +465,8 @@ def asset_kind(name):
 
 def sniff_kind(path, name):
     """Kind from the file's magic bytes; GitLab asset names are often labels like "Linux (x86_64)"."""
+    if name.lower().endswith(".flatpak"):
+        return "flatpak"
     with open(path, "rb") as f:
         head = f.read(512)
     if head[:4] == b"\x7fELF":
@@ -562,6 +579,7 @@ def pinned_path(app):
     return app.get("target_path") or (app.get("installed") or {}).get("path") or None
 
 
+LAUNCHER_NAME = "sedotdeck-launch.sh"  # written inside a folder port; never a launch candidate itself
 _NOT_MAIN_DIRS = {"lib", "lib32", "lib64", "libs", "plugins", "platforms", "share", "python"}
 
 
@@ -571,7 +589,7 @@ _NOT_MAIN_EXE = re.compile(r"unins|crash|setup|install|redist|dxsetup|updater|re
 
 def launch_candidates(folder, wants=()):
     """Programs inside a folder port, best guess first: Linux binaries and scripts, then Windows .exe
-    files (Steam runs those through Proton). "auto" marks the ones DeckPort may pick by itself."""
+    files (Steam runs those through Proton). "auto" marks the ones SedotDeck may pick by itself."""
     wants = {w for w in wants if len(w) >= 3}
     out = []
     for root, dirs, files in os.walk(folder):
@@ -580,6 +598,8 @@ def launch_candidates(folder, wants=()):
         dirs[:] = [] if depth >= 3 else sorted(dirs)
         in_lib = any(d.lower() in _NOT_MAIN_DIRS for d in rel_root.split(os.sep) if d)
         for fn in sorted(files):
+            if not rel_root and fn == LAUNCHER_NAME:
+                continue
             p, low = os.path.join(root, fn), fn.lower()
             try:
                 st = os.lstat(p)
@@ -609,7 +629,7 @@ def launch_candidates(folder, wants=()):
 
 
 def find_main_exe(folder, wants):
-    """The program DeckPort picks by itself in a folder port, preferring a Linux one named like the app."""
+    """The program SedotDeck picks by itself in a folder port, preferring a Linux one named like the app."""
     best = next((c for c in launch_candidates(folder, wants) if c["auto"]), None)
     return best["path"] if best else None
 
@@ -620,16 +640,18 @@ def _app_wants(app):
 
 def write_launcher(app, install_dir, folder):
     """Point a folder port at its program, recorded in app["launch"]. A Linux one gets a stable
-    <install_dir>/<name>.sh, pinned in app["launcher"] so renames never move it and a Steam shortcut to it
-    survives updates. A Windows .exe has no launcher: Steam starts it through Proton. A program the user
-    picked (launch.manual) wins while it still exists; otherwise DeckPort picks one."""
+    <folder>/sedotdeck-launch.sh, pinned in app["launcher"] so a Steam shortcut to it survives updates
+    (updates only prune files the old release shipped). A launcher from before, in <install_dir>, moves
+    into the folder unless a Steam shortcut still points at it. A Windows .exe has no launcher: Steam
+    starts it through Proton. A program the user picked (launch.manual) wins while it still exists;
+    otherwise SedotDeck picks one."""
     cur = app.get("launch") or {}
     pick = None
     if cur.get("manual"):
         p = os.path.join(folder, cur.get("file") or "")
         pick = next((c for c in launch_candidates(folder) if c["path"] == p), None)
         if not pick:
-            app["notice"] = "%s is gone in this version, so DeckPort picked the program again" % cur.get("file")
+            app["notice"] = "%s is gone in this version, so SedotDeck picked the program again" % cur.get("file")
     if not pick:
         pick = next((c for c in launch_candidates(folder, _app_wants(app)) if c["auto"]), None)
     if not pick:
@@ -643,12 +665,12 @@ def write_launcher(app, install_dir, folder):
         return None
     exe = pick["path"]
     make_executable(exe)  # zips often drop the exec bit
-    if not path:
-        base, n = safe_name(app["name"]), 0
-        path = os.path.join(install_dir, base + ".sh")
-        while os.path.lexists(path):
-            n += 1
-            path = os.path.join(install_dir, "%s-%d.sh" % (base, n))
+    inside = os.path.join(folder, LAUNCHER_NAME)
+    if path and path != inside and path not in steam_shortcut_exes():
+        if os.path.isfile(path):
+            os.remove(path)
+        path = None
+    path = path or inside
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         f.write("#!/bin/sh\ncd %s || exit 1\nexec ./%s \"$@\"\n" % (
@@ -662,11 +684,11 @@ def write_launcher(app, install_dir, folder):
 def set_launch_file(app, settings, file):
     """Use this program (a path relative to the app folder) for Launch and Steam; "" goes back to automatic."""
     folder = (app.get("installed") or {}).get("path") or ""
-    if not os.path.isdir(folder):
+    if not os.path.isdir(folder) or is_flatpak(app):
         raise ValueError("%s is not installed as a folder" % app["name"])
     if file:
         if not any(c["file"] == file for c in launch_candidates(folder)):
-            raise ValueError("%s is not a program DeckPort can launch" % file)
+            raise ValueError("%s is not a program SedotDeck can launch" % file)
         app["launch"] = {"file": file, "manual": True}
     else:
         app.pop("launch", None)
@@ -676,8 +698,11 @@ def set_launch_file(app, settings, file):
 
 
 def steam_target(app):
-    """(Exe, StartDir, needs Proton) for a Steam shortcut, or None when there is nothing to start."""
+    """(Exe, StartDir, needs Proton) for a Steam shortcut, or None when there is nothing to start.
+    A Flatpak starts through flatpak itself, with steam_args(app) as its launch options."""
     p = (app.get("installed") or {}).get("path") or ""
+    if is_flatpak(app):
+        return (shutil.which("flatpak") or "/usr/bin/flatpak", str(Path.home()), False) if os.path.isdir(p) else None
     if os.path.isfile(p):
         return p, os.path.dirname(p), False
     if not os.path.isdir(p):
@@ -688,6 +713,11 @@ def steam_target(app):
         return (exe, os.path.dirname(exe), True) if os.path.isfile(exe) else None
     lnch = app.get("launcher")
     return (lnch, p, False) if lnch and os.path.isfile(lnch) else None
+
+
+def steam_args(app):
+    """Launch options for the Steam shortcut: only a Flatpak needs any."""
+    return "run %s" % app["installed"]["flatpak_id"] if is_flatpak(app) else ""
 
 
 def prune_stale(dest, old, new):
@@ -717,6 +747,36 @@ def _parents(rel):
     return out
 
 
+FLATPAK_REF = re.compile(rb"app/([A-Za-z_][\w-]*(?:\.[\w-]+){2,})/(?:x86_64|aarch64|i386|arm)/([\w.-]+)")
+
+
+def flatpak_bundle_ref(path):
+    """(app id, branch) of a .flatpak bundle: its header keeps the ref as plain text."""
+    with open(path, "rb") as f:
+        m = FLATPAK_REF.search(f.read(1 << 20))
+    return (m.group(1).decode(), m.group(2).decode()) if m else (None, None)
+
+
+def flatpak_dir(app_id):
+    """Where a --user Flatpak lives; it exists exactly while the app is installed."""
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return str(data / "flatpak" / "app" / app_id)
+
+
+def flatpak_cmd(*args, timeout=900):
+    if not shutil.which("flatpak"):
+        raise RuntimeError("Flatpak is not installed on this system")
+    r = subprocess.run(["flatpak"] + list(args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, timeout=timeout)
+    if r.returncode:
+        raise RuntimeError("flatpak %s failed: %s" % (args[0], r.stdout.strip()[-500:] or "exit %d" % r.returncode))
+    return r.stdout
+
+
+def is_flatpak(app):
+    return (app.get("installed") or {}).get("kind") == "flatpak"
+
+
 def install_app(app, settings, progress=None, phase=None):
     latest = app.get("latest") or {}
     asset = latest.get("asset")
@@ -729,7 +789,7 @@ def install_app(app, settings, progress=None, phase=None):
     pinned = pinned_path(app)
     old_files = (app.get("installed") or {}).get("files")
     manifest = None
-    work = Path(tempfile.mkdtemp(prefix=".deckport-", dir=install_dir))
+    work = Path(tempfile.mkdtemp(prefix=".sedotdeck-", dir=install_dir))
     try:
         dl = work / safe_name(asset["name"])
         actual = download(asset["download_url"], dl, progress)
@@ -740,6 +800,16 @@ def install_app(app, settings, progress=None, phase=None):
             raise RuntimeError("SHA-256 mismatch for %s: expected %s, got %s. The download was deleted."
                                % (asset["name"], expected, actual))
         kind = sniff_kind(dl, asset["name"])
+
+        if kind == "flatpak":
+            flatpak_id, _branch = flatpak_bundle_ref(dl)
+            if not flatpak_id:
+                raise RuntimeError("Couldn't read the app ID from %s, so it can't be installed" % asset["name"])
+            if phase:
+                phase("Installing")
+            # --reinstall replaces the old version; the app's data in ~/.var/app stays.
+            flatpak_cmd("install", "--user", "--noninteractive", "-y", "--reinstall", "--bundle", str(dl))
+            path = flatpak_dir(flatpak_id)
 
         if kind == "archive":
             ex = work / "extracted"
@@ -801,6 +871,8 @@ def install_app(app, settings, progress=None, phase=None):
         "verified_by": source,
         "size": disk_size(path),
     }
+    if kind == "flatpak":
+        app["installed"]["flatpak_id"] = flatpak_id
     app["error"] = ""
     app.pop("notice", None)
     if manifest is not None:
@@ -863,7 +935,7 @@ def tracked_paths(cfg, except_id=None):
 
 
 def find_adopt_candidates(cfg, name, repo, asset_name="", except_id=None):
-    """AppImages already in the install folder that DeckPort doesn't manage yet, best match first."""
+    """AppImages already in the install folder that SedotDeck doesn't manage yet, best match first."""
     folder = os.path.expanduser(cfg["settings"]["install_dir"])
     if not os.path.isdir(folder):
         return []
@@ -937,6 +1009,8 @@ def adopt_app(app, path):
 def rollback_app(app):
     inst = app.get("installed") or {}
     p = inst.get("path")
+    if is_flatpak(app):
+        raise RuntimeError("Flatpak apps have no backup to roll back to")
     if not p or not os.path.exists(p + ".old"):
         raise RuntimeError("No backup available for %s" % app["name"])
     os.replace(p + ".old", p)
@@ -952,7 +1026,10 @@ def remove_app(cfg, app, delete_files=False):
         ign = cfg["settings"].setdefault("scan_ignored", [])
         if kept not in ign:
             ign.append(kept)
-    if delete_files:
+    if delete_files and is_flatpak(app):
+        if os.path.isdir(app["installed"]["path"]):
+            flatpak_cmd("uninstall", "--user", "--noninteractive", "-y", app["installed"]["flatpak_id"])
+    elif delete_files:
         if app.get("launcher") and os.path.isfile(app["launcher"]):
             os.remove(app["launcher"])
         p = (app.get("installed") or {}).get("path")
@@ -1022,7 +1099,8 @@ def apply_options(app, opts):
             app[k] = v
 
 
-EXPORT_FORMAT = "deckport-apps"
+EXPORT_FORMAT = "sedotdeck-apps"
+LEGACY_EXPORT_FORMATS = ("deckport-apps",)
 EXPORT_FIELDS = ("name", "provider", "host", "repo", "pattern", "prerelease", "skip_titles", "latest_only", "category")
 
 
@@ -1038,8 +1116,8 @@ def export_apps(cfg):
 
 def import_apps(cfg, data):
     """Merge an export into cfg. Validates everything first, so a bad file changes nothing."""
-    if not isinstance(data, dict) or data.get("format") != EXPORT_FORMAT or not isinstance(data.get("apps"), list):
-        raise ValueError("This is not a DeckPort export file")
+    if not isinstance(data, dict) or data.get("format") not in (EXPORT_FORMAT,) + LEGACY_EXPORT_FORMATS or not isinstance(data.get("apps"), list):
+        raise ValueError("This is not a SedotDeck export file")
     incoming = []
     for i, item in enumerate(data["apps"], 1):
         if not isinstance(item, dict):
@@ -1083,7 +1161,10 @@ def launch_app(app):
     p = inst.get("path")
     if not p or not os.path.exists(p):
         raise RuntimeError("Not installed")
-    if os.path.isdir(p):
+    if is_flatpak(app):
+        subprocess.Popen(["flatpak", "run", inst["flatpak_id"]], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    elif os.path.isdir(p):
         launcher = app.get("launcher")
         if (app.get("launch") or {}).get("kind") == "windows":
             raise RuntimeError("%s is a Windows program: add it to Steam and play it there with Proton" % app["name"])
@@ -1150,7 +1231,7 @@ def identify_file(path):
 
 
 def scan_folder(cfg):
-    """AppImages in the install folder that DeckPort doesn't manage yet, with the repo each one
+    """AppImages in the install folder that SedotDeck doesn't manage yet, with the repo each one
     probably came from. A file whose repo is tracked but not installed is offered for that app."""
     folder = os.path.expanduser(cfg["settings"]["install_dir"])
     if not os.path.isdir(folder):
@@ -1163,7 +1244,7 @@ def scan_folder(cfg):
     out = []
     for f in sorted(os.listdir(folder), key=str.lower):
         p = os.path.join(folder, f)
-        if (not f.lower().endswith(".appimage") or f.lower().startswith("deckport") or os.path.islink(p)
+        if (not f.lower().endswith(".appimage") or f.lower().startswith("sedotdeck") or os.path.islink(p)
                 or not os.path.isfile(p) or os.path.realpath(p) in taken or p in ignored):
             continue
         try:
@@ -1179,17 +1260,139 @@ def scan_folder(cfg):
             if owner:
                 inst = owner.get("installed") or {}
                 if inst.get("path") and os.path.exists(inst["path"]):
-                    continue  # a spare copy of an app DeckPort already keeps up to date
+                    continue  # a spare copy of an app SedotDeck already keeps up to date
                 item["app_id"], item["name"] = owner["id"], owner["name"]
         out.append(item)
     return out
 
 
+# --------------------------------------------------------------------------- GitHub search
+
+def github_search(query, token="", tracked=(), by_stars=False):
+    """Repositories whose name or description match query, so a port can be found by the game's name.
+    GitHub's best match by default: sorting by stars alone surfaces spam repos that mention every game."""
+    query = " ".join(str(query or "").split())[:200]
+    if len(query) < 2:
+        raise ValueError("Type at least two characters to search")
+    params = {"q": query + " in:name,description fork:false", "per_page": 30}
+    if by_stars:
+        params.update(sort="stars", order="desc")
+    url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(params)
+    data = http_json(url, token, "github")
+    tracked = {t.lower() for t in tracked}
+    out = []
+    for r in data.get("items") or []:
+        repo = str(r.get("full_name") or "")
+        if not valid_repo(repo):
+            continue
+        out.append({
+            "repo": repo, "name": str(r.get("name") or repo), "description": str(r.get("description") or "")[:300],
+            "stars": int(r.get("stargazers_count") or 0), "language": str(r.get("language") or ""),
+            "pushed_at": str(r.get("pushed_at") or ""), "archived": bool(r.get("archived")),
+            "url": str(r.get("html_url") or "https://github.com/" + repo), "tracked": repo.lower() in tracked,
+        })
+    return {"items": out, "total": int(data.get("total_count") or 0)}
+
+
+# --------------------------------------------------------------------------- SedotDeck's own updates
+
+SELF_REPO = "intermission88/SedotDeck"
+SELF_CACHE = CONFIG_DIR / "self-update.json"
+SELF_MAX_AGE = 6 * 3600
+SELF_APPIMAGE = re.compile(r"SedotDeck-.+-x86_64\.AppImage$")
+
+
+def version_key(text):
+    """Sortable key for "v1.2.3" or "0.0.1-alpha.2"; a pre-release sorts before its release."""
+    m = re.match(r"v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$", str(text or "").strip())
+    if not m:
+        return None
+    nums = tuple(int(x) for x in m.group(1).split("."))
+    pre = m.group(2)
+    tail = (1,) if not pre else (0,) + tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in pre.split("."))
+    return nums + (0,) * (4 - len(nums)), tail
+
+
+def self_install_method():
+    """How this copy can update itself: "appimage", "script", "decky", or "manual" (a git checkout, say)."""
+    appimage = os.environ.get("APPIMAGE") or ""
+    if appimage and os.path.isfile(appimage) and os.access(os.path.dirname(appimage), os.W_OK):
+        return "appimage"
+    if "decky" in sys.modules:
+        return "decky"
+    here = Path(os.path.abspath(__file__))
+    if (here.parent / ".git").exists() or not os.access(here.parent, os.W_OK):
+        return "manual"
+    return "script"
+
+
+def self_update_check(token="", refresh=False):
+    """{"current", "latest", "newer", "notes", "url", "method"}: the newest SedotDeck release, cached for 6 hours."""
+    cache = None
+    try:
+        cache = json.loads(SELF_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if not cache or refresh or time.time() - cache.get("fetched_at", 0) > SELF_MAX_AGE:
+        rels = http_json("https://api.github.com/repos/%s/releases?per_page=20" % SELF_REPO, token, "github")
+        rels = [_norm_github(r) for r in rels if not r.get("draft") and version_key(r.get("tag_name"))]
+        best = max(rels, key=lambda r: version_key(r["tag_name"]), default=None)
+        cache = {"fetched_at": time.time(), "release": best}
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = SELF_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache))
+        os.replace(tmp, SELF_CACHE)
+    rel = cache.get("release") or {}
+    tag = rel.get("tag_name") or ""
+    newer = bool(tag) and version_key(tag) > version_key(VERSION)
+    return {"current": VERSION, "latest": tag, "newer": newer, "notes": (rel.get("body") or "")[:NOTES_MAX],
+            "url": rel.get("html_url") or "https://github.com/%s/releases" % SELF_REPO,
+            "published": rel.get("published_at") or "", "method": self_install_method()}
+
+
+def self_update(token="", progress=None):
+    """Replace this AppImage or script with the newest release. Takes effect on the next start."""
+    method = self_install_method()
+    cache = json.loads(SELF_CACHE.read_text()) if SELF_CACHE.exists() else {}
+    rel = cache.get("release") or {}
+    tag = rel.get("tag_name") or ""
+    if not tag or version_key(tag) <= version_key(VERSION):
+        raise RuntimeError("SedotDeck is up to date")
+    if method == "appimage":
+        target = os.environ["APPIMAGE"]
+        asset = next((a for a in rel.get("assets") or [] if SELF_APPIMAGE.search(a["name"])), None)
+        if not asset:
+            raise RuntimeError("Release %s has no AppImage" % tag)
+        url, expected = asset["browser_download_url"], asset.get("sha256") or ""
+    elif method == "script":
+        target = os.path.abspath(__file__)
+        url = "https://raw.githubusercontent.com/%s/%s/sedotdeck.py" % (SELF_REPO, urllib.parse.quote(tag))
+        expected = ""
+    else:
+        raise RuntimeError("This copy of SedotDeck can't update itself. Download %s from the Releases page." % tag)
+    tmp = target + ".download"
+    try:
+        actual = download(url, tmp, progress)
+        if expected and actual != expected:
+            raise RuntimeError("SHA-256 mismatch for the %s download, so it was deleted" % tag)
+        with open(tmp, "rb") as f:
+            head = f.read(64)
+        if method == "appimage" and head[:4] != b"\x7fELF" or method == "script" and b"python" not in head:
+            raise RuntimeError("The %s download isn't a SedotDeck %s" % (tag, "AppImage" if method == "appimage" else "script"))
+        make_executable(tmp)
+        os.replace(tmp, target)  # the running copy keeps its open inode, so this is safe
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return tag
+
+
 # --------------------------------------------------------------------------- Recomp Haven
 
 # Recomp Haven (recomphaven.com, by rikuwru) tracks game recompilations and PC ports. Its list is
-# read from the site's public data file and kept for a day; DeckPort shows the ones with a Linux release.
+# read from the site's public data file and kept for a day; SedotDeck shows the ones with a Linux release.
 RH_SITE = "https://recomphaven.com/"
+RH_LOGO = RH_SITE + "assets/icons/icon-192.png"
 RH_DATA_URL = "https://raw.githubusercontent.com/rikuwru/recomphaven/main/data/recomps.js"
 RH_TABLES_URL = "https://raw.githubusercontent.com/rikuwru/recomphaven/main/data/tables.js"
 RH_CACHE = CONFIG_DIR / "recomphaven.json"
@@ -1198,7 +1401,7 @@ RH_TIERS = "SABCD"
 
 
 def parse_recomphaven(text):
-    """Entries DeckPort can install from Recomp Haven's data/recomps.js, best tier first."""
+    """Entries SedotDeck can install from Recomp Haven's data/recomps.js, best tier first."""
     start = text.index("[", text.index("window.RECOMPS"))
     items, _end = json.JSONDecoder().raw_decode(text, start)
     out = []
@@ -1256,12 +1459,12 @@ def recomphaven(refresh=False):
     except (OSError, ValueError):
         pass
     if cache and not refresh and time.time() - cache.get("fetched_at", 0) < RH_MAX_AGE:
-        return dict(cache, site=RH_SITE, stale="")
+        return dict(cache, site=RH_SITE, logo=RH_LOGO, stale="")
     try:
         data = {"fetched_at": time.time(), "items": parse_recomphaven(_rh_get(RH_DATA_URL)), "consoles": {}}
     except Exception as e:
         if cache:
-            return dict(cache, site=RH_SITE, stale="Couldn't refresh (%s), showing the saved list" % e)
+            return dict(cache, site=RH_SITE, logo=RH_LOGO, stale="Couldn't refresh (%s), showing the saved list" % e)
         raise RuntimeError("Couldn't load Recomp Haven: %s" % e)
     try:
         data["consoles"] = parse_recomphaven_consoles(_rh_get(RH_TABLES_URL))
@@ -1271,7 +1474,7 @@ def recomphaven(refresh=False):
     tmp = RH_CACHE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data))
     os.replace(tmp, RH_CACHE)
-    return dict(data, site=RH_SITE, stale="")
+    return dict(data, site=RH_SITE, logo=RH_LOGO, stale="")
 
 
 # --------------------------------------------------------------------------- Steam shortcuts
@@ -1389,6 +1592,17 @@ def _shortcut_exe(entry):
     return ""
 
 
+def _shortcut_key(entry):
+    """What a shortcut starts: its exe, plus launch options when it has any (Flatpaks share one exe)."""
+    opts = next((v.strip() for t, k, v in entry if t == 1 and k.lower() == "launchoptions"), "")
+    return _shortcut_exe(entry) + (" " + opts if opts else "")
+
+
+def steam_key(app, target=None):
+    target = target or steam_target(app)
+    return target[0] + (" " + steam_args(app) if steam_args(app) else "") if target else ""
+
+
 _steam_cache = {}
 
 
@@ -1403,7 +1617,8 @@ def steam_shortcut_exes():
         return set()
     if _steam_cache.get("key") != (str(f), m):
         try:
-            exes = {_shortcut_exe(e) for t, _k, e in _shortcut_list(vdf_load(f.read_bytes())) if t == 0}
+            exes = {k for t, _k, e in _shortcut_list(vdf_load(f.read_bytes())) if t == 0
+                    for k in (_shortcut_exe(e), _shortcut_key(e))}
         except (OSError, ValueError, IndexError, struct.error):
             exes = set()
         _steam_cache.update(key=(str(f), m), exes=exes)
@@ -1425,12 +1640,13 @@ def add_to_steam(app, shortcuts=None):
         raise RuntimeError("Steam not found. Start Steam once and log in, then try again.")
     if shortcuts is None and steam_running():
         raise RuntimeError("Close Steam first (Steam menu > Exit), then press Add to Steam again. "
-                           "In Game Mode, use the DeckPort Decky plugin instead.")
+                           "In Game Mode, use the SedotDeck Decky plugin instead.")
     f = Path(f)
     data = f.read_bytes() if f.exists() else b""
     root = vdf_load(data) if data else []
     lst = _shortcut_list(root)
-    if any(_shortcut_exe(e) == path for t, _k, e in lst if t == 0):
+    key = steam_key(app, target)
+    if any(_shortcut_key(e) == key for t, _k, e in lst if t == 0):
         return False
     exe, name = '"%s"' % path, app["name"]
     appid = (zlib.crc32((exe + name).encode()) | 0x80000000) - (1 << 32)  # stored as a signed int32
@@ -1438,13 +1654,13 @@ def add_to_steam(app, shortcuts=None):
     lst.append((0, str(nxt), [
         (2, "appid", appid), (1, "AppName", name), (1, "Exe", exe),
         (1, "StartDir", '"%s"' % start), (1, "icon", ""), (1, "ShortcutPath", ""),
-        (1, "LaunchOptions", ""), (2, "IsHidden", 0), (2, "AllowDesktopConfig", 1), (2, "AllowOverlay", 1),
+        (1, "LaunchOptions", steam_args(app)), (2, "IsHidden", 0), (2, "AllowDesktopConfig", 1), (2, "AllowOverlay", 1),
         (2, "OpenVR", 0), (2, "Devkit", 0), (1, "DevkitGameID", ""), (2, "DevkitOverrideAppID", 0),
         (2, "LastPlayTime", 0), (1, "FlatpakAppID", ""), (0, "tags", []),
     ]))
     f.parent.mkdir(parents=True, exist_ok=True)
     if data:
-        shutil.copy2(f, str(f) + ".deckport.bak")  # the previous version, in case Steam dislikes ours
+        shutil.copy2(f, str(f) + ".sedotdeck.bak")  # the previous version, in case Steam dislikes ours
     tmp = f.with_suffix(".vdf.tmp")
     tmp.write_bytes(vdf_dump(root))
     os.replace(tmp, f)
@@ -1485,7 +1701,7 @@ def rename_app_file(app, shortcuts=None):
         os.replace(old + ".old", new + ".old")
     if hits:
         try:
-            shutil.copy2(f, str(f) + ".deckport.bak")
+            shutil.copy2(f, str(f) + ".sedotdeck.bak")
             tmp = f.with_suffix(".vdf.tmp")
             tmp.write_bytes(vdf_dump(root))
             os.replace(tmp, f)
@@ -1562,7 +1778,7 @@ class Server:
         return any(j["state"] == "running" for j in self.jobs.snapshot().values())
 
     def sync(self):
-        """Pick up changes saved by another DeckPort (desktop UI, CLI, Decky plugin) while idle."""
+        """Pick up changes saved by another SedotDeck (desktop UI, CLI, Decky plugin) while idle."""
         with _lock:
             m = _config_mtime()
             if m != self._mtime and not self.busy():
@@ -1588,9 +1804,10 @@ class Server:
                 d["file_name"] = os.path.basename(p or a.get("target_path") or "")
                 d["skipped"] = d["exists"] and is_skipped(a) and has_update(a, honor_skip=False)
                 tgt = steam_target(a)
-                d["has_launcher"] = bool(os.path.isdir(p) and tgt and not tgt[2])
+                d["has_launcher"] = bool(os.path.isdir(p) and tgt and not tgt[2] and not is_flatpak(a))
                 d["steam_exe"], d["steam_dir"], d["proton"] = tgt or ("", "", False)
-                d["in_steam"] = bool(tgt) and tgt[0] in in_steam
+                d["steam_args"] = steam_args(a) if tgt else ""
+                d["in_steam"] = bool(tgt) and steam_key(a, tgt) in in_steam
                 clean = safe_name(a["name"]) + ".AppImage"
                 d["rename_to"] = clean if d["exists"] and inst.get("kind") == "appimage" and os.path.basename(p) != clean else ""
                 d["disk"] = (os.path.getsize(p) if os.path.isfile(p) else inst.get("size", 0)) if d["exists"] else 0
@@ -1785,7 +2002,7 @@ class Server:
         if path == "/api/launch_choices":
             app = self._app(body)
             folder = (app.get("installed") or {}).get("path") or ""
-            if not os.path.isdir(folder):
+            if not os.path.isdir(folder) or is_flatpak(app):
                 raise ValueError("%s is not installed as a folder" % app["name"])
             lc = app.get("launch") or {}
             return {"ok": True, "manual": bool(lc.get("manual")), "current": lc.get("file", ""),
@@ -1865,6 +2082,30 @@ class Server:
         if path == "/api/recomphaven":
             return recomphaven(bool(body.get("refresh")))
 
+        if path == "/api/github_search":
+            tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
+            return github_search(body.get("q"), self.gh_token(), tracked, body.get("sort") == "stars")
+
+        if path == "/api/self_update_check":
+            info = self_update_check(self.gh_token(), bool(body.get("refresh")))
+            info["skipped"] = info["latest"] == cfg["settings"].get("self_update_skip")
+            return info
+
+        if path == "/api/self_update_skip":
+            with _lock:
+                cfg["settings"]["self_update_skip"] = str(body.get("tag") or "")
+                self.save()
+            return {"ok": True}
+
+        if path == "/api/self_update":
+            def fn(job):
+                def prog(done, total):
+                    job["progress"] = (done / total) if total else 0
+                job["message"] = "Installed %s. Restart SedotDeck to use it." % self_update(self.gh_token(), prog)
+            if not self.jobs.start("__self__", "Updating SedotDeck", fn):
+                raise ValueError("SedotDeck is already updating")
+            return {"ok": True}
+
         if path == "/api/launch":
             launch_app(self._app(body))
             return {"ok": True}
@@ -1892,7 +2133,7 @@ class Server:
                 data = export_apps(cfg)
             folder = Path.home() / "Downloads"
             folder.mkdir(parents=True, exist_ok=True)
-            stem = "deckport-apps-" + data["exported_at"][:10]
+            stem = "sedotdeck-apps-" + data["exported_at"][:10]
             dest, n = folder / (stem + ".json"), 2
             while dest.exists():
                 dest, n = folder / ("%s-%d.json" % (stem, n)), n + 1
@@ -1970,7 +2211,7 @@ def make_handler(srv, httpd_ref):
         def do_POST(self):
             srv.last_seen = time.time()
             # Token blocks other websites in the browser from driving this local server.
-            if self.headers.get("X-DeckPort-Token") != srv.token:
+            if self.headers.get("X-SedotDeck-Token") != srv.token:
                 return self._send(403, {"error": "bad token, reload the page"})
             try:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -2000,7 +2241,7 @@ def open_window(url, window=True):
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
     if window and sys.platform.startswith("linux"):
-        flags = ["--app=" + url, "--class=DeckPort", "--window-size=1100,760"]
+        flags = ["--app=" + url, "--class=SedotDeck", "--window-size=1100,760"]
         for exe in CHROMIUM_EXES:
             path = shutil.which(exe)
             if path:
@@ -2025,14 +2266,14 @@ def cmd_serve(args):
         url = "http://127.0.0.1:%d/" % httpd.server_address[1]  # real port when --port 0
     except OSError:
         # Already running: just open the existing window.
-        print("DeckPort is already running at", url)
+        print("SedotDeck is already running at", url)
         if not args.no_browser:
             open_window(url, args.window)
         return
     httpd_ref[0] = httpd
     # The desktop app (Tauri) waits for this exact line to learn the URL.
-    print("DECKPORT_READY " + url, flush=True)
-    print("DeckPort running at", url, "(Ctrl+C to stop)", flush=True)
+    print("SEDOTDECK_READY " + url, flush=True)
+    print("SedotDeck running at", url, "(Ctrl+C to stop)", flush=True)
     if not args.no_browser:
         threading.Timer(0.5, lambda: open_window(url, args.window)).start()
     if args.exit_when_closed:
@@ -2095,22 +2336,22 @@ def cmd_add(args):
             print("Using your existing %s, already the latest version." % os.path.basename(adopt))
         else:
             print("Using your existing %s. Updates will overwrite it in place." % os.path.basename(adopt))
-            print("Run: deckport.py update %s" % safe_name(app["name"]))
+            print("Run: sedotdeck.py update %s" % safe_name(app["name"]))
         return
     save_config(cfg)
     found = [c for c in find_adopt_candidates(cfg, app["name"], app["repo"], asset, app["id"]) if c["suggested"]]
     if found:
         print("You already have %s. To update that file instead of creating %s.AppImage:"
               % (found[0]["name"], safe_name(app["name"])))
-        print("  deckport.py remove %s && deckport.py add %s --adopt %s"
+        print("  sedotdeck.py remove %s && sedotdeck.py add %s --adopt %s"
               % (safe_name(app["name"]), args.repo, shlex.quote(found[0]["path"])))
-    print("Run: deckport.py update %s" % safe_name(app["name"]))
+    print("Run: sedotdeck.py update %s" % safe_name(app["name"]))
 
 
 def cmd_list(args):
     cfg = load_config()
     if not cfg["apps"]:
-        print("No apps tracked yet. Add one: deckport.py add https://github.com/owner/repo")
+        print("No apps tracked yet. Add one: sedotdeck.py add https://github.com/owner/repo")
         return
     print("%-24s %-32s %-16s %-16s" % ("NAME", "REPO", "INSTALLED", "LATEST"))
     for a in cfg["apps"]:
@@ -2201,7 +2442,7 @@ def cmd_scan(args):
     known = [it for it in found if it["src"]]
     if not args.track:
         if known:
-            print("\nRun: deckport.py scan --track   to keep the %d recognized file(s) up to date" % len(known))
+            print("\nRun: sedotdeck.py scan --track   to keep the %d recognized file(s) up to date" % len(known))
         return
     token = cfg["settings"]["github_token"]
     for it in known:
@@ -2239,12 +2480,12 @@ def cmd_import(args):
     save_config(cfg)
     print("Imported %d app(s), skipped %d already tracked." % (len(added), skipped))
     if added:
-        print("Run: deckport.py check")
+        print("Run: sedotdeck.py check")
 
 
 def main():
-    p = argparse.ArgumentParser(prog="deckport", description="Update AppImages & PC ports from GitHub Releases")
-    p.add_argument("--version", action="version", version="DeckPort " + VERSION)
+    p = argparse.ArgumentParser(prog="sedotdeck", description="Update AppImages & PC ports from GitHub Releases")
+    p.add_argument("--version", action="version", version="SedotDeck " + VERSION)
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("serve", help="open the web UI (default)")
@@ -2264,7 +2505,7 @@ def main():
     s.set_defaults(fn=cmd_add)
 
     sub.add_parser("list", help="list tracked apps").set_defaults(fn=cmd_list)
-    s = sub.add_parser("scan", help="find AppImages you already have that DeckPort can update")
+    s = sub.add_parser("scan", help="find AppImages you already have that SedotDeck can update")
     s.add_argument("--track", action="store_true", help="track every recognized file (updates keep its name)")
     s.set_defaults(fn=cmd_scan)
     sub.add_parser("check", help="check all for updates").set_defaults(fn=cmd_check)
@@ -2302,287 +2543,230 @@ INDEX_HTML = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>DeckPort</title>
+<title>SedotDeck</title>
 <style>
+/* Close to SteamOS: neutral greys, flat panels, one blue accent, big focus rings for the trackpad and d-pad. */
 :root{
-  --blue-50:#eff6ff;--blue-100:#dbeafe;--blue-200:#bfdbfe;--blue-300:#93c5fd;--blue-400:#60a5fa;--blue-500:#3b82f6;
-  --blue-600:#2563eb;--blue-700:#1d4ed8;--blue-800:#1e40af;--blue-900:#1e3a8a;--blue-950:#172554;
-  --bg:#050814;--text:var(--blue-50);--dim:rgba(147,197,253,.72);--faint:rgba(147,197,253,.5);
-  --glass:rgba(23,37,84,.38);--glass-hi:rgba(59,130,246,.10);--edge:rgba(147,197,253,.14);--edge-hi:rgba(147,197,253,.30);
-  --shine:rgba(239,246,255,.08);
-  /* status colours stay semantic, muted to sit on blue */
-  --good:#86efac;--warn:#fcd34d;--bad:#fca5a5;
-  --r:20px;--r-sm:12px;--blur:blur(20px) saturate(140%);
+  --bg:#0f1115;--panel:#1a1d23;--panel-hi:#23272e;--line:#2b3038;--line-hi:#3a414c;
+  --text:#e6e8eb;--dim:#9aa3ad;--faint:#7d8590;
+  --accent:#1a9fff;--accent-btn:#1475c4;--accent-btn-hi:#1268ae;
+  --good:#8bd17c;--warn:#e8b84a;--bad:#ff7b7b;
+  --r:6px;
 }
 *{box-sizing:border-box}
 html{background:var(--bg)}
 body{margin:0;min-height:100vh;color:var(--text);background:var(--bg);
-  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;-webkit-font-smoothing:antialiased}
-/* Static ambient light behind the glass: painted once, never animated. */
-body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
-  background:
-    radial-gradient(50% 45% at 8% -8%,rgba(37,99,235,.42),transparent 72%),
-    radial-gradient(40% 38% at 96% 6%,rgba(59,130,246,.22),transparent 72%),
-    radial-gradient(65% 55% at 60% 112%,rgba(30,64,175,.50),transparent 72%),
-    radial-gradient(35% 30% at 25% 70%,rgba(23,37,84,.55),transparent 75%)}
-a{color:var(--blue-300);text-decoration:none} a:hover{color:var(--blue-200)}
-.mono{font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;font-size:12.5px;word-break:break-all}
-/* `hidden` must win over the display:flex on label/.adopt etc. */
+  font:15px/1.45 "Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+.mono{font-family:ui-monospace,"Noto Sans Mono","JetBrains Mono",Menlo,monospace;font-size:13px;word-break:break-all}
 [hidden]{display:none!important}
 
-/* ---- glass surfaces: cards use layered gradients only; blur is reserved for header, dialogs, toast */
-.glass{position:relative;background:linear-gradient(180deg,var(--glass-hi),rgba(30,58,138,.04)),var(--glass);
-  border:1px solid var(--edge);border-radius:var(--r);
-  box-shadow:inset 0 1px 0 var(--shine),0 12px 32px -16px rgba(0,0,0,.7)}
-.glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-  background:linear-gradient(135deg,rgba(239,246,255,.09),rgba(239,246,255,0) 38%)}
-.frost{background:rgba(10,18,44,.62);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
+header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
+.brand svg{width:30px;height:30px;flex:none}
+.brand h1{font-size:18px;margin:0;font-weight:700}
+.brand .ver-label{font-size:12px;font-weight:400;color:var(--faint);margin-left:8px}
+.brand .sub{font-size:12.5px;color:var(--dim)}
 
-header{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-  padding:14px 22px;border-bottom:1px solid var(--edge);box-shadow:inset 0 -1px 0 rgba(239,246,255,.03)}
-.brand{display:flex;align-items:center;gap:12px;margin-right:auto;min-width:0}
-.brand svg{width:34px;height:34px;flex:none;filter:drop-shadow(0 4px 10px rgba(37,99,235,.45))}
-.brand h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.2px}
-.brand .sub{font-size:12px;color:var(--dim)}
-.pill{font-size:11px;padding:2px 8px;border-radius:99px;border:1px solid var(--edge);color:var(--blue-300);
-  background:rgba(59,130,246,.10);margin-left:6px;vertical-align:2px;font-weight:500}
-
-/* ---- buttons */
-button{font:inherit;font-size:14px;font-weight:500;color:var(--blue-100);cursor:pointer;min-height:42px;padding:9px 16px;
-  border-radius:var(--r-sm);border:1px solid var(--edge);background:rgba(147,197,253,.07);
-  box-shadow:inset 0 1px 0 var(--shine);transition:background .15s,border-color .15s,transform .15s,box-shadow .15s}
-button:hover:not(:disabled){background:rgba(147,197,253,.13);border-color:var(--edge-hi)}
-button:active:not(:disabled){transform:scale(.97)}
-button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--blue-400);outline-offset:2px}
-button:disabled{opacity:.42;cursor:default}
-button.primary{color:#fff;border-color:rgba(191,219,254,.38);
-  background:linear-gradient(180deg,var(--blue-500),var(--blue-600));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 8px 20px -8px rgba(37,99,235,.8)}
-button.primary:hover:not(:disabled){background:linear-gradient(180deg,#4b8ef8,var(--blue-500));border-color:rgba(219,234,254,.5)}
-button.ghost{background:transparent;border-color:transparent;box-shadow:none}
-button.ghost:hover:not(:disabled){background:rgba(147,197,253,.09);border-color:var(--edge)}
+button{font:inherit;font-size:14px;font-weight:500;color:var(--text);cursor:pointer;min-height:40px;padding:8px 16px;
+  border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel-hi);transition:background .12s,border-color .12s}
+button:hover:not(:disabled){background:#2c313a;border-color:#4a525e}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
+  outline:3px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:default}
+button.primary{color:#fff;border-color:var(--accent-btn);background:var(--accent-btn)}
+button.primary:hover:not(:disabled){background:var(--accent-btn-hi);border-color:var(--accent-btn-hi)}
+button.ghost{background:transparent;border-color:transparent}
+button.ghost:hover:not(:disabled){background:var(--panel-hi);border-color:var(--line)}
 button.danger{color:var(--bad)}
-button.icon{width:42px;padding:0;display:grid;place-items:center}
+button.icon{width:40px;padding:0;display:grid;place-items:center}
 button.icon svg{width:19px;height:19px}
-
-/* ---- layout */
-main{padding:22px;max-width:1180px;margin:0 auto}
-.summary{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 16px;color:var(--dim);font-size:13px}
-.summary span{padding:5px 12px;border-radius:99px;border:1px solid var(--edge);background:rgba(23,37,84,.35)}
-.summary b{color:var(--text);font-weight:600}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px;align-items:start}
-
-/* ---- app cards */
-.card{padding:18px;display:flex;flex-direction:column;gap:12px}
-.top{min-width:0}
-.name{font-weight:650;font-size:16.5px;word-break:break-word;line-height:1.25}
-.repo{color:var(--dim);font-size:12.5px}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:var(--st);box-shadow:0 0 8px var(--st)}
-.st-busy .dot{animation:blink 1.2s ease-in-out infinite}
-@keyframes blink{50%{opacity:.3}}
-/* one line for the version, then small tags; details live in the ⋯ menu and Edit */
-.ver{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:13.5px;color:var(--blue-100)}
-.ver .mono{font-size:13px} .ver b{color:#fff;font-weight:600}
-.ver a[data-a]{white-space:nowrap;font-size:13px}
-.tag{font-size:11px;padding:1px 7px;border-radius:99px;color:var(--blue-200);border:1px solid var(--edge);white-space:nowrap}
-.tag.ok,.tag.steam{color:var(--good);border-color:rgba(134,239,172,.35)}
-.fname{color:var(--faint);font-size:12px;margin-top:-6px}
-.ok{color:var(--good)} .dim{color:var(--faint)} .err{color:var(--bad);font-size:13px}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
-.actions{gap:6px}
-.actions button{min-height:38px;padding:7px 12px;font-size:13.5px}
-.actions button.ghost{padding:7px 9px}
-.actions .more{margin-left:auto;width:38px;min-height:38px}
-.bar{height:6px;border-radius:99px;overflow:hidden;background:rgba(147,197,253,.12)}
-.bar i{display:block;height:100%;width:100%;transform-origin:left;border-radius:inherit;
-  background:linear-gradient(90deg,var(--blue-600),var(--blue-400));transition:transform .3s ease-out}
-.bar.wait i{opacity:.45}
-.jobtxt{font-size:12.5px;color:var(--dim)}
-.empty{text-align:center;color:var(--dim);padding:56px 24px}
-.empty b{display:block;color:var(--text);font-size:18px;margin:10px 0 6px}
-.empty svg{width:56px;height:56px;opacity:.9}
-
-/* ---- dialogs & toast (the only other blurred surfaces) */
-dialog{color:var(--text);padding:0;width:min(580px,94vw);max-height:calc(100vh - 32px);overflow:auto;overscroll-behavior:contain;border-radius:24px;border:1px solid var(--edge-hi);
-  background:rgba(13,24,58,.72);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
-  box-shadow:inset 0 1px 0 rgba(239,246,255,.10),0 30px 80px -20px rgba(0,0,0,.8)}
-dialog::backdrop{background:rgba(5,8,20,.62)}
-.dlg{padding:22px;display:flex;flex-direction:column;gap:13px}
-.dlg h2{margin:0 0 2px;font-size:18px;font-weight:650}
-.dlg p{margin:0;color:var(--dim)}
-label{font-size:13px;color:var(--dim);display:flex;flex-direction:column;gap:6px}
-label.row{flex-direction:row;align-items:center;gap:10px;color:var(--text)}
-input[type=text],input[type=password]{font:inherit;color:var(--text);min-height:44px;padding:10px 13px;border-radius:var(--r-sm);
-  background:rgba(5,8,20,.55);border:1px solid rgba(147,197,253,.18);box-shadow:inset 0 1px 2px rgba(0,0,0,.35);
-  transition:border-color .15s,box-shadow .15s}
-input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(--blue-400);
-  box-shadow:inset 0 1px 2px rgba(0,0,0,.35),0 0 0 3px rgba(59,130,246,.25)}
-input::placeholder{color:rgba(147,197,253,.38)}
-input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
-.assets{max-height:168px;overflow:auto;border-radius:14px;font-size:13px;background:rgba(5,8,20,.4);border:1px solid var(--edge)}
-.assets div{padding:8px 12px;border-bottom:1px solid rgba(147,197,253,.07);display:flex;gap:8px;cursor:pointer;transition:background .15s}
-.assets div:last-child{border:0} .assets div:hover{background:rgba(59,130,246,.12)}
-.assets .pick{background:rgba(59,130,246,.22);color:#fff} .assets .pick::before{content:"✓";color:var(--blue-300)}
-.assets small{margin-left:auto;color:var(--faint)}
-.progs{max-height:300px} .progs div{align-items:center} .progs .mono{overflow-wrap:anywhere}
-.progs .tag{flex:none}
-.hint{font-size:12.5px;color:var(--faint)}
-.dlg .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
-/* The last button row stays on screen while a tall dialog scrolls (Deck screens are only 800px high). */
-.dlg>.btns:last-child{position:sticky;bottom:0;z-index:1;margin:-8px -22px -22px;padding:18px 22px 22px;
-  background:linear-gradient(rgba(11,20,50,0),rgba(11,20,50,.96) 16px)}
-.sep{height:1px;background:var(--edge);margin:4px 0}
-#toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,8px);padding:12px 18px;border-radius:14px;
-  border:1px solid var(--edge-hi);background:rgba(13,24,58,.78);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
-  box-shadow:inset 0 1px 0 var(--shine),0 16px 40px -12px rgba(0,0,0,.7);
-  opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90vw;z-index:20}
-#toast.show{opacity:1;transform:translate(-50%,0)} #toast.bad{border-color:rgba(252,165,165,.5)}
-
-/* ---- status: icon + colour per state, so "needs update" vs "up to date" reads at a glance */
-.card{--st:var(--blue-300);--st-bg:rgba(147,197,253,.10);--st-edge:rgba(147,197,253,.32)}
-.card.st-update{--st:var(--blue-300);--st-bg:rgba(59,130,246,.22);--st-edge:rgba(96,165,250,.6)}
-.card.st-ok{--st:var(--good);--st-bg:rgba(134,239,172,.10);--st-edge:rgba(134,239,172,.35)}
-.card.st-new{--st:var(--warn);--st-bg:rgba(252,211,77,.10);--st-edge:rgba(252,211,77,.35)}
-.card.st-err{--st:var(--bad);--st-bg:rgba(252,165,165,.10);--st-edge:rgba(252,165,165,.38)}
-.card.st-update::after{content:"";position:absolute;left:-1px;top:16px;bottom:16px;width:3px;border-radius:0 3px 3px 0;
-  background:linear-gradient(180deg,var(--blue-300),var(--blue-600));box-shadow:0 0 12px rgba(96,165,250,.7)}
 button svg{width:16px;height:16px;vertical-align:-3px}
 .spin{animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-/* ---- filter chips */
-.summary button{min-height:32px;padding:4px 12px;border-radius:99px;font-size:13px;color:var(--dim);
-  background:rgba(23,37,84,.35);box-shadow:none;display:inline-flex;gap:6px;align-items:center}
-.summary button b{color:var(--text);font-weight:600}
-.summary button.on{color:#fff;border-color:rgba(96,165,250,.6);background:rgba(37,99,235,.32)}
-.summary button i{width:7px;height:7px;border-radius:50%;background:var(--c,var(--blue-300))}
 
-/* ---- motion: transform/opacity only, each plays once */
-.enter{animation:enter .38s cubic-bezier(.2,.8,.2,1) both}
-@keyframes enter{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
-dialog[open]{animation:pop .22s cubic-bezier(.2,.8,.2,1)}
-@keyframes pop{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
-.bar.dl i{position:relative;overflow:hidden}
-.bar.dl i::after{content:"";position:absolute;inset:0;width:40%;
-  background:linear-gradient(90deg,transparent,rgba(239,246,255,.45),transparent);animation:shimmer 1.2s linear infinite}
-@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
-.done-check{display:flex;align-items:center;gap:8px;color:var(--good);font-size:13px;font-weight:600}
-.done-check svg{width:22px;height:22px}
-.done-check path{stroke-dasharray:24;stroke-dashoffset:24;animation:draw .5s .1s ease-out forwards}
-.done-check circle{transform-origin:center;animation:enter .3s both}
-@keyframes draw{to{stroke-dashoffset:0}}
+main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
+.hint{font-size:13px;color:var(--faint)}
+.dim{color:var(--faint)} .ok{color:var(--good)} .err{color:var(--bad);font-size:13px}
+.empty{text-align:center;color:var(--dim);padding:48px 24px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.empty b{display:block;color:var(--text);font-size:17px;margin:0 0 6px}
+
+/* ---- tabs */
+.tabs{display:flex;align-items:center;gap:4px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+.tabs>button{background:none;border:0;border-radius:0;min-height:44px;padding:8px 14px;color:var(--dim);
+  display:flex;align-items:center;gap:8px;border-bottom:3px solid transparent;margin-bottom:-1px}
+.tabs>button:hover:not(:disabled){background:none;color:var(--text)}
+.tabs>button.on{color:var(--text);border-bottom-color:var(--accent)}
+.tabs img{width:20px;height:20px;border-radius:4px}
+.tabs-end{margin-left:auto} .tabs-end button{min-height:36px;padding:6px 12px;font-size:13.5px}
+
+/* ---- filter chips (segmented) */
+.summary{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.summary:empty{display:none}
+.summary button{min-height:34px;padding:4px 12px;font-size:13px;color:var(--dim);background:var(--panel);border-color:var(--line)}
+.summary button b{color:var(--text);font-weight:600;margin-left:4px}
+.summary button.on{color:var(--text);background:var(--panel-hi);border-color:var(--accent)}
+
+/* ---- My apps: one row per app */
+.list{display:flex;flex-direction:column;gap:2px}
+.group{margin:18px 2px 6px;font-size:14px;font-weight:600;color:var(--dim)}
+.group:first-child{margin-top:0}
+.group span{color:var(--faint);font-weight:400;margin-left:6px}
+.app{position:relative;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;gap:6px 16px;align-items:center;
+  padding:12px 14px;background:var(--panel);border:1px solid transparent;border-radius:var(--r)}
+.app:hover{border-color:var(--line)}
+.app:focus-within{border-color:var(--line-hi)}
+.app .name{font-weight:600;font-size:16px;word-break:break-word;line-height:1.3}
+.app .repo{color:var(--dim);font-size:13px}
+.app .note{color:var(--faint);font-size:12.5px;margin-top:2px}
+.state{font-size:13px;font-weight:600}
+.st-update .state{color:var(--accent)} .st-ok .state{color:var(--good)} .st-new .state{color:var(--warn)}
+.st-err .state{color:var(--bad)} .st-busy .state{color:var(--dim)}
+.ver{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:13.5px;color:var(--dim)}
+.ver b{color:var(--text);font-weight:600}
+.ver a[data-a]{white-space:nowrap;font-size:13px}
+.tag{font-size:12px;padding:0 6px;border-radius:4px;color:var(--dim);border:1px solid var(--line-hi);white-space:nowrap;line-height:18px}
+.tag.ok{color:var(--good);border-color:#3d5a37}
+.actions{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.actions button{min-height:38px;padding:6px 14px;font-size:14px}
+.actions .more{width:38px;padding:0}
+.job{grid-column:1/-1}
+.bar{height:4px;border-radius:2px;overflow:hidden;background:var(--line)}
+.bar i{display:block;height:100%;width:100%;transform-origin:left;background:var(--accent);transition:transform .3s ease-out}
+.bar.wait i{opacity:.4}
+.jobtxt{font-size:12.5px;color:var(--dim);margin-top:4px}
+.done-check{color:var(--good);font-size:13px;font-weight:600}
+
+/* ---- select mode */
+body.selecting .app{cursor:pointer;user-select:none;padding-left:46px}
+body.selecting .app .actions{pointer-events:none;opacity:.4}
+.app .pickbox{display:none}
+body.selecting .app .pickbox{display:grid;place-items:center;position:absolute;left:14px;top:50%;margin-top:-11px;width:22px;height:22px;
+  border-radius:4px;border:2px solid var(--line-hi);background:var(--bg)}
+body.selecting .app.sel{border-color:var(--accent)}
+body.selecting .app.sel .pickbox{background:var(--accent-btn);border-color:var(--accent-btn)}
+body.selecting .app.sel .pickbox::after{content:"";width:6px;height:11px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.selbar{position:fixed;left:12px;right:12px;bottom:16px;margin:0 auto;width:max-content;z-index:12;display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  justify-content:center;padding:8px 10px 8px 16px;border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel);
+  max-width:calc(100vw - 24px);box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.selbar button{min-height:38px;padding:6px 12px;font-size:13.5px}
+.selbar #selN{font-size:13.5px;margin-right:4px;white-space:nowrap}
+.sel-acts{display:flex;gap:6px;flex-wrap:wrap}
+body.selecting main{padding-bottom:96px}
 
 /* ---- files found in the install folder */
-.found{padding:16px 18px;margin:0 0 16px;display:flex;flex-direction:column;gap:10px}
-.found h3{margin:0;font-size:15.5px;font-weight:650}
+.found-line{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 14px;margin:0 0 12px;font-size:13.5px;color:var(--dim);
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.found-line span{flex:1}
+.found-line button{min-height:36px;padding:5px 12px;font-size:13px}
+.found{padding:14px 16px;margin:0 0 12px;display:flex;flex-direction:column;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.found h3{margin:0;font-size:15px;font-weight:600}
 .found .rows{display:flex;flex-direction:column;gap:2px;max-height:312px;overflow:auto}
-.frow{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:10px;border:1px solid transparent;color:var(--text);font-size:14px}
-label.frow{flex-direction:row;cursor:pointer} label.frow:hover{background:rgba(59,130,246,.10)}
+.frow{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:4px;color:var(--text);font-size:14px}
+label.frow{flex-direction:row;cursor:pointer} label.frow:hover{background:var(--panel-hi)}
 .frow input{flex:none} .frow>span{min-width:0;flex:1}
 .frow small{display:block;color:var(--faint);font-size:12px}
 .frow button{min-height:34px;padding:5px 11px;font-size:13px}
 .found .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 
-details.adv{border-radius:14px;border:1px solid var(--edge);background:rgba(5,8,20,.3)}
-details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim);list-style-position:inside}
-details.adv[open]>summary{border-bottom:1px solid var(--edge)}
+/* ---- dialogs, menu, toast */
+dialog{color:var(--text);padding:0;width:min(580px,94vw);max-height:calc(100vh - 32px);overflow:auto;overscroll-behavior:contain;
+  border-radius:8px;border:1px solid var(--line-hi);background:var(--panel);box-shadow:0 16px 48px rgba(0,0,0,.6)}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.dlg{padding:20px;display:flex;flex-direction:column;gap:12px}
+.dlg h2{margin:0;font-size:18px;font-weight:600}
+.dlg p{margin:0;color:var(--dim)}
+label{font-size:13.5px;color:var(--dim);display:flex;flex-direction:column;gap:6px}
+label.row{flex-direction:row;align-items:center;gap:10px;color:var(--text)}
+input[type=text],input[type=password],input[type=search],select{font:inherit;color:var(--text);min-height:42px;padding:8px 12px;border-radius:var(--r);
+  background:var(--bg);border:1px solid var(--line-hi)}
+input[type=text]:focus,input[type=password]:focus,input[type=search]:focus,select:focus{border-color:var(--accent)}
+input::placeholder{color:var(--faint)}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent-btn);flex:none}
+select{padding-right:8px}
+.assets{max-height:168px;overflow:auto;border-radius:var(--r);font-size:13px;background:var(--bg);border:1px solid var(--line)}
+.assets div{padding:8px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;cursor:pointer}
+.assets div:last-child{border:0} .assets div:hover{background:var(--panel-hi)}
+.assets .pick{background:#1d3a55;color:#fff}
+.assets small{margin-left:auto;color:var(--faint)}
+.progs{max-height:300px} .progs div{align-items:center} .progs .mono{overflow-wrap:anywhere}
+.progs .tag{flex:none}
+.dlg .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+/* The last button row stays on screen while a tall dialog scrolls (Deck screens are only 800px high). */
+.dlg>.btns:last-child{position:sticky;bottom:0;z-index:1;margin:-4px -20px -20px;padding:14px 20px 20px;
+  background:var(--panel);border-top:1px solid var(--line)}
+details.adv{border-radius:var(--r);border:1px solid var(--line)}
+details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim)}
+details.adv[open]>summary{border-bottom:1px solid var(--line)}
 details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
-.using{padding:10px 12px;border-radius:12px;border:1px solid rgba(96,165,250,.45);background:rgba(37,99,235,.14);font-size:13px}
-
-/* ---- release notes */
-.notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;color:var(--blue-100);padding:12px 14px;border-radius:14px;
-  background:rgba(5,8,20,.4);border:1px solid var(--edge);overflow-wrap:anywhere}
+.using{padding:10px 12px;border-radius:var(--r);border:1px solid #2d5878;background:#16273a;font-size:13.5px}
+.notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;padding:12px 14px;border-radius:var(--r);max-height:340px;overflow:auto;
+  background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}
 .notes b{color:#fff}
-
-/* ---- the ⋯ menu on each card */
-.menu{position:fixed;z-index:15;min-width:230px;padding:6px;border-radius:16px;border:1px solid var(--edge-hi);
-  box-shadow:inset 0 1px 0 var(--shine),0 18px 44px -12px rgba(0,0,0,.8);display:flex;flex-direction:column}
-.menu button{background:none;border:0;box-shadow:none;text-align:left;min-height:40px;padding:8px 12px;border-radius:10px;font-size:14px}
-.menu button:hover:not(:disabled),.menu button:focus-visible{background:rgba(59,130,246,.16)}
-.menu button small{display:block;color:var(--faint);font-size:11.5px}
-.menu hr{border:0;border-top:1px solid var(--edge);margin:4px 6px}
-.summary:empty{display:none}
-
-/* ---- tabs: My apps | Recomp Haven */
-.tabs{display:flex;align-items:center;gap:6px;margin:0 0 18px;border-bottom:1px solid var(--edge)}
-.tabs>button{background:none;border:0;box-shadow:none;border-radius:12px 12px 0 0;min-height:44px;padding:8px 14px;
-  color:var(--dim);display:flex;align-items:center;gap:8px;border-bottom:2px solid transparent;margin-bottom:-1px}
-.tabs>button.on{color:#fff;border-bottom-color:var(--blue-400)}
-.tabs>button[data-tab=rh].on{border-bottom-color:var(--rh)}
-.tabs-end{margin-left:auto} .tabs-end button{min-height:36px;padding:6px 12px;font-size:13.5px}
-.group{grid-column:1/-1;margin:6px 2px -6px;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
-.group span{color:var(--faint);font-weight:500;margin-left:4px}
-
-/* ---- select mode */
-body.selecting .card{cursor:pointer;user-select:none}
-body.selecting .card .actions{pointer-events:none;opacity:.45}
-.card .pickbox{display:none}
-body.selecting .card .pickbox{display:grid;place-items:center;position:absolute;top:14px;right:14px;width:24px;height:24px;
-  border-radius:8px;border:1.5px solid var(--edge-hi);background:rgba(5,8,20,.5)}
-body.selecting .card.sel{border-color:var(--blue-400);box-shadow:0 0 0 1px var(--blue-400),0 12px 32px -16px rgba(0,0,0,.7)}
-body.selecting .card.sel .pickbox{background:var(--blue-500);border-color:var(--blue-300)}
-body.selecting .card.sel .pickbox::after{content:"✓";color:#fff;font-size:14px;font-weight:700}
-.selbar{position:fixed;left:12px;right:12px;bottom:18px;margin:0 auto;width:max-content;z-index:12;display:flex;align-items:center;gap:6px;flex-wrap:wrap;
-  justify-content:center;padding:8px 10px 8px 16px;border-radius:18px;border:1px solid var(--edge-hi);max-width:calc(100vw - 24px);
-  box-shadow:inset 0 1px 0 var(--shine),0 18px 44px -14px rgba(0,0,0,.85)}
-.selbar button{min-height:38px;padding:6px 12px;font-size:13.5px}
-.selbar #selN{font-size:13.5px;color:var(--blue-100);margin-right:4px;white-space:nowrap}
-.sel-acts{display:flex;gap:6px;flex-wrap:wrap}
-body.selecting main{padding-bottom:96px}
-
-/* ---- Recomp Haven: its own section, in its own warm accent so it reads as a partner, not DeckPort */
-:root{--rh:#f5a524;--rh-soft:rgba(245,165,36,.14);--rh-edge:rgba(245,165,36,.38)}
-.rh-logo{display:grid;place-items:center;width:44px;height:44px;flex:none;border-radius:13px;font-weight:800;font-size:16px;letter-spacing:.5px;
-  color:#1a1205;background:linear-gradient(160deg,#ffd27a,var(--rh));box-shadow:0 6px 18px -6px rgba(245,165,36,.6)}
-.rh-logo.sm{width:22px;height:22px;border-radius:7px;font-size:9.5px;box-shadow:none}
-.rh-hero{padding:18px 20px;margin:0 0 14px;border-color:var(--rh-edge);
-  background:linear-gradient(120deg,rgba(245,165,36,.16),rgba(245,165,36,.03) 55%),var(--glass)}
-.rh-brand{display:flex;gap:14px;align-items:flex-start}
-.rh-brand h2{margin:0 0 3px;font-size:19px} .rh-brand p{margin:0;color:var(--blue-100);font-size:14px;max-width:62ch}
-.rh-site{margin-left:auto;white-space:nowrap;color:var(--rh);font-weight:600;font-size:14px;padding-top:2px}
-.rh-site:hover{color:#ffd27a}
-.rh-credit{margin-top:12px;font-size:12.5px;color:var(--dim)} .rh-credit a{color:var(--rh)}
-.rh-tools{display:flex;flex-direction:column;gap:10px;margin:0 0 10px}
-.rh-tools .summary{margin:0}
-#rhChips button.on{border-color:var(--rh-edge);background:var(--rh-soft)}
-#vRh .hint{margin:0 0 12px}
-.rh-grid{grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
-.rh-card{display:flex;gap:14px;padding:12px;min-height:150px}
-.rh-cover{position:relative;flex:none;width:96px;height:128px;border-radius:12px;overflow:hidden;display:grid;place-items:center;
-  background:var(--cc,#1e3a8a);color:rgba(255,255,255,.85);font-weight:800;font-size:22px}
-.rh-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.rh-tier{position:absolute;left:6px;top:6px;z-index:1;min-width:24px;height:24px;padding:0 6px;border-radius:8px;display:grid;place-items:center;
-  font-size:13px;font-weight:800;color:#111;background:var(--tc);box-shadow:0 2px 8px rgba(0,0,0,.5)}
-.rh-body{min-width:0;display:flex;flex-direction:column;gap:5px;flex:1}
-.rh-title{font-weight:650;font-size:15.5px;line-height:1.25}
-.rh-meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font-size:12.5px;color:var(--dim)}
-.rh-meta .tag{border-color:var(--cc,var(--edge));color:var(--blue-100)}
-.rh-req{font-size:12.5px;color:var(--faint);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.rh-act{display:flex;gap:8px;align-items:center;margin-top:auto;flex-wrap:wrap}
-.rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
-.rh-act a{font-size:13px}
-.rh-act .added{color:var(--good);font-size:13px;font-weight:600}
-.found-line{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 16px;margin:0 0 16px;font-size:13.5px;color:var(--dim)}
-.found-line span{flex:1}
-.found-line button{min-height:38px;padding:5px 12px;font-size:13px}
 .inl{display:flex;gap:8px}.inl input{flex:1;min-width:0}
+.menu{position:fixed;z-index:15;min-width:230px;padding:4px;border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel);
+  box-shadow:0 12px 32px rgba(0,0,0,.6);display:flex;flex-direction:column}
+.menu button{background:none;border:0;text-align:left;min-height:40px;padding:8px 12px;border-radius:4px;font-size:14px}
+.menu button:hover:not(:disabled),.menu button:focus-visible{background:var(--panel-hi)}
+.menu button small{display:block;color:var(--faint);font-size:12px}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 6px}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:var(--r);
+  border:1px solid var(--line-hi);background:var(--panel-hi);box-shadow:0 8px 24px rgba(0,0,0,.5);
+  opacity:0;transition:opacity .15s;pointer-events:none;max-width:90vw;z-index:20}
+#toast.show{opacity:1} #toast.bad{border-color:var(--bad)}
 
-@media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}
-  .rh-brand{flex-wrap:wrap} .rh-site{margin-left:58px} .rh-grid{grid-template-columns:1fr}}
-/* Users who turn transparency off get solid panels and no blur at all. */
-@media (prefers-reduced-transparency:reduce){
-  .glass,.frost,dialog,#toast{background:#0b1638;-webkit-backdrop-filter:none;backdrop-filter:none}
-  .glass::before{display:none}
+/* ---- Discover: GitHub search */
+.search{display:flex;gap:8px;margin:0 0 8px}
+.search input{flex:1;min-width:0}
+#vGh>.hint{margin:0 0 12px}
+.repo-row{grid-template-columns:minmax(0,1fr) auto}
+.repo-row .desc{color:var(--dim);font-size:13.5px;margin-top:2px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--faint);margin-top:4px}
+.meta .stars{color:var(--text);font-weight:600}
+.added{color:var(--good);font-size:13.5px;font-weight:600}
+
+/* ---- Recomp Haven */
+.rh-head{display:flex;gap:12px;align-items:center;margin:0 0 12px}
+.rh-head img{width:40px;height:40px;border-radius:8px;flex:none}
+.rh-head div{flex:1;min-width:0}
+.rh-head b{display:block;font-size:16px}
+.rh-head .hint{display:block}
+.rh-site{white-space:nowrap;font-size:14px}
+.rh-tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+.rh-tools input{flex:1;min-width:200px}
+.rh-tools label{flex-direction:row;align-items:center;gap:8px;white-space:nowrap}
+#vRh>.hint{margin:0 0 12px}
+.rh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:8px;align-items:start}
+.rh-grid .group{grid-column:1/-1}
+.rh-card{display:flex;gap:12px;padding:10px;background:var(--panel);border:1px solid transparent;border-radius:var(--r)}
+.rh-card:hover,.rh-card:focus-within{border-color:var(--line-hi)}
+.rh-cover{position:relative;flex:none;width:90px;height:120px;border-radius:4px;overflow:hidden;display:grid;place-items:center;
+  background:var(--panel-hi);color:var(--dim);font-weight:700;font-size:20px}
+.rh-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.rh-tier{position:absolute;left:4px;top:4px;z-index:1;min-width:22px;height:22px;padding:0 5px;border-radius:4px;display:grid;place-items:center;
+  font-size:13px;font-weight:700;color:#111;background:var(--tc)}
+.rh-body{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}
+.rh-title{font-weight:600;font-size:15px;line-height:1.3}
+.rh-meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font-size:13px;color:var(--dim)}
+.rh-req{font-size:12.5px;color:var(--faint);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rh-act{display:flex;gap:10px;align-items:center;margin-top:auto;flex-wrap:wrap}
+.rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
+.rh-act a{font-size:13.5px}
+
+@media (max-width:760px){
+  header{padding:10px 12px} main{padding:12px} .brand .sub{display:none}
+  .app,.repo-row{grid-template-columns:minmax(0,1fr)} .actions{justify-content:flex-start}
+  .rh-grid{grid-template-columns:1fr}
 }
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}
-  .done-check path{stroke-dashoffset:0}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <symbol id="logo" viewBox="0 0 256 256">
-    <rect x="8" y="8" width="240" height="240" rx="56" fill="#172554"/>
-    <rect x="8" y="8" width="240" height="240" rx="56" fill="none" stroke="#1e40af" stroke-width="6"/>
-    <path d="M128 52a76 76 0 0 1 70 46M206 70l-6 34-33-10M128 204a76 76 0 0 1-70-46M50 186l6-34 33 10" fill="none" stroke="#3b82f6" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M128 92v58M104 128l24 24 24-24" fill="none" stroke="#eff6ff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M98 168h60" stroke="#93c5fd" stroke-width="12" stroke-linecap="round"/>
+    <rect x="8" y="8" width="240" height="240" rx="48" fill="#1a1d23" stroke="#3a414c" stroke-width="6"/>
+    <path d="M128 52a76 76 0 0 1 70 46M206 70l-6 34-33-10M128 204a76 76 0 0 1-70-46M50 186l6-34 33 10" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M128 92v58M104 128l24 24 24-24" fill="none" stroke="#e6e8eb" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M98 168h60" stroke="#9aa3ad" stroke-width="12" stroke-linecap="round"/>
   </symbol>
   <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
@@ -2593,9 +2777,9 @@ body.selecting main{padding-bottom:96px}
   <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></g></symbol>
 </defs></svg>
 
-<header class="frost">
+<header>
   <div class="brand"><svg><use href="#logo"/></svg>
-    <div><h1>DeckPort<span class="pill">v__VERSION__</span></h1><div class="sub" id="sub">AppImages &amp; PC ports, always up to date</div></div></div>
+    <div><h1>SedotDeck<span class="ver-label">v__VERSION__</span></h1><div class="sub" id="sub">Keeps your AppImages, Flatpaks and PC ports up to date</div></div></div>
   <button id="btnCheck" class="icon ghost" title="Check for updates" aria-label="Check for updates"><svg><use href="#i-sync"/></svg></button>
   <button id="btnAdd"><svg><use href="#i-plus"/></svg> Add app</button>
   <button id="btnUpdAll" class="primary" hidden>Update all</button>
@@ -2604,24 +2788,33 @@ body.selecting main{padding-bottom:96px}
 <main>
 <nav class="tabs" id="tabs" role="tablist">
   <button type="button" role="tab" data-tab="apps" class="on">My apps</button>
-  <button type="button" role="tab" data-tab="rh"><span class="rh-logo sm">RH</span>Recomp Haven</button>
+  <button type="button" role="tab" data-tab="gh">Discover</button>
+  <button type="button" role="tab" data-tab="rh"><img src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">Recomp Haven</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
-<section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="grid"></div></section>
+<section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
+<section id="vGh" hidden>
+  <form class="search" id="ghForm"><input type="search" id="ghQ" placeholder="Search GitHub, e.g. god of war 3 or bloodborne" autocomplete="off" spellcheck="false" aria-label="Search GitHub">
+    <select id="ghSort" aria-label="Sort results"><option value="best">Best match</option><option value="stars">Most stars</option></select>
+    <button class="primary" type="submit">Search</button></form>
+  <div class="hint" id="ghInfo">Finds GitHub projects by name or description. Add looks at the latest release before anything downloads.</div>
+  <div id="ghList" class="list"></div>
+</section>
 <section id="vRh" hidden>
-  <div class="rh-hero glass">
-    <div class="rh-brand"><div class="rh-logo">RH</div>
-      <div><h2>Recomp Haven</h2><p>A tracker for every game recompilation and PC port. Here are the ones with a Linux release that DeckPort can install and keep up to date.</p></div>
-      <a class="rh-site" href="https://recomphaven.com/" target="_blank" rel="noopener">recomphaven.com ↗</a></div>
-    <div class="rh-credit">List, tiers and summaries by <a href="https://github.com/rikuwru/recomphaven" target="_blank" rel="noopener">Recomp Haven</a> (rikuwru), based on Recompendium. Box art belongs to each game's publisher. Every recomp needs your own copy of the game.</div>
-  </div>
-  <div class="rh-tools"><input type="text" id="rhQ" placeholder="Search games, projects or consoles" autocomplete="off" spellcheck="false">
-    <div class="summary" id="rhChips"></div></div>
+  <div class="rh-head"><img id="rhLogo" src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">
+    <div><b>Recomp Haven</b><span class="hint">Recomps and PC ports with a Linux release. List, tiers and summaries by <a href="https://github.com/rikuwru/recomphaven" target="_blank" rel="noopener">Recomp Haven</a> (rikuwru). Box art belongs to each game's publisher, and every recomp needs your own copy of the game.</span></div>
+    <a class="rh-site" href="https://recomphaven.com/" target="_blank" rel="noopener">recomphaven.com ↗</a></div>
+  <div class="rh-tools"><input type="text" id="rhQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search Recomp Haven">
+    <label>System<select id="rhCon"><option value="">All systems</option></select></label>
+    <label>Sort<select id="rhSort">
+      <option value="tier">Tier</option><option value="system">System</option><option value="stars">Stars</option>
+      <option value="name">Name</option><option value="released">Newest release</option></select></label></div>
+  <div class="summary" id="rhChips"></div>
   <div class="hint" id="rhInfo"></div>
-  <div id="rhList" class="grid rh-grid"></div>
+  <div id="rhList" class="rh-grid"></div>
 </section>
 </main>
-<div id="selbar" class="selbar frost" hidden>
+<div id="selbar" class="selbar" hidden>
   <span id="selN">0 selected</span>
   <button type="button" class="ghost" id="selAll">Select all</button>
   <span class="sel-acts"><button type="button" id="selCheck">Check</button><button type="button" id="selUpd">Update</button>
@@ -2644,7 +2837,7 @@ body.selecting main{padding-bottom:96px}
     <label>Asset pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
     <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
     <div class="assets" id="aAssets" hidden></div>
-    <div class="hint" id="aTip" hidden>Click a file to download that one instead. DeckPort turns it into a pattern that keeps matching future versions.</div>
+    <div class="hint" id="aTip" hidden>Click a file to download that one instead. SedotDeck turns it into a pattern that keeps matching future versions.</div>
   </div></details>
   <div class="btns"><button type="button" class="ghost" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
 </form></dialog>
@@ -2658,6 +2851,7 @@ body.selecting main{padding-bottom:96px}
 
 <dialog id="dSet"><form class="dlg" method="dialog" id="fSet">
   <h2>Settings</h2>
+  <div class="inl" style="align-items:center"><span style="flex:1">SedotDeck __VERSION__ <span class="hint" id="sSelfInfo"></span></span><button type="button" id="sSelf">Check for SedotDeck updates</button></div>
   <label>Install folder<div class="inl"><input type="text" id="sDir"><button type="button" id="sOpen">Open folder</button></div></label>
   <label class="row"><input type="checkbox" id="sBak"> Keep previous version as <span class="mono">.old</span> (enables rollback)</label>
   <label>GitHub token (optional)<input type="password" id="sTok" placeholder="ghp_… (raises the rate limit from 60 to 5000/hour)"></label>
@@ -2678,14 +2872,14 @@ body.selecting main{padding-bottom:96px}
     </div>
   </div></details>
   <div class="btns" style="justify-content:space-between">
-    <span><button type="button" class="danger ghost" id="sQuit">Quit DeckPort</button></span>
+    <span><button type="button" class="danger ghost" id="sQuit">Quit SedotDeck</button></span>
     <span><button type="button" class="ghost" onclick="dSet.close()">Cancel</button> <button class="primary" type="submit">Save</button></span>
   </div>
 </form></dialog>
 
 <dialog id="dLaunch"><form class="dlg" method="dialog">
   <h2 id="lTitle">Choose program</h2>
-  <p>What Launch and the Steam shortcut start. DeckPort keeps your choice across updates.</p>
+  <p>What Launch and the Steam shortcut start. SedotDeck keeps your choice across updates.</p>
   <div class="assets progs" id="lList"></div>
   <div class="hint" id="lHint"></div>
   <div class="btns"><button type="button" class="ghost" onclick="dLaunch.close()">Cancel</button><button type="button" class="primary" id="lOk">Use this</button></div>
@@ -2704,7 +2898,13 @@ body.selecting main{padding-bottom:96px}
   <label class="row" id="askCheckRow"><input type="checkbox" id="askCheck"> <span id="askCheckText"></span></label>
   <div class="btns"><button type="button" class="ghost" id="askNo">Cancel</button><button type="button" class="primary" id="askYes">OK</button></div>
 </form></dialog>
-<div id="menu" class="menu frost" role="menu" hidden></div>
+<dialog id="dSelf"><form class="dlg" method="dialog">
+  <h2 id="suTitle"></h2>
+  <div class="hint" id="suMeta"></div>
+  <div class="notes" id="suBody"></div>
+  <div class="btns"><button type="button" class="ghost" id="suSkip">Skip this version</button><button type="button" class="ghost" onclick="dSelf.close()">Later</button><button type="button" class="primary" id="suGo">Update now</button></div>
+</form></dialog>
+<div id="menu" class="menu" role="menu" hidden></div>
 <div id="toast"></div>
 
 <script>
@@ -2716,7 +2916,7 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 let S={apps:[],jobs:{},settings:{}}, editId=null, timer=null;
 
 async function api(path,body={}){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-DeckPort-Token":TOKEN},body:JSON.stringify(body)});
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-SedotDeck-Token":TOKEN},body:JSON.stringify(body)});
   const j=await r.json().catch(()=>({error:"Bad response"}));
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;
@@ -2742,10 +2942,10 @@ function ask({title,text="",ok="OK",danger=false,check=""}){
 }
 
 const ICON=(id,cls="")=>`<svg class="${cls}"><use href="#${id}"/></svg>`;
-const seen=new Set(), doneAt={}; let prevJobs={}, FILTER="all";
-try{FILTER=localStorage.getItem("deckport.filter")||"all"}catch(e){}
+const doneAt={}; let prevJobs={}, FILTER="all";
+try{FILTER=localStorage.getItem("sedotdeck.filter")||"all"}catch(e){}
 
-// One status per card; it drives the dot colour, sort order and filter.
+// One status per app; it drives the status text, sort order and filter.
 function status(a){
   const job=S.jobs[a.id], inst=a.installed&&a.exists;
   if(job&&job.state=="running") return "busy";
@@ -2757,9 +2957,9 @@ function status(a){
 const ORDER={update:0,busy:1,err:2,new:3,ok:4};
 const STATE={update:"Update available",ok:"Up to date",new:"Not installed",err:"Error",busy:"Checking…"};
 
-// Nightly builds are tagged with long hashes ("build-4024ea31e049f3…"): keep cards to one line.
+// Nightly builds are tagged with long hashes ("build-4024ea31e049f3…"): keep rows to one line.
 const short=t=>{t=String(t||"");return t.length>16?t.slice(0,14)+"…":t};
-function card(a,i){
+function card(a){
   const job=S.jobs[a.id], inst=a.installed, here=!!(inst&&a.exists), L=a.latest||{}, st=status(a);
   const running=job&&job.state=="running";
   let jobHtml="";
@@ -2771,35 +2971,37 @@ function card(a,i){
     else if(job.state=="error") jobHtml=`<div class="err">${esc(job.message)}</div>`;
   }
   if(doneAt[a.id]&&Date.now()-doneAt[a.id]<4000&&!running)
-    jobHtml=`<div class="done-check"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="rgba(134,239,172,.12)" stroke="currentColor" stroke-width="1.5"/><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>Installed ${esc(inst&&inst.tag||"")}</div>`;
+    jobHtml=`<div class="done-check">Installed ${esc(inst&&inst.tag||"")}</div>`;
   const mainBtn=st=="err"?"Edit":!here?"Install":(a.has_update?"Update":null);
-  const isNew=!seen.has(a.id);
   // One line: the version you have and, if there is one, the version you'd get.
   const cur=here?(inst.tag=="unknown"?"your copy":inst.tag):"";
   let ver="";
   if(st=="update")ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(cur))} → <b>${esc(short(L.tag))}</b></span>`;
-  else if(here)ver=`<span class="mono" title="${esc(inst.tag)}">${esc(short(cur))}</span>`+(a.skipped?`<span class="dim">${esc(short(L.tag))} skipped</span><a href="#" data-a="unskip" data-id="${a.id}">undo</a>`:"");
-  else if(L.tag)ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(L.tag))}</span>`+(L.asset&&L.asset.size?`<span class="dim">· ${mb(L.asset.size)}</span>`:"");
+  else if(here)ver=`<span class="mono" title="${esc(inst.tag)}">${esc(short(cur))}</span>`+(a.skipped?`<span>${esc(short(L.tag))} skipped</span><a href="#" data-a="unskip" data-id="${a.id}">undo</a>`:"");
+  else if(L.tag)ver=`<span class="mono" title="${esc(L.tag)}">${esc(short(L.tag))}</span>`+(L.asset&&L.asset.size?`<span>${mb(L.asset.size)}</span>`:"");
   if(ver&&L.prerelease)ver+='<span class="tag">pre-release</span>';
+  if(here&&inst.kind=="flatpak")ver+='<span class="tag">Flatpak</span>';
   if(st=="update"&&L.notes)ver+=`<a href="#" data-a="notes" data-id="${a.id}">What's new</a>`;
-  if(here&&inst.verified)ver+=`<span class="tag ok" title="SHA-256 ${esc(inst.sha256)} (${esc(inst.verified_by)})">✓ verified</span>`;
-  if(a.in_steam)ver+='<span class="tag steam">in Steam</span>';
+  if(here&&inst.verified)ver+=`<span class="tag ok" title="SHA-256 ${esc(inst.sha256)} (${esc(inst.verified_by)})">verified</span>`;
+  if(a.in_steam)ver+='<span class="tag ok">in Steam</span>';
+  const notes=[];
   // A file the user brought keeps its own (often versioned) name, so show which one it is.
-  const fname=a.target_path&&a.file_name?`<div class="fname mono" title="Your file, updated in place">${esc(a.file_name)}</div>`:"";
-  return `<div class="card glass st-${st} ${isNew?"enter":""} ${SEL&&SEL.has(a.id)?"sel":""}" data-card="${a.id}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}"><span class="pickbox"></span>
-   <div class="top"><div class="name"><span class="dot" title="${STATE[st]}"></span>${esc(a.name)}</div>
-     <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>
-   ${ver?`<div class="ver">${ver}</div>`:""}
-   ${fname}
-   ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
-   ${a.notice&&!a.error&&!job?`<div class="fname">${esc(a.notice)}</div>`:""}
-   ${a.moved_to&&!job?`<div class="fname">Repo moved to <span class="mono">${esc(a.moved_to)}</span> · <a href="#" data-a="move" data-id="${a.id}">Use new link</a></div>`:""}
-   ${jobHtml}
+  if(a.target_path&&a.file_name)notes.push(`<span class="mono" title="Your file, updated in place">${esc(a.file_name)}</span>`);
+  if(a.error&&!job)notes.push(`<span class="err">${esc(a.error)}</span>`);
+  if(a.notice&&!a.error&&!job)notes.push(esc(a.notice));
+  if(a.moved_to&&!job)notes.push(`Repo moved to <span class="mono">${esc(a.moved_to)}</span> · <a href="#" data-a="move" data-id="${a.id}">Use new link</a>`);
+  const opens=inst&&inst.kind=="archive"&&!a.has_launcher;
+  return `<div class="app st-${st} ${SEL&&SEL.has(a.id)?"sel":""}" data-card="${a.id}"><span class="pickbox"></span>
+   <div><div class="name">${esc(a.name)}</div>
+     <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a>
+     ${notes.map(n=>`<div class="note">${n}</div>`).join("")}</div>
+   <div><div class="state">${STATE[st]}</div>${ver?`<div class="ver">${ver}</div>`:""}</div>
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
-     ${here?`<button data-a="${inst.kind=="archive"&&!a.has_launcher?"folder":"launch"}" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"&&!a.has_launcher?"Open":"Launch"}</button>`:""}
+     ${here?`<button data-a="${opens?"folder":"launch"}" data-id="${a.id}" ${running?"disabled":""}>${opens?"Open":"Launch"}</button>`:""}
      <button class="ghost icon more" data-a="menu" data-id="${a.id}" title="More" aria-label="More actions for ${esc(a.name)}" aria-haspopup="menu">${ICON("i-more")}</button>
-   </div></div>`;
+   </div>
+   ${jobHtml?`<div class="job">${jobHtml}</div>`:""}</div>`;
 }
 
 function render(){
@@ -2807,34 +3009,28 @@ function render(){
   // Remember installs that just finished, for the check-mark animation.
   for(const [id,p] of Object.entries(prevJobs)){
     const j=S.jobs[id];
+    if(id=="__self__"){if(p.state=="running"&&j&&j.state!="running")toast(j.message,j.state!="done");continue}
     if(p.state=="running"&&p.label!="Checking"&&j&&j.state=="done") doneAt[id]=Date.now();
   }
   prevJobs=S.jobs||{};
   const L=$("#list"), apps=[...S.apps].sort((x,y)=>ORDER[status(x)]-ORDER[status(y)]||x.name.localeCompare(y.name));
   const count=k=>apps.filter(a=>status(a)==k).length;
-  const chips=[["all","All",apps.length,"var(--blue-300)"],["update","Updates",count("update"),"var(--blue-400)"],
-               ["ok","Up to date",count("ok"),"var(--good)"],["new","Not installed",count("new"),"var(--warn)"]];
-  if(count("err")) chips.push(["err","Errors",count("err"),"var(--bad)"]);
+  const chips=[["all","All",apps.length],["update","Updates",count("update")],["ok","Up to date",count("ok")],["new","Not installed",count("new")]];
+  if(count("err")) chips.push(["err","Errors",count("err")]);
   if(!chips.some(c=>c[0]==FILTER)) FILTER="all";
   // Filters only help with a long list; a short one is already sorted with updates first.
   const useChips=apps.length>=8;
   if(!useChips)FILTER="all";
-  $("#summary").innerHTML=useChips?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
+  $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to any release page, or <a href="#" data-tab="rh">browse Recomp Haven</a> for recomps and PC ports.</div>'}
-  else if(!shown.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No apps match this filter.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or <a href="#" data-tab="rh">browse Recomp Haven</a>.</div>'}
+  else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
-    if(cats.some(c=>c)){
-      let i=0;
-      L.innerHTML=cats.map(c=>{const g=shown.filter(a=>(a.category||"")==c);
-        return `<h3 class="group">${c?esc(c):"Other"}<span>${g.length}</span></h3>`+g.map(a=>card(a,i++)).join("")}).join("");
-    }else L.innerHTML=shown.map(card).join("");
+    L.innerHTML=cats.some(c=>c)?cats.map(c=>{const g=shown.filter(a=>(a.category||"")==c);
+      return `<h3 class="group">${c?esc(c):"Other"}<span>${g.length}</span></h3>`+g.map(card).join("")}).join(""):shown.map(card).join("");
   }
-  shown.forEach(a=>seen.add(a.id));
-  // Safety net: if the webview pauses animations (hidden/occluded window), still show the cards.
-  setTimeout(()=>L.querySelectorAll(".enter").forEach(el=>el.classList.remove("enter")),1500);
   const n=count("update");
   const b=$("#btnUpdAll");b.hidden=!n;b.textContent=`Update all (${n})`;
   const checking=Object.values(S.jobs||{}).some(j=>j.state=="running"&&j.label=="Checking");
@@ -2843,27 +3039,29 @@ function render(){
   $("#btnSel").hidden=S.apps.length<2;
   // The Recomp Haven tab marks what's in My apps; redraw it only when that changes.
   if(TAB=="rh"&&RH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rhKey)renderRh();
+  if(TAB=="gh"&&GH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=ghKey)renderGh();
   if(SEL){for(const id of [...SEL])if(!S.apps.some(a=>a.id==id))SEL.delete(id);renderSel()}
   $("#catList").innerHTML=[...new Set(S.apps.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">`).join("");
-  $("#sub").textContent=checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"AppImages & PC ports, always up to date";
+  const self=S.jobs.__self__;
+  $("#sub").textContent=self&&self.state=="running"?`Updating SedotDeck… ${Math.round((self.progress||0)*100)}%`
+    :checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"Keeps your AppImages, Flatpaks and PC ports up to date";
 }
-// Drop the entrance class once it has played so a card can never stay mid-animation.
-$("#list").addEventListener("animationend",e=>{if(e.target.classList.contains("enter")&&e.animationName=="enter")e.target.classList.remove("enter")});
 $("#summary").addEventListener("click",e=>{
   const c=e.target.closest("button[data-f]");if(!c)return;
-  FILTER=c.dataset.f;try{localStorage.setItem("deckport.filter",FILTER)}catch(err){}
+  FILTER=c.dataset.f;try{localStorage.setItem("sedotdeck.filter",FILTER)}catch(err){}
   render();
 });
-let autoChecked=false;
+let autoChecked=false,selfChecked=false;
 async function refresh(){
   try{
     S=await api("/api/state");render();
     if(!autoChecked){
-      // Opening DeckPort checks for updates by itself, at most once an hour.
+      // Opening SedotDeck checks for updates by itself, at most once an hour.
       autoChecked=true;const last=Math.max(0,...S.apps.map(a=>a.checked_at||0));
       if(S.apps.length&&Date.now()/1000-last>3600)act("/api/check",{});
     }
-  }catch(e){$("#list").innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>DeckPort is not running</b>Start it again from the app menu.</div>'}
+    if(!selfChecked){selfChecked=true;checkSelf(false)}
+  }catch(e){$("#list").innerHTML='<div class="empty"><b>SedotDeck is not running</b>Start it again from the app menu.</div>'}
   clearTimeout(timer);
   const busy=Object.values(S.jobs||{}).some(j=>j.state=="running");
   timer=setTimeout(refresh,busy?700:(Object.keys(S.jobs||{}).length?2000:15000));
@@ -2878,14 +3076,14 @@ async function doAction(k,a,el){
   else if(k=="menu")openMenu(el,a);
   else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
   else if(k=="remove"){
-    const r=await ask({title:`Remove ${a.name}?`,text:"DeckPort will stop tracking it.",ok:"Remove",danger:true,
+    const r=await ask({title:`Remove ${a.name}?`,text:"SedotDeck will stop tracking it.",ok:"Remove",danger:true,
                        check:a.installed&&a.exists?"Also delete its downloaded files":""});
     if(r)act("/api/remove",{id,delete_files:!!r.checked},"Removed");
   }
   else if(k=="edit")openAdd(a);
   else if(k=="notes")openNotes(a);
   else if(k=="release"){const u=(a.latest&&a.latest.url)||a.web_url;APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
-  else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. DeckPort will tell you about the next version.`);
+  else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. SedotDeck will tell you about the next version.`);
   else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
   else if(k=="folder")act("/api/open_folder",{id});
   else if(k=="rename")act("/api/rename",{id},r=>`Renamed to ${r.file}`);
@@ -2907,7 +3105,7 @@ function addSteam(a){
 async function openLaunch(a,thenSteam){
   let r;try{r=await api("/api/launch_choices",{id:a.id})}catch(e){toast(e.message,true);return}
   const KIND={linux:'<span class="tag">Linux</span>',windows:'<span class="tag">Windows · Proton</span>'};
-  const rows=[`<div data-f="" class="${r.manual?"":"pick"}"><b>Automatic</b><small>${r.manual||!r.current?"DeckPort picks":esc(r.current)}</small></div>`]
+  const rows=[`<div data-f="" class="${r.manual?"":"pick"}"><b>Automatic</b><small>${r.manual||!r.current?"SedotDeck picks":esc(r.current)}</small></div>`]
     .concat(r.choices.map(c=>`<div data-f="${esc(c.file)}" class="${r.manual&&c.file==r.current?"pick":""}"><span class="mono">${esc(c.file)}</span>${KIND[c.kind]||""}<small>${mb(c.size)}</small></div>`));
   const L=$("#lList");L.innerHTML=rows.join("");
   $("#lTitle").textContent=`Choose program · ${a.name}`;
@@ -3001,7 +3199,7 @@ function openNotes(a){
   dNotes.showModal();$("#nBody").scrollTop=0;
 }
 
-// Banner: AppImages already in the install folder that DeckPort could keep up to date.
+// Banner: AppImages already in the install folder that SedotDeck could keep up to date.
 let foundKey="",foundLater=false,foundOpen=false;
 function renderFound(){
   const F=S.found||[],box=$("#found");
@@ -3012,14 +3210,14 @@ function renderFound(){
   const known=F.filter(f=>f.src),unknown=F.filter(f=>!f.src);
   if(!foundOpen){
     // One quiet line; Review opens the list.
-    box.innerHTML=`<div class="found-line glass"><span>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</span>
+    box.innerHTML=`<div class="found-line"><span>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</span>
       <button type="button" class="ghost" id="fOpen">Review</button><button type="button" class="ghost" id="fHideAll">Hide</button></div>`;
     return;
   }
   const row=f=>f.src
     ?`<label class="frow"><input type="checkbox" data-p="${esc(f.path)}" checked><span><b>${esc(f.name)}</b> <span class="dim">${f.app_id?"for the "+esc(f.name)+" entry you added":esc(f.display)}</span><small class="mono">${esc(f.file)} · ${mb(f.size)}</small></span></label>`
     :`<div class="frow"><span><span class="mono">${esc(f.file)}</span><small>Not recognized · ${mb(f.size)}</small></span><button type="button" data-link="${esc(f.path)}">Choose repo…</button><button type="button" class="ghost" data-ign="${esc(f.path)}">Hide</button></div>`;
-  box.innerHTML=`<div class="found glass"><h3>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</h3>
+  box.innerHTML=`<div class="found"><h3>${F.length} AppImage${F.length>1?"s":""} found in ${esc(S.settings.install_dir_short||"")}</h3>
     <div class="rows">${known.map(row).join("")}${unknown.map(row).join("")}</div>
     ${known.length?`<label class="frow"><input type="checkbox" id="fRen" checked><span>Rename to clean names <span class="dim">(Name.AppImage)</span></span></label>`:""}
     <div class="btns"><button type="button" class="ghost" id="fLater">Not now</button>${known.length?`<button type="button" class="primary" id="fTrack">Keep ${known.length} up to date</button>`:""}</div></div>`;
@@ -3067,7 +3265,7 @@ function openAdd(a,adopt){
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
   $("#aUsing").hidden=$("#aRenL").hidden=!ADOPT;$("#aRen").checked=true;renName();
-  if(ADOPT)$("#aUsing").innerHTML=`DeckPort will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
+  if(ADOPT)$("#aUsing").innerHTML=`SedotDeck will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
   dAdd.showModal();
   if(a)preview();else $("#aRepo").focus();
 }
@@ -3092,11 +3290,11 @@ async function preview(){
   try{
     const r=await api("/api/preview",{repo,pattern:$("#aPat").value,prerelease:$("#aPre").checked,skip_titles:$("#aSkip").value,latest_only:$("#aLatest").checked});
     if(me!=lastPrev)return;  // a newer lookup is on its way
-    $("#aInfo").innerHTML=`<b>${esc(r.repo)}</b> · ${esc(r.tag)} · `+(r.picked?`will download <span class="mono">${esc(r.picked)}</span>`:"⚠ no Linux build found. Open Advanced and click the right file.");
+    $("#aInfo").innerHTML=`<b>${esc(r.repo)}</b> · ${esc(r.tag)} · `+(r.picked?`will download <span class="mono">${esc(r.picked)}</span>`:"no Linux build found. Open Advanced and pick the right file.");
     box.innerHTML=r.assets.map(x=>`<div class="${x.name==r.picked?"pick":""}" data-n="${esc(x.name)}">${esc(x.name)}<small>${mb(x.size)}</small></div>`).join("")||"<div>No files in this release</div>";
     box.hidden=false;$("#aTip").hidden=false;
     if(!r.picked)$("#aAdv").open=true;
-  }catch(e){if(me!=lastPrev)return;$("#aInfo").textContent="⚠ "+e.message;box.hidden=true;$("#aTip").hidden=true}
+  }catch(e){if(me!=lastPrev)return;$("#aInfo").textContent=e.message;box.hidden=true;$("#aTip").hidden=true}
 }
 $("#aAssets").onclick=e=>{const d=e.target.closest("[data-n]");if(!d)return;$("#aPat").value=patternFor(d.dataset.n);preview()};
 $("#fAdd").onsubmit=async e=>{
@@ -3129,7 +3327,7 @@ $("#selCheck").onclick=()=>act("/api/check",{ids:[...SEL]},`Checking ${SEL.size}
 $("#selUpd").onclick=()=>act("/api/update",{ids:[...SEL]},r=>r.count?`Updating ${r.count} app(s)`:"The selected apps are up to date");
 $("#selCat").onclick=()=>openCat([...SEL]);
 $("#selRm").onclick=async()=>{
-  const ids=[...SEL],r=await ask({title:`Remove ${ids.length} app(s)?`,text:"DeckPort will stop tracking them.",ok:"Remove",danger:true,check:"Also delete their downloaded files"});
+  const ids=[...SEL],r=await ask({title:`Remove ${ids.length} app(s)?`,text:"SedotDeck will stop tracking them.",ok:"Remove",danger:true,check:"Also delete their downloaded files"});
   if(r)act("/api/remove",{ids,delete_files:!!r.checked},x=>`Removed ${x.count} app(s)`);
 };
 let catIds=[];
@@ -3145,52 +3343,79 @@ $("#cClear").onclick=()=>saveCat("");
 // ---- tabs
 let TAB="apps";
 function setTab(t){
-  TAB=t;try{localStorage.setItem("deckport.tab",t)}catch(e){}
+  TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  $("#vApps").hidden=t!="apps";$("#vRh").hidden=t!="rh";$(".tabs-end").hidden=t!="apps";
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
   if(t=="rh")loadRh(false);
+  if(t=="gh")$("#ghQ").focus();
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
 
 // ---- Recomp Haven
-const TIERS={S:["Definitive","#f5c542"],A:["Complete","#86efac"],B:["Playable","#93c5fd"],C:["Rough","#fdba74"],D:["Experimental","#a3a9b8"]};
+const TIERS={S:["Definitive","#f5c542"],A:["Complete","#8bd17c"],B:["Playable","#6fb8ff"],C:["Rough","#f0a35e"],D:["Experimental","#a3a9b8"]};
 const STAGES={released:"Released",beta:"Beta",development:"In development",abandoned:"Abandoned"};
 let RH={items:null,site:"https://recomphaven.com/",consoles:{}},rhTier="all",rhDeck=false,rhLoading=false,rhAdding=new Set(),rhKey="";
+try{$("#rhSort").value=localStorage.getItem("sedotdeck.rhsort")||"tier"}catch(e){}
 async function loadRh(refresh){
   if(rhLoading||(RH.items&&!refresh))return renderRh();
   rhLoading=true;$("#rhInfo").textContent="Loading the list from Recomp Haven…";
-  try{RH=await api("/api/recomphaven",{refresh})}catch(e){$("#rhInfo").textContent="⚠ "+e.message}
+  try{RH=await api("/api/recomphaven",{refresh})}catch(e){$("#rhInfo").textContent=e.message}
   rhLoading=false;renderRh();
+}
+const rhCon=k=>RH.consoles[k]||{label:k||"Other",short:(k||"?").toUpperCase(),color:""};
+const tierRank=x=>x.tier?"SABCD".indexOf(x.tier):9;
+const RH_SORT={
+  tier:(a,b)=>tierRank(a)-tierRank(b)||b.stars-a.stars,
+  system:(a,b)=>rhCon(a.console).label.localeCompare(rhCon(b.console).label)||tierRank(a)-tierRank(b)||b.stars-a.stars,
+  stars:(a,b)=>b.stars-a.stars,
+  name:(a,b)=>a.title.localeCompare(b.title),
+  released:(a,b)=>String(b.released).localeCompare(String(a.released)),
+};
+function rhCard(x,tracked){
+  const c=rhCon(x.console),t=TIERS[x.tier],added=tracked.has(x.key),busy=rhAdding.has(x.id);
+  const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]).join("").toUpperCase();
+  return `<div class="rh-card" title="${esc(x.summary)}">
+    <div class="rh-cover">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}
+      ${t?`<span class="rh-tier" style="--tc:${t[1]}" title="Tier ${x.tier}: ${t[0]}">${x.tier}</span>`:""}</div>
+    <div class="rh-body">
+      <div class="rh-title">${esc(x.title)}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(c.label)}">${esc(c.short)}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span> · ${esc(STAGES[x.stage]||x.stage)}${x.deck?' <span class="tag ok">Steam Deck</span>':""}</div>
+      ${x.requires?`<div class="rh-req">${esc(x.requires)}</div>`:""}
+      <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-rh="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
+        <a href="${esc(RH.site)}#${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
+    </div></div>`;
 }
 function renderRh(){
   if(!RH.items)return;
+  if(RH.logo&&$("#rhLogo"))$("#rhLogo").src=RH.logo;
   rhKey=S.apps.map(a=>a.host+"/"+a.repo).join();
   const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
-  const q=$("#rhQ").value.trim().toLowerCase(),con=k=>RH.consoles[k]||{label:k,short:k.toUpperCase(),color:""};
-  const list=RH.items.filter(x=>(rhTier=="all"||x.tier==rhTier||(rhTier=="CD"&&"CD".includes(x.tier)))&&(!rhDeck||x.deck)
-    &&(!q||[x.title,x.project,x.genre,con(x.console).label,con(x.console).short].join(" ").toLowerCase().includes(q)));
+  // The system list only offers systems that have something to install, with counts.
+  const sel=$("#rhCon"),cur=sel.value,per={};
+  RH.items.forEach(x=>per[x.console]=(per[x.console]||0)+1);
+  sel.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>rhCon(a).label.localeCompare(rhCon(b).label))
+    .map(k=>`<option value="${esc(k)}">${esc(rhCon(k).label)} (${per[k]})</option>`).join("");
+  sel.value=per[cur]?cur:"";
+  const q=$("#rhQ").value.trim().toLowerCase(),con=sel.value,sort=$("#rhSort").value;
+  const list=RH.items.filter(x=>(rhTier=="all"||x.tier==rhTier||(rhTier=="CD"&&"CD".includes(x.tier)))&&(!rhDeck||x.deck)&&(!con||x.console==con)
+    &&(!q||[x.title,x.project,x.genre,rhCon(x.console).label,rhCon(x.console).short].join(" ").toLowerCase().includes(q))).sort(RH_SORT[sort]||RH_SORT.tier);
   const n=t=>RH.items.filter(x=>t=="CD"?"CD".includes(x.tier):x.tier==t).length;
-  $("#rhChips").innerHTML=[["all","All",RH.items.length],["S","S · Definitive",n("S")],["A","A · Complete",n("A")],["B","B · Playable",n("B")],["CD","C–D · Early",n("CD")]]
-    .map(([k,t,c])=>`<button class="${rhTier==k?"on":""}" data-tier="${k}" style="--c:${(TIERS[k[0]]||[0,"var(--rh)"])[1]}"><i></i>${t} <b>${c}</b></button>`).join("")
-    +`<button class="${rhDeck?"on":""}" data-deck="1" style="--c:var(--good)"><i></i>Steam Deck</button>`;
+  $("#rhChips").innerHTML=[["all","All tiers",RH.items.length],["S","S · Definitive",n("S")],["A","A · Complete",n("A")],["B","B · Playable",n("B")],["CD","C–D · Early",n("CD")]]
+    .map(([k,t,c])=>`<button class="${rhTier==k?"on":""}" data-tier="${k}" aria-pressed="${rhTier==k}">${t}<b>${c}</b></button>`).join("")
+    +`<button class="${rhDeck?"on":""}" data-deck="1" aria-pressed="${rhDeck}">Steam Deck</button>`;
   const when=RH.fetched_at?`Updated ${ago(RH.fetched_at)}`:"";
-  $("#rhInfo").innerHTML=`${list.length} of ${RH.items.length} recomps with a Linux release · ${when} · <a href="#" id="rhRefresh">Refresh</a>`+(RH.stale?` · ⚠ ${esc(RH.stale)}`:"");
-  $("#rhList").innerHTML=list.length?list.map(x=>{
-    const c=con(x.console),t=TIERS[x.tier],added=tracked.has(x.key),busy=rhAdding.has(x.id);
-    const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]).join("").toUpperCase();
-    return `<div class="rh-card glass" title="${esc(x.summary)}">
-      <div class="rh-cover" style="--cc:${esc(c.color||"#1e3a8a")}">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}
-        ${t?`<span class="rh-tier" style="--tc:${t[1]}" title="Tier ${x.tier}: ${t[0]}">${x.tier}</span>`:""}</div>
-      <div class="rh-body">
-        <div class="rh-title">${esc(x.title)}</div>
-        <div class="rh-meta"><span class="tag" style="--cc:${esc(c.color)}" title="${esc(c.label)}">${esc(c.short)}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span> · ${esc(STAGES[x.stage]||x.stage)}${x.deck?' <span class="tag ok">Steam Deck</span>':""}</div>
-        ${x.requires?`<div class="rh-req">${esc(x.requires)}</div>`:""}
-        <div class="rh-act">${added?'<span class="added">✓ In My apps</span>':`<button class="primary" data-rh="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
-          <a href="${esc(RH.site)}#${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
-      </div></div>`}).join(""):'<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No recomps match this search.</div>';
+  $("#rhInfo").innerHTML=`${list.length} of ${RH.items.length} recomps with a Linux release · ${when} · <a href="#" id="rhRefresh">Refresh</a>`+(RH.stale?` · ${esc(RH.stale)}`:"");
+  if(!list.length){$("#rhList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No recomps match these filters.</div>';return}
+  if(sort=="system"&&!con){
+    // Grouped under a heading per system.
+    const groups=[...new Set(list.map(x=>x.console))];
+    $("#rhList").innerHTML=groups.map(k=>{const g=list.filter(x=>x.console==k);
+      return `<h3 class="group">${esc(rhCon(k).label)}<span>${g.length}</span></h3>`+g.map(x=>rhCard(x,tracked)).join("")}).join("");
+  }else $("#rhList").innerHTML=list.map(x=>rhCard(x,tracked)).join("");
 }
-$("#rhQ").oninput=renderRh;
+$("#rhQ").oninput=renderRh;$("#rhCon").onchange=renderRh;
+$("#rhSort").onchange=()=>{try{localStorage.setItem("sedotdeck.rhsort",$("#rhSort").value)}catch(e){}renderRh()};
 $("#rhChips").onclick=e=>{const b=e.target.closest("button");if(!b)return;if(b.dataset.deck)rhDeck=!rhDeck;else rhTier=b.dataset.tier;renderRh()};
 $("#rhInfo").onclick=e=>{if(e.target.id=="rhRefresh"){e.preventDefault();RH.items=null;loadRh(true)}};
 $("#rhList").onclick=async e=>{
@@ -3201,7 +3426,53 @@ $("#rhList").onclick=async e=>{
   catch(err){toast(err.message,true)}
   rhAdding.delete(x.id);renderRh();
 };
-try{if(localStorage.getItem("deckport.tab")=="rh")setTab("rh")}catch(e){}
+
+// ---- Discover: find a project on GitHub by the game's name, most stars first
+let GH={items:null,q:"",total:0},ghBusy=false,ghKey="";
+$("#ghSort").onchange=()=>{if(GH.items)$("#ghForm").requestSubmit()};
+const stars=n=>n>=1e3?(n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,"")+"k":String(n);
+$("#ghForm").onsubmit=async e=>{
+  e.preventDefault();const q=$("#ghQ").value.trim();if(!q||ghBusy)return;
+  ghBusy=true;$("#ghInfo").textContent=`Searching GitHub for “${q}”…`;
+  try{GH=await api("/api/github_search",{q,sort:$("#ghSort").value});GH.q=q;renderGh()}
+  catch(err){$("#ghInfo").textContent=err.message}
+  ghBusy=false;
+};
+function renderGh(){
+  if(!GH.items)return;
+  ghKey=S.apps.map(a=>a.host+"/"+a.repo).join();
+  const tracked=new Set(S.apps.filter(a=>a.host=="github.com").map(a=>a.repo.toLowerCase()));
+  $("#ghInfo").textContent=GH.items.length?`${GH.total.toLocaleString()} projects match “${GH.q}”`+(GH.total>GH.items.length?`, showing the first ${GH.items.length}.`:"."):`Nothing on GitHub matches “${GH.q}”.`;
+  $("#ghList").innerHTML=GH.items.map(r=>{const added=tracked.has(r.repo.toLowerCase());
+    return `<div class="app repo-row"><div><div class="name">${esc(r.name)}</div><a class="repo" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>
+      ${r.description?`<div class="desc">${esc(r.description)}</div>`:""}
+      <div class="meta"><span class="stars" title="${r.stars.toLocaleString()} stars">★ ${stars(r.stars)}</span>${r.language?`<span>${esc(r.language)}</span>`:""}${r.pushed_at?`<span>updated ${ago(Date.parse(r.pushed_at)/1000)}</span>`:""}${r.archived?'<span class="tag">archived</span>':""}</div></div>
+      <div class="actions">${added?'<span class="added">In My apps</span>':`<button class="primary" data-gh="${esc(r.repo)}">Add</button>`}</div></div>`}).join("");
+}
+// Add opens the usual dialog, which looks up the latest release and the file it would download.
+$("#ghList").onclick=e=>{const b=e.target.closest("[data-gh]");if(!b)return;openAdd(null);$("#aRepo").value=b.dataset.gh;preview()};
+
+// ---- SedotDeck's own updates: asked once per start, unless that version was skipped
+let SELF=null;
+async function checkSelf(manual){
+  try{SELF=await api("/api/self_update_check",{refresh:!!manual})}catch(e){if(manual)toast(e.message,true);return}
+  $("#sSelfInfo").textContent=SELF.newer?`· ${SELF.latest} available`:"· up to date";
+  if(SELF.newer&&(manual||!SELF.skipped))openSelf();
+  else if(manual)toast(`SedotDeck ${SELF.current} is the newest version`);
+}
+function openSelf(){
+  const can=SELF.method=="appimage"||SELF.method=="script";
+  $("#suTitle").textContent=`SedotDeck ${SELF.latest} is available`;
+  $("#suMeta").innerHTML=`You have ${esc(SELF.current)}`+(SELF.published?` · released ${esc(SELF.published.slice(0,10))}`:"")
+    +` · <a href="${esc(SELF.url)}" target="_blank" rel="noopener">Release page</a>`
+    +(SELF.method=="decky"?" · Update the Decky plugin from Decky's settings.":"");
+  $("#suBody").innerHTML=md(SELF.notes||"")||'<span class="dim">No release notes.</span>';
+  const go=$("#suGo");go.textContent=can?"Update now":"Open release page";
+  go.onclick=()=>{dSelf.close();if(can)act("/api/self_update",{},`Downloading SedotDeck ${SELF.latest}…`);else openUrl(SELF.url)};
+  $("#suSkip").onclick=()=>{dSelf.close();act("/api/self_update_skip",{tag:SELF.latest},`Skipped ${SELF.latest}. You'll be asked again for the next version.`)};
+  dSelf.showModal();
+}
+$("#sSelf").onclick=()=>{dSet.close();checkSelf(true)};
 
 $("#btnSet").onclick=()=>{
   $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTok").value="";
@@ -3226,7 +3497,7 @@ $("#sExport").onclick=async()=>{
     if(APP){const r=await api("/api/export_save");toast(`Exported ${r.count} app(s) to ${r.path}`);return}
     const data=await api("/api/export");
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));
-    const a=document.createElement("a");a.href=url;a.download="deckport-apps-"+data.exported_at.slice(0,10)+".json";
+    const a=document.createElement("a");a.href=url;a.download="sedotdeck-apps-"+data.exported_at.slice(0,10)+".json";
     document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
     toast(`Exported ${data.apps.length} app(s)`);
   }catch(e){toast(e.message,true)}
@@ -3243,7 +3514,7 @@ $("#sImportFile").onchange=async e=>{
 };
 // In the desktop app, closing the window quits; the button is only for the browser version.
 $("#sQuit").hidden=APP;
-$("#sQuit").onclick=async()=>{try{await api("/api/quit")}catch(e){}document.body.innerHTML='<div class="empty"><b>DeckPort closed</b>You can close this tab.</div>'};
+$("#sQuit").onclick=async()=>{try{await api("/api/quit")}catch(e){}document.body.innerHTML='<div class="empty"><b>SedotDeck closed</b>You can close this tab.</div>'};
 refresh();
 </script></body></html>
 """

@@ -22,7 +22,7 @@ jobs:
           cache-dependency-path: decky-plugin/package-lock.json
 
       - name: Tests
-        run: python3 -I tests/test_deckport.py deckport.py
+        run: python3 -I tests/test_sedotdeck.py sedotdeck.py
 
       - name: Typecheck Decky plugin
         working-directory: decky-plugin
@@ -67,14 +67,14 @@ jobs:
 
       - name: Collect AppImage
         run: |
-          VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' deckport.py)"
+          VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' sedotdeck.py)"
           mkdir -p dist
-          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "dist/DeckPort-$VERSION-x86_64.AppImage"
+          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "dist/SedotDeck-$VERSION-x86_64.AppImage"
           chmod +x dist/*.AppImage
           ls -la dist
 
       - name: Smoke test AppImage (CLI mode)
-        run: APPIMAGE_EXTRACT_AND_RUN=1 dist/DeckPort-*-x86_64.AppImage --version
+        run: APPIMAGE_EXTRACT_AND_RUN=1 dist/SedotDeck-*-x86_64.AppImage --version
 
       - name: Smoke test AppImage (window starts its backend)
         run: |
@@ -82,20 +82,20 @@ jobs:
           export APPIMAGE_EXTRACT_AND_RUN=1 HOME="$(mktemp -d)" DISPLAY=:99
           Xvfb :99 -screen 0 1100x760x24 -nolisten tcp &
           sleep 2
-          dist/DeckPort-*-x86_64.AppImage > app.log 2>&1 &
+          dist/SedotDeck-*-x86_64.AppImage > app.log 2>&1 &
           for i in $(seq 40); do
             ADDR="$(ss -ltnp | grep '"python3"' | grep -o '127\.0\.0\.1:[0-9]*' | head -1)"
             [ -n "$ADDR" ] && break
             sleep 1
           done
           [ -n "$ADDR" ] || { echo "backend never started"; cat app.log; exit 1; }
-          curl -fsS "http://$ADDR/?app=1" | grep -q "<title>DeckPort</title>"
+          curl -fsS "http://$ADDR/?app=1" | grep -q "<title>SedotDeck</title>"
           echo "Backend up at $ADDR and serving the UI"
           # Screenshot of the real app window (Xvfb has no window manager, so no title bar).
           sleep 6
           mkdir -p shots
           import -window root shots/app-window.png
-          pkill -f "deckport.py serve" || true
+          pkill -f "sedotdeck.py serve" || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -124,4 +124,4 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/DeckPort-*-x86_64.AppImage dist/DeckPort-decky-*.zip --repo "$GITHUB_REPOSITORY" --title "DeckPort $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/SedotDeck-*-x86_64.AppImage dist/SedotDeck-decky-*.zip --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --generate-notes
