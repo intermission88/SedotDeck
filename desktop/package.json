@@ -1,6 +1,6 @@
 {
   "name": "deckport-desktop",
-  "version": "1.6.0",
+  "version": "0.0.1-alpha",
   "private": true,
   "description": "DeckPort desktop app (Tauri shell around deckport.py)",
   "scripts": {

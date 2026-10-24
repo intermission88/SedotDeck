@@ -31,15 +31,13 @@ Tempel link rilisnya atau pilih recomp dari [Recomp Haven](https://recomphaven.c
 - **Plugin Decky** untuk Game Mode, dengan cek otomatis tiap 6 jam.
 - **Ringan**: satu file Python dengan Python bawaan SteamOS. Tanpa `pip`, tanpa `sudo`.
 
-## 🆕 Yang baru di v1.6.0
+## 🆕 Yang baru di v0.0.1-alpha
 
 - **Tab Recomp Haven** dengan tier, cover, dan konsol. [Lihat](#-recomp-haven)
 - **Port berbentuk folder** bisa masuk Steam, dengan **Choose program…** untuk memilih `.sh`, binary, atau `.exe`. [Lihat](#️-port-berbentuk-folder)
 - **Skip releases named** dan **Only the release marked Latest** untuk memilih rilis. [Lihat](#memilih-rilis)
 - **Repo pindah atau ganti nama** dikenali, dengan tombol **Use new link**.
 - **Kategori dan mode Select.** Katalog bawaan diganti oleh Recomp Haven.
-
-Riwayat versi sebelumnya ada di halaman [Releases](https://github.com/intermission88/deckport/releases).
 
 ## 📦 Install
 

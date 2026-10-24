@@ -1,6 +1,6 @@
 [package]
 name = "deckport"
-version = "1.6.0"
+version = "0.0.1-alpha"
 description = "DeckPort desktop app: AppImage & PC port updater for Steam Deck"
 authors = ["intermission88"]
 edition = "2021"
