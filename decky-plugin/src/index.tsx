@@ -1,9 +1,11 @@
 import {
   ButtonItem,
   ConfirmModal,
+  DialogButton,
   Field,
   Menu,
   MenuItem,
+  ModalRoot,
   PanelSection,
   PanelSectionRow,
   ProgressBarWithInfo,
@@ -24,7 +26,11 @@ type App = {
   display_repo: string;
   installed: { tag: string; verified?: boolean; path: string; kind: string } | null;
   has_launcher?: boolean;
-  launcher?: string;
+  launch?: { file: string; kind: string; manual: boolean };
+  // What a Steam shortcut starts: the AppImage, a folder app's .sh launcher, or its .exe (proton).
+  steam_exe: string;
+  steam_dir: string;
+  proton: boolean;
   latest: { tag: string; asset: Asset | null } | null;
   error: string;
   has_update: boolean;
@@ -60,23 +66,76 @@ function describe(a: App): string {
   return inst === latest ? inst + check : `${inst} → ${latest}${check}`;
 }
 
+type Target = { steam_exe: string; steam_dir: string; proton: boolean };
+
 // Steam is running in Game Mode, so the shortcut goes through its own API instead of shortcuts.vdf.
-async function addToSteam(app: App) {
-  const folder = app.installed!.kind === "archive";
-  const exe = folder ? app.launcher! : app.installed!.path;
-  const dir = folder ? app.installed!.path : exe.slice(0, exe.lastIndexOf("/"));
+async function addToSteam(name: string, t: Target) {
   try {
-    const id = await SteamClient.Apps.AddShortcut(app.name, `"${exe}"`, `"${dir}"`, "");
-    SteamClient.Apps.SetShortcutName(id, app.name);
-    SteamClient.Apps.SetShortcutExe(id, `"${exe}"`);
-    SteamClient.Apps.SetShortcutStartDir(id, `"${dir}"`);
-    toaster.toast({ title: "DeckPort", body: `${app.name} added to your library` });
+    const id = await SteamClient.Apps.AddShortcut(name, `"${t.steam_exe}"`, `"${t.steam_dir}"`, "");
+    SteamClient.Apps.SetShortcutName(id, name);
+    SteamClient.Apps.SetShortcutExe(id, `"${t.steam_exe}"`);
+    SteamClient.Apps.SetShortcutStartDir(id, `"${t.steam_dir}"`);
+    if (t.proton) SteamClient.Apps.SpecifyCompatTool(id, "proton_experimental");
+    toaster.toast({ title: "DeckPort", body: `${name} added to your library` + (t.proton ? " (runs with Proton)" : "") });
   } catch (e) {
     fail(e);
   }
 }
 
-function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, body: object, ok?: string) => void }) {
+type Choice = { file: string; kind: string; size: number };
+
+// Pick which program inside a folder app Launch and Steam start, then optionally add it to Steam.
+function ChooseProgram({ app, thenSteam, done, closeModal }: {
+  app: App; thenSteam: boolean; done: () => void; closeModal?: () => void;
+}) {
+  const [r, setR] = useState<{ choices: Choice[]; current: string; manual: boolean } | null>(null);
+  useEffect(() => {
+    call("/api/launch_choices", { id: app.id }).then(setR, (e) => {
+      fail(e);
+      closeModal?.();
+    });
+  }, []);
+  const pick = async (file: string) => {
+    closeModal?.();
+    try {
+      const s = await call("/api/set_launch", { id: app.id, file });
+      if (!s.launch) toaster.toast({ title: "DeckPort", body: `No program found in ${app.name}` });
+      else if (thenSteam) await addToSteam(app.name, s);
+      else toaster.toast({ title: "DeckPort", body: `${app.name} starts ${s.launch.file}` });
+    } catch (e) {
+      fail(e);
+    }
+    done();
+  };
+  const mark = (on: boolean) => (on ? "✓ " : "");
+  return (
+    <ModalRoot closeModal={closeModal}>
+      <div className={staticClasses.Title} style={{ marginBottom: 8 }}>Choose program · {app.name}</div>
+      <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+        What the Steam shortcut starts. Windows .exe files run with Proton.
+      </div>
+      {!r && <div>Loading…</div>}
+      {r && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "50vh", overflowY: "auto" }}>
+          <DialogButton onClick={() => pick("")}>
+            {mark(!r.manual)}Automatic{!r.manual && r.current ? ` (${r.current})` : ""}
+          </DialogButton>
+          {r.choices.map((c) => (
+            <DialogButton key={c.file} onClick={() => pick(c.file)}>
+              {mark(r.manual && c.file === r.current)}
+              {c.file} · {c.kind === "windows" ? "Windows" : "Linux"}
+            </DialogButton>
+          ))}
+          {!r.choices.length && <div>No program found in this folder.</div>}
+        </div>
+      )}
+    </ModalRoot>
+  );
+}
+
+function AppRows({ app, job, act, refresh }: {
+  app: App; job?: Job; act: (path: string, body: object, ok?: string) => void; refresh: () => void;
+}) {
   const running = job?.state === "running";
   const installed = !!app.installed && app.exists;
 
@@ -97,8 +156,19 @@ function AppRows({ app, job, act }: { app: App; job?: Job; act: (path: string, b
         {app.skipped && (
           <MenuItem onSelected={() => act("/api/skip", { id: app.id, undo: true })}>Undo skip</MenuItem>
         )}
-        {installed && (app.installed!.kind !== "archive" || app.has_launcher) && !app.in_steam && (
-          <MenuItem onSelected={() => addToSteam(app)}>Add to Steam library</MenuItem>
+        {installed && !app.in_steam && (
+          <MenuItem
+            onSelected={() =>
+              app.steam_exe ? addToSteam(app.name, app) : showModal(<ChooseProgram app={app} thenSteam done={refresh} />)
+            }
+          >
+            Add to Steam library
+          </MenuItem>
+        )}
+        {installed && app.installed!.kind === "archive" && (
+          <MenuItem onSelected={() => showModal(<ChooseProgram app={app} thenSteam={false} done={refresh} />)}>
+            Choose program…
+          </MenuItem>
         )}
         {app.has_backup && (
           <MenuItem onSelected={() => act("/api/rollback", { id: app.id }, `${app.name} rolled back`)}>
@@ -277,7 +347,7 @@ function Content() {
           </PanelSectionRow>
         )}
         {state.apps.map((a) => (
-          <AppRows key={a.id} app={a} job={state.jobs[a.id]} act={act} />
+          <AppRows key={a.id} app={a} job={state.jobs[a.id]} act={act} refresh={refresh} />
         ))}
       </PanelSection>
 

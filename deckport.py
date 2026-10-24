@@ -532,41 +532,84 @@ def pinned_path(app):
 _NOT_MAIN_DIRS = {"lib", "lib32", "lib64", "libs", "plugins", "platforms", "share", "python"}
 
 
-def find_main_exe(folder, wants):
-    """The program inside a folder port: an ELF/.sh/.x86_64 file, preferring one named like the app."""
+# Windows helpers that are never the game itself.
+_NOT_MAIN_EXE = re.compile(r"unins|crash|setup|install|redist|dxsetup|updater|reporter")
+
+
+def launch_candidates(folder, wants=()):
+    """Programs inside a folder port, best guess first: Linux binaries and scripts, then Windows .exe
+    files (Steam runs those through Proton). "auto" marks the ones DeckPort may pick by itself."""
     wants = {w for w in wants if len(w) >= 3}
-    best = None
+    out = []
     for root, dirs, files in os.walk(folder):
-        depth = 0 if root == folder else os.path.relpath(root, folder).count(os.sep) + 1
-        dirs[:] = [] if depth >= 3 else [d for d in dirs if d.lower() not in _NOT_MAIN_DIRS]
-        for fn in files:
+        rel_root = "" if root == folder else os.path.relpath(root, folder)
+        depth = rel_root.count(os.sep) + 1 if rel_root else 0
+        dirs[:] = [] if depth >= 3 else sorted(dirs)
+        in_lib = any(d.lower() in _NOT_MAIN_DIRS for d in rel_root.split(os.sep) if d)
+        for fn in sorted(files):
             p, low = os.path.join(root, fn), fn.lower()
             try:
                 st = os.lstat(p)
                 if not stat.S_ISREG(st.st_mode) or re.search(r"\.so(\.\d+)*$", low):
                     continue
                 with open(p, "rb") as f:
-                    elf = f.read(4) == b"\x7fELF"
+                    head = f.read(4)
             except OSError:
                 continue
-            ext = os.path.splitext(low)[1]
-            if not (elf and (st.st_mode & 0o111 or not ext) or low.endswith((".sh", ".x86_64"))):
+            elf, ext = head == b"\x7fELF", os.path.splitext(low)[1]
+            if ext == ".exe" and head[:2] == b"MZ":
+                kind = "windows"
+            elif (elf or head[:2] == b"#!") and (st.st_mode & 0o111 or not ext) or ext in (".sh", ".x86_64"):
+                kind = "linux"
+            else:
                 continue
-            st_ = stem_of(re.sub(r"\.sh$", "", fn))
+            st_ = stem_of(re.sub(r"\.(sh|exe)$", "", low))
             named = 2 if st_ in wants else int(len(st_) >= 3 and any(st_.startswith(w) or w.startswith(st_) for w in wants))
-            key = (named, int(elf or low.endswith(".x86_64")), -depth, st.st_size)
-            if best is None or key > best[0]:
-                best = (key, p)
-    return best[1] if best else None
+            junk = kind == "windows" and bool(_NOT_MAIN_EXE.search(low))
+            key = (kind == "linux", not in_lib, not junk, named, int(elf or ext == ".x86_64"), -depth, st.st_size)
+            out.append({"key": key, "path": p, "file": os.path.relpath(p, folder), "kind": kind,
+                        "size": st.st_size, "auto": not in_lib and not junk})
+    out.sort(key=lambda c: c["key"], reverse=True)
+    for c in out:
+        del c["key"]
+    return out
+
+
+def find_main_exe(folder, wants):
+    """The program DeckPort picks by itself in a folder port, preferring a Linux one named like the app."""
+    best = next((c for c in launch_candidates(folder, wants) if c["auto"]), None)
+    return best["path"] if best else None
+
+
+def _app_wants(app):
+    return stem_of(app["name"]), stem_of((app.get("repo") or "").split("/")[-1])
 
 
 def write_launcher(app, install_dir, folder):
-    """A stable <install_dir>/<name>.sh that runs the folder port's current executable. The path is
-    pinned in app["launcher"], so renames never move it and a Steam shortcut to it survives updates."""
-    exe = find_main_exe(folder, (stem_of(app["name"]), stem_of((app.get("repo") or "").split("/")[-1])))
-    if not exe:
+    """Point a folder port at its program, recorded in app["launch"]. A Linux one gets a stable
+    <install_dir>/<name>.sh, pinned in app["launcher"] so renames never move it and a Steam shortcut to it
+    survives updates. A Windows .exe has no launcher: Steam starts it through Proton. A program the user
+    picked (launch.manual) wins while it still exists; otherwise DeckPort picks one."""
+    cur = app.get("launch") or {}
+    pick = None
+    if cur.get("manual"):
+        p = os.path.join(folder, cur.get("file") or "")
+        pick = next((c for c in launch_candidates(folder) if c["path"] == p), None)
+        if not pick:
+            app["notice"] = "%s is gone in this version, so DeckPort picked the program again" % cur.get("file")
+    if not pick:
+        pick = next((c for c in launch_candidates(folder, _app_wants(app)) if c["auto"]), None)
+    if not pick:
+        app.pop("launch", None)
         return None
+    app["launch"] = {"file": pick["file"], "kind": pick["kind"], "manual": bool(cur.get("manual")) and pick["file"] == cur.get("file")}
     path = app.get("launcher")
+    if pick["kind"] == "windows":
+        if path and os.path.isfile(path):
+            os.remove(path)
+        return None
+    exe = pick["path"]
+    make_executable(exe)  # zips often drop the exec bit
     if not path:
         base, n = safe_name(app["name"]), 0
         path = os.path.join(install_dir, base + ".sh")
@@ -581,6 +624,37 @@ def write_launcher(app, install_dir, folder):
     os.replace(tmp, path)
     app["launcher"] = path
     return path
+
+
+def set_launch_file(app, settings, file):
+    """Use this program (a path relative to the app folder) for Launch and Steam; "" goes back to automatic."""
+    folder = (app.get("installed") or {}).get("path") or ""
+    if not os.path.isdir(folder):
+        raise ValueError("%s is not installed as a folder" % app["name"])
+    if file:
+        if not any(c["file"] == file for c in launch_candidates(folder)):
+            raise ValueError("%s is not a program DeckPort can launch" % file)
+        app["launch"] = {"file": file, "manual": True}
+    else:
+        app.pop("launch", None)
+    app.pop("notice", None)
+    write_launcher(app, os.path.expanduser(settings["install_dir"]), folder)
+    return app.get("launch")
+
+
+def steam_target(app):
+    """(Exe, StartDir, needs Proton) for a Steam shortcut, or None when there is nothing to start."""
+    p = (app.get("installed") or {}).get("path") or ""
+    if os.path.isfile(p):
+        return p, os.path.dirname(p), False
+    if not os.path.isdir(p):
+        return None
+    lc = app.get("launch") or {}
+    if lc.get("kind") == "windows":
+        exe = os.path.join(p, lc["file"])
+        return (exe, os.path.dirname(exe), True) if os.path.isfile(exe) else None
+    lnch = app.get("launcher")
+    return (lnch, p, False) if lnch and os.path.isfile(lnch) else None
 
 
 def prune_stale(dest, old, new):
@@ -694,14 +768,14 @@ def install_app(app, settings, progress=None, phase=None):
         "verified_by": source,
         "size": disk_size(path),
     }
+    app["error"] = ""
+    app.pop("notice", None)
     if manifest is not None:
         app["installed"]["files"] = manifest
         try:
             write_launcher(app, str(install_dir), path)
         except OSError:
             pass
-    app["error"] = ""
-    app.pop("notice", None)
     return path
 
 
@@ -945,6 +1019,8 @@ def launch_app(app):
         raise RuntimeError("Not installed")
     if os.path.isdir(p):
         launcher = app.get("launcher")
+        if (app.get("launch") or {}).get("kind") == "windows":
+            raise RuntimeError("%s is a Windows program: add it to Steam and play it there with Proton" % app["name"])
         if launcher and os.path.isfile(launcher):
             subprocess.Popen([launcher], cwd=p, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         else:
@@ -1226,15 +1302,15 @@ def steam_shortcut_exes():
 
 
 def add_to_steam(app, shortcuts=None):
-    """Add the installed AppImage (or a folder port's launcher) as a Non-Steam game. Returns False if it was already there."""
-    path = (app.get("installed") or {}).get("path") or ""
-    start = os.path.dirname(path)
-    if path and os.path.isdir(path):
-        path, start = app.get("launcher") or "", path
-        if not os.path.isfile(path):
-            raise RuntimeError("%s has no launcher (no program found in its folder), so it can't be added to Steam" % app["name"])
-    if not path or not os.path.isfile(path):
+    """Add the installed AppImage (or a folder port's launcher or .exe) as a Non-Steam game. Returns False if it
+    was already there. A Windows .exe still needs Proton turned on in its Steam properties (the Decky plugin does that)."""
+    inst_path = (app.get("installed") or {}).get("path") or ""
+    target = steam_target(app)
+    if not target:
+        if os.path.isdir(inst_path):
+            raise RuntimeError("%s has no program to start yet. Use Choose program first." % app["name"])
         raise RuntimeError("Install %s first" % app["name"])
+    path, start, _proton = target
     f = shortcuts or steam_shortcuts_file()
     if not f:
         raise RuntimeError("Steam not found. Start Steam once and log in, then try again.")
@@ -1402,9 +1478,10 @@ class Server:
                 d["has_backup"] = bool(p and os.path.isfile(p + ".old"))
                 d["file_name"] = os.path.basename(p or a.get("target_path") or "")
                 d["skipped"] = d["exists"] and is_skipped(a) and has_update(a, honor_skip=False)
-                lnch = a.get("launcher") if os.path.isdir(p) else p
-                d["has_launcher"] = bool(os.path.isdir(p) and lnch and os.path.isfile(lnch))
-                d["in_steam"] = bool(lnch) and lnch in in_steam
+                tgt = steam_target(a)
+                d["has_launcher"] = bool(os.path.isdir(p) and tgt and not tgt[2])
+                d["steam_exe"], d["steam_dir"], d["proton"] = tgt or ("", "", False)
+                d["in_steam"] = bool(tgt) and tgt[0] in in_steam
                 clean = safe_name(a["name"]) + ".AppImage"
                 d["rename_to"] = clean if d["exists"] and inst.get("kind") == "appimage" and os.path.basename(p) != clean else ""
                 d["disk"] = (os.path.getsize(p) if os.path.isfile(p) else inst.get("size", 0)) if d["exists"] else 0
@@ -1591,7 +1668,26 @@ class Server:
         if path == "/api/steam_add":
             app = self._app(body)
             added = add_to_steam(app)
-            return {"ok": True, "added": added}
+            return {"ok": True, "added": added, "proton": bool((steam_target(app) or ("", "", False))[2])}
+
+        if path == "/api/launch_choices":
+            app = self._app(body)
+            folder = (app.get("installed") or {}).get("path") or ""
+            if not os.path.isdir(folder):
+                raise ValueError("%s is not installed as a folder" % app["name"])
+            lc = app.get("launch") or {}
+            return {"ok": True, "manual": bool(lc.get("manual")), "current": lc.get("file", ""),
+                    "choices": [{k: c[k] for k in ("file", "kind", "size")} for c in launch_candidates(folder, _app_wants(app))[:200]]}
+
+        if path == "/api/set_launch":
+            app = self._app(body)
+            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+                raise ValueError("Wait for %s to finish first" % app["name"])
+            with _lock:
+                lc = set_launch_file(app, cfg["settings"], str(body.get("file") or ""))
+                self.save()
+            exe, start, proton = steam_target(app) or ("", "", False)
+            return {"ok": True, "launch": lc, "steam_exe": exe, "steam_dir": start, "proton": proton}
 
         if path == "/api/rename":
             app = self._app(body)
@@ -2179,6 +2275,8 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--blue-500)}
 .assets div:last-child{border:0} .assets div:hover{background:rgba(59,130,246,.12)}
 .assets .pick{background:rgba(59,130,246,.22);color:#fff} .assets .pick::before{content:"✓";color:var(--blue-300)}
 .assets small{margin-left:auto;color:var(--faint)}
+.progs{max-height:300px} .progs div{align-items:center} .progs .mono{overflow-wrap:anywhere}
+.progs .tag{flex:none}
 .hint{font-size:12.5px;color:var(--faint)}
 .dlg .btns{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 /* The last button row stays on screen while a tall dialog scrolls (Deck screens are only 800px high). */
@@ -2351,6 +2449,14 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   </div>
 </form></dialog>
 
+<dialog id="dLaunch"><form class="dlg" method="dialog">
+  <h2 id="lTitle">Choose program</h2>
+  <p>What Launch and the Steam shortcut start. DeckPort keeps your choice across updates.</p>
+  <div class="assets progs" id="lList"></div>
+  <div class="hint" id="lHint"></div>
+  <div class="btns"><button type="button" class="ghost" onclick="dLaunch.close()">Cancel</button><button type="button" class="primary" id="lOk">Use this</button></div>
+</form></dialog>
+
 <dialog id="dAsk"><form class="dlg" method="dialog">
   <h2 id="askTitle"></h2><p id="askText"></p>
   <label class="row" id="askCheckRow"><input type="checkbox" id="askCheck"> <span id="askCheckText"></span></label>
@@ -2448,7 +2554,7 @@ function card(a,i){
    ${jobHtml}
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
-     ${here?`<button data-a="launch" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"&&!a.has_launcher?"Open":"Launch"}</button>`:""}
+     ${here?`<button data-a="${inst.kind=="archive"&&!a.has_launcher?"folder":"launch"}" data-id="${a.id}" ${running?"disabled":""}>${inst.kind=="archive"&&!a.has_launcher?"Open":"Launch"}</button>`:""}
      <button class="ghost icon more" data-a="menu" data-id="${a.id}" title="More" aria-label="More actions for ${esc(a.name)}" aria-haspopup="menu">${ICON("i-more")}</button>
    </div></div>`;
 }
@@ -2528,7 +2634,37 @@ async function doAction(k,a,el){
   else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
   else if(k=="folder")act("/api/open_folder",{id});
   else if(k=="rename")act("/api/rename",{id},r=>`Renamed to ${r.file}`);
-  else if(k=="steam")act("/api/steam_add",{id},r=>r.added?`${a.name} added to Steam. Start Steam to see it.`:`${a.name} is already in Steam`);
+  else if(k=="steam"&&!a.steam_exe)openLaunch(a,true);
+  else if(k=="steam")addSteam(a);
+  else if(k=="program")openLaunch(a,false);
+}
+function addSteam(a){
+  act("/api/steam_add",{id:a.id},r=>!r.added?`${a.name} is already in Steam`:r.proton
+    ?`${a.name} added to Steam. Start Steam, then Properties > Compatibility > force Proton.`
+    :`${a.name} added to Steam. Start Steam to see it.`);
+}
+
+// Pick which program inside a folder app Launch and Steam start: automatic, or one the user chose.
+async function openLaunch(a,thenSteam){
+  let r;try{r=await api("/api/launch_choices",{id:a.id})}catch(e){toast(e.message,true);return}
+  const KIND={linux:'<span class="tag">Linux</span>',windows:'<span class="tag">Windows · Proton</span>'};
+  const rows=[`<div data-f="" class="${r.manual?"":"pick"}"><b>Automatic</b><small>${r.manual||!r.current?"DeckPort picks":esc(r.current)}</small></div>`]
+    .concat(r.choices.map(c=>`<div data-f="${esc(c.file)}" class="${r.manual&&c.file==r.current?"pick":""}"><span class="mono">${esc(c.file)}</span>${KIND[c.kind]||""}<small>${mb(c.size)}</small></div>`));
+  const L=$("#lList");L.innerHTML=rows.join("");
+  $("#lTitle").textContent=`Choose program · ${a.name}`;
+  $("#lHint").textContent=r.choices.length?"Windows .exe files run through Proton, from Steam only.":"No program found in this folder. Open the folder to check what the release contains.";
+  L.onclick=e=>{const d=e.target.closest("[data-f]");if(!d)return;L.querySelectorAll(".pick").forEach(x=>x.classList.remove("pick"));d.classList.add("pick")};
+  const ok=$("#lOk");ok.textContent=thenSteam?"Use and add to Steam":"Use this";
+  ok.onclick=async()=>{
+    const p=L.querySelector(".pick"),file=p?p.dataset.f:"";
+    dLaunch.close();
+    try{
+      const s=await api("/api/set_launch",{id:a.id,file});
+      if(!s.launch){toast("No program found, so nothing to start",true);refresh();return}
+      if(thenSteam)addSteam(a);else{toast(`${a.name} starts ${s.launch.file}`);refresh()}
+    }catch(e){toast(e.message,true)}
+  };
+  dLaunch.showModal();
 }
 $("#list").addEventListener("click",e=>{
   const b=e.target.closest("[data-a]");if(!b)return;
@@ -2548,9 +2684,13 @@ function openMenu(btn,a){
   if(st=="update")rows.push(it("skip",`Skip ${esc(L.tag||"")}`,{hint:"Get told about the next version instead"}));
   if(a.skipped)rows.push(it("unskip",`Offer ${esc(L.tag||"")} again`));
   if(a.has_backup)rows.push(it("rollback","Roll back to previous version",{off:running}));
-  if(S.steam&&here&&(a.installed.kind!="archive"||a.has_launcher)&&!a.in_steam)
-    rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":"Adds it as a Non-Steam game"}));
-  if(here&&a.installed.kind=="archive")rows.push(it("folder","Open folder"));
+  if(S.steam&&here&&!a.in_steam)
+    rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":a.steam_exe?"Adds it as a Non-Steam game":"Pick its program first"}));
+  if(here&&a.installed.kind=="archive"){
+    const lc=a.launch||{};
+    rows.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):"None found yet"}));
+    rows.push(it("folder","Open folder"));
+  }
   if(a.rename_to){const lock=a.in_steam&&S.steam_running;
     rows.push(it("rename",`Rename file to ${esc(a.rename_to)}`,{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":a.in_steam?"Also updates its Steam shortcut":""}))}
   rows.push(it("release","Open release page"),"<hr>",it("edit","Edit"),it("remove","Remove…",{danger:true}));

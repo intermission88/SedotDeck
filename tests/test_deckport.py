@@ -218,6 +218,56 @@ try:
 except RuntimeError:
     ok += 1
 
+# --- choosing the program of a folder app: manual pick, Windows .exe via Proton
+MZ = b"MZ\x90\x00" + b"\x00" * 100
+FILES["https://x/win1"] = zip_of({"WinGame/WinGame.exe": (MZ, 0o644), "WinGame/unins000.exe": (MZ * 9, 0o644),
+                                  "WinGame/start.sh": (b"#!/bin/sh\necho\n", 0o644), "WinGame/data.pak": (b"d", 0o644)})
+wapp = mkfolder("https://x/win1", "v1"); wapp["name"] = "Win Game"; wapp["repo"] = "me/wingame"
+wdir = dp.install_app(wapp, fset)
+names = [(c["file"], c["kind"]) for c in dp.launch_candidates(wdir, ["wingame"])]
+eq(names, [("start.sh", "linux"), ("WinGame.exe", "windows"), ("unins000.exe", "windows")], "candidates: linux first, junk exe last")
+eq(wapp["launch"], {"file": "start.sh", "kind": "linux", "manual": False}, "auto picks the script")
+eq(os.access(os.path.join(wdir, "start.sh"), os.X_OK), True, "picked script made executable")
+wl = wapp["launcher"]
+eq(dp.steam_target(wapp), (wl, wdir, False), "steam starts the .sh launcher")
+# the user picks the .exe: no .sh launcher, Steam starts the exe with Proton
+dp.set_launch_file(wapp, fset, "WinGame.exe")
+eq((wapp["launch"]["manual"], os.path.exists(wl)), (True, False), "manual exe pick, launcher removed")
+eq(dp.steam_target(wapp), (os.path.join(wdir, "WinGame.exe"), wdir, True), "exe target needs proton")
+try:
+    dp.launch_app(wapp); raise AssertionError("exe should not launch directly")
+except RuntimeError:
+    ok += 1
+try:
+    dp.set_launch_file(wapp, fset, "../../etc/passwd"); raise AssertionError("outside file accepted")
+except ValueError:
+    ok += 1
+try:
+    dp.set_launch_file(wapp, fset, "data.pak"); raise AssertionError("non-program accepted")
+except ValueError:
+    ok += 1
+# the pick survives an update
+dp.install_app(wapp, fset)
+eq(wapp["launch"], {"file": "WinGame.exe", "kind": "windows", "manual": True}, "manual pick kept across update")
+# a picked file the new release dropped: back to automatic, with a notice
+FILES["https://x/win2"] = zip_of({"WinGame/Game2.exe": (MZ, 0o644)})
+wapp["latest"] = mkfolder("https://x/win2", "v2")["latest"]
+dp.install_app(wapp, fset)
+eq((wapp["launch"]["file"], wapp["launch"]["manual"], "gone" in wapp.get("notice", "")), ("Game2.exe", False, True),
+   "dropped pick falls back to auto")
+eq(os.path.exists(os.path.join(wdir, "start.sh")), False, "dropped script pruned")
+# a Linux pick writes the .sh launcher again
+Path(wdir, "run.sh").write_text("#!/bin/sh\n")
+dp.set_launch_file(wapp, fset, "run.sh")
+eq((os.path.isfile(wapp["launcher"]), dp.steam_target(wapp)[2]), (True, False), "linux pick writes launcher again")
+dp.set_launch_file(wapp, fset, "")
+eq(wapp["launch"]["manual"], False, "automatic again")
+sv2 = Path(tempfile.mkdtemp(), "shortcuts.vdf")
+dp.set_launch_file(wapp, fset, "Game2.exe")
+eq(dp.add_to_steam(wapp, sv2), True, "exe added to steam")
+ent = dict((k_, v) for _t, k_, v in dp.vdf_load(sv2.read_bytes())[0][2][0][2])
+eq((ent["Exe"], ent["StartDir"]), ('"%s"' % os.path.join(wdir, "Game2.exe"), '"%s"' % wdir), "steam shortcut to the exe")
+
 # --- rename_app_file: clean name, .old, Steam shortcut
 rdir = tempfile.mkdtemp()
 rf = os.path.join(rdir, "Eden-Linux-v0.0.3-amd64.AppImage")
