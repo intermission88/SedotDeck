@@ -2544,6 +2544,7 @@ INDEX_HTML = r"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>SedotDeck</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 256 256%22%3E%3Ctitle%3ESedotDeck%3C/title%3E%3Crect width=%22256%22 height=%22256%22 rx=%2248%22 fill=%22%231a1d23%22/%3E%3Cg transform=%22translate%2815.36 9.36%29 scale%280.88%29%22%3E%3Cpath fill=%22%23e6e8eb%22 fill-rule=%22evenodd%22 d=%22M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z%22/%3E%3Cpath fill=%22%231a9fff%22 d=%22M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z%22/%3E%3C/g%3E%3C/svg%3E">
 <style>
 /* Close to SteamOS: neutral greys, flat panels, one blue accent, big focus rings for the trackpad and d-pad. */
 :root{
@@ -2762,12 +2763,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="logo" viewBox="0 0 256 256">
-    <rect x="8" y="8" width="240" height="240" rx="48" fill="#1a1d23" stroke="#3a414c" stroke-width="6"/>
-    <path d="M128 52a76 76 0 0 1 70 46M206 70l-6 34-33-10M128 204a76 76 0 0 1-70-46M50 186l6-34 33 10" fill="none" stroke="#1a9fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M128 92v58M104 128l24 24 24-24" fill="none" stroke="#e6e8eb" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M98 168h60" stroke="#9aa3ad" stroke-width="12" stroke-linecap="round"/>
-  </symbol>
+  <symbol id="logo" viewBox="0 0 256 256"><g><path fill="#e6e8eb" fill-rule="evenodd" d="M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z"/><path fill="#1a9fff" d="M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z"/></g></symbol>
   <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V6M6.5 11.5 12 6l5.5 5.5"/></g></symbol>

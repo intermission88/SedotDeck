@@ -16,7 +16,6 @@ import {
 } from "@decky/ui";
 import { addEventListener, callable, definePlugin, removeEventListener, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
-import { FaSyncAlt } from "react-icons/fa";
 
 type Job = { state: "running" | "done" | "error"; label: string; progress: number; message: string };
 type Asset = { name: string; size: number };
@@ -378,6 +377,13 @@ function Content() {
   );
 }
 
+// The SedotDeck mark (small-size cut) in one colour, sized like the react-icons Decky expects.
+const SedotDeckIcon = () => (
+  <svg viewBox="0 0 256 256" width="1em" height="1em" aria-hidden="true">
+    <g><path fill="currentColor" fillRule="evenodd" d="M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z"/><path fill="currentColor" d="M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z"/></g>
+  </svg>
+);
+
 export default definePlugin(() => {
   const listener = addEventListener<[names: string[]]>("updates_available", (names) => {
     toaster.toast({
@@ -390,7 +396,7 @@ export default definePlugin(() => {
     name: "SedotDeck",
     titleView: <div className={staticClasses.Title}>SedotDeck</div>,
     content: <Content />,
-    icon: <FaSyncAlt />,
+    icon: <SedotDeckIcon />,
     onDismount() {
       removeEventListener("updates_available", listener);
     },
