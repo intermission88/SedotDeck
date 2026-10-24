@@ -250,33 +250,60 @@ def _norm_gitlab(r, host, repo):
     }
 
 
-def fetch_release(src, prerelease, token=""):
-    """Latest release of src={provider, host, repo}, normalized to one shape for all forges."""
+def fetch_release(src, prerelease, token="", skip_titles="", latest_only=False):
+    """Latest release of src={provider, host, repo}, normalized to one shape for all forges.
+    skip_titles: regex; releases whose title or tag match it are ignored (e.g. "nightly").
+    latest_only: take only the release the developer marked Latest, never another one."""
     provider, host, repo = src["provider"], src["host"], src["repo"]
+    skip = re.compile(skip_titles, re.I) if skip_titles else None
+    wanted = lambda r: not (skip and (skip.search(r["name"]) or skip.search(r["tag_name"])))
+    per_page = 30 if skip else 15  # filtered-out nightlies shouldn't use up the whole page
+    tok, svc = (token, "github") if provider == "github" else ("", "")
+    if provider == "github":
+        api = "https://api.github.com/repos/%s/releases" % repo
+        norm, list_url, latest_url = _norm_github, api + "?per_page=%d" % per_page, api + "/latest"
+    elif provider == "gitea":
+        api = "https://%s/api/v1/repos/%s/releases" % (host, repo)
+        norm, list_url, latest_url = _norm_gitea, api + "?limit=%d" % per_page, api + "/latest"
+    elif provider == "gitlab":
+        api = "https://%s/api/v4/projects/%s/releases" % (host, urllib.parse.quote(repo, safe=""))
+        norm = lambda r: _norm_gitlab(r, host, repo)
+        list_url, latest_url = api + "?per_page=%d" % per_page, api + "/permalink/latest"
+    else:
+        raise RuntimeError("Unknown provider %r" % provider)
     try:
-        if provider == "github":
-            api = "https://api.github.com/repos/%s/releases" % repo
-            if not prerelease:
-                try:
-                    return _norm_github(http_json(api + "/latest", token, "github"))
-                except LookupError:
-                    pass  # repo may only have pre-releases; fall through to the list
-            rels = [_norm_github(r) for r in http_json(api + "?per_page=15", token, "github")]
-        elif provider == "gitea":
-            rels = [_norm_gitea(r) for r in http_json("https://%s/api/v1/repos/%s/releases?limit=15" % (host, repo))]
-        elif provider == "gitlab":
-            pid = urllib.parse.quote(repo, safe="")
-            rels = [_norm_gitlab(r, host, repo) for r in http_json("https://%s/api/v4/projects/%s/releases?per_page=15" % (host, pid))]
-        else:
-            raise RuntimeError("Unknown provider %r" % provider)
+        # GitHub's Latest marker is the default for stable releases; elsewhere only when asked.
+        if latest_only or (provider == "github" and not prerelease):
+            try:
+                r = norm(http_json(latest_url, tok, svc))
+            except LookupError:
+                if latest_only:
+                    raise RuntimeError("%s has no release marked Latest" % repo)
+                r = None  # repo may only have pre-releases; fall through to the list
+            if r and wanted(r):
+                return r
+            if latest_only:
+                raise RuntimeError("The release marked Latest (%s) matches your skip filter" % (r["name"] or r["tag_name"]))
+        rels = [norm(r) for r in http_json(list_url, tok, svc)]
     except LookupError:
         raise RuntimeError("Repo %s not found on %s" % (repo, host))
-    rels = [r for r in rels if not r["draft"]]
+    rels = [r for r in rels if not r["draft"] and wanted(r)]
     if not prerelease:
         rels = [r for r in rels if not r["prerelease"]] or rels
     if not rels:
-        raise RuntimeError("No releases found in %s" % repo)
+        raise RuntimeError("No releases found in %s" % repo + (" after skipping %r" % skip_titles if skip else ""))
     return rels[0]
+
+
+def moved_repo(app, rel):
+    """The repo a release says it lives in now, when that isn't app["repo"] (the repo was renamed or moved)."""
+    try:
+        _prov, host, repo = parse_source(rel.get("html_url") or "")
+    except ValueError:
+        return ""
+    if host != app.get("host", "github.com") or repo.lower() == app["repo"].lower():
+        return ""
+    return repo
 
 
 def web_url(app):
@@ -390,9 +417,15 @@ def has_update(app, honor_skip=True):
 
 def check_app(app, token=""):
     try:
-        rel = fetch_release(app, app.get("prerelease", False), token if app.get("provider") == "github" else "")
+        rel = fetch_release(app, app.get("prerelease", False), token if app.get("provider") == "github" else "",
+                            app.get("skip_titles", ""), app.get("latest_only", False))
         asset = pick_asset(rel.get("assets", []), app.get("pattern", ""))
         app["latest"] = release_info(rel, asset)
+        moved = moved_repo(app, rel)
+        if moved:
+            app["moved_to"] = moved
+        else:
+            app.pop("moved_to", None)
         app["error"] = "" if asset else "No matching Linux asset in release %s. Set an asset pattern." % rel.get("tag_name")
     except Exception as e:
         app["error"] = str(e)
@@ -961,8 +994,36 @@ def new_app(repo_text, name="", pattern="", prerelease=False, src=None):
     }
 
 
+def apply_options(app, opts):
+    """Per-app options from the UI or an import. Validates before changing anything."""
+    o = {}
+    for k in ("pattern", "skip_titles"):
+        if k in opts:
+            v = opts[k] or ""
+            if not isinstance(v, str):
+                raise ValueError("%s must be text" % k)
+            try:
+                re.compile(v)
+            except re.error as e:
+                raise ValueError("Invalid %s (%s)" % ("asset pattern" if k == "pattern" else "skip filter", e))
+            o[k] = v
+    for k in ("prerelease", "latest_only"):
+        if k in opts:
+            o[k] = bool(opts[k])
+    if "category" in opts:
+        c = opts["category"] or ""
+        if not isinstance(c, str):
+            raise ValueError("category must be text")
+        o["category"] = " ".join(c.split())[:40]
+    for k, v in o.items():
+        if v in ("", False) and k not in ("pattern", "prerelease"):
+            app.pop(k, None)
+        else:
+            app[k] = v
+
+
 EXPORT_FORMAT = "deckport-apps"
-EXPORT_FIELDS = ("name", "provider", "host", "repo", "pattern", "prerelease")
+EXPORT_FIELDS = ("name", "provider", "host", "repo", "pattern", "prerelease", "skip_titles", "latest_only", "category")
 
 
 def export_apps(cfg):
@@ -971,7 +1032,7 @@ def export_apps(cfg):
         "format": EXPORT_FORMAT,
         "version": 1,
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "apps": [{k: a.get(k) for k in EXPORT_FIELDS} for a in cfg["apps"]],
+        "apps": [{k: a[k] for k in EXPORT_FIELDS if k in a} for a in cfg["apps"]],
     }
 
 
@@ -998,7 +1059,12 @@ def import_apps(cfg, data):
         except re.error as e:
             raise ValueError("Entry %d: invalid pattern (%s)" % (i, e))
         src = {"provider": provider, "host": host.lower(), "repo": repo}
-        incoming.append(new_app("", name[:100], pattern, bool(item.get("prerelease")), src))
+        app = new_app("", name[:100], pattern, bool(item.get("prerelease")), src)
+        try:
+            apply_options(app, {k: item[k] for k in ("skip_titles", "latest_only", "category") if k in item})
+        except ValueError as e:
+            raise ValueError("Entry %d: %s" % (i, e))
+        incoming.append(app)
     added = []
     for app in incoming:
         if not any(same_source(a, app) for a in cfg["apps"] + added):
@@ -1117,6 +1183,95 @@ def scan_folder(cfg):
                 item["app_id"], item["name"] = owner["id"], owner["name"]
         out.append(item)
     return out
+
+
+# --------------------------------------------------------------------------- Recomp Haven
+
+# Recomp Haven (recomphaven.com, by rikuwru) tracks game recompilations and PC ports. Its list is
+# read from the site's public data file and kept for a day; DeckPort shows the ones with a Linux release.
+RH_SITE = "https://recomphaven.com/"
+RH_DATA_URL = "https://raw.githubusercontent.com/rikuwru/recomphaven/main/data/recomps.js"
+RH_TABLES_URL = "https://raw.githubusercontent.com/rikuwru/recomphaven/main/data/tables.js"
+RH_CACHE = CONFIG_DIR / "recomphaven.json"
+RH_MAX_AGE = 24 * 3600
+RH_TIERS = "SABCD"
+
+
+def parse_recomphaven(text):
+    """Entries DeckPort can install from Recomp Haven's data/recomps.js, best tier first."""
+    start = text.index("[", text.index("window.RECOMPS"))
+    items, _end = json.JSONDecoder().raw_decode(text, start)
+    out = []
+    for e in items:
+        if not isinstance(e, dict) or e.get("romFiles") or not e.get("version"):
+            continue  # projects that hand out game files are hidden on the site too
+        if "linux" not in (e.get("platforms") or []):
+            continue
+        try:
+            provider, host, repo = parse_source(str(e.get("repo") or ""))
+        except ValueError:
+            continue
+        if provider != "github":
+            continue
+        cover = str(e.get("cover") or "")
+        tier = e.get("quality") if e.get("quality") in tuple(RH_TIERS) else ""
+        out.append({
+            "id": str(e.get("id") or ""), "title": str(e.get("title") or repo), "project": str(e.get("project") or ""),
+            "console": str(e.get("console") or ""), "year": e.get("year"), "genre": str(e.get("genre") or ""),
+            "stage": str(e.get("stage") or ""), "tier": tier, "repo": repo, "key": ("%s/%s" % (host, repo)).lower(),
+            "version": str(e.get("version") or ""), "released": str(e.get("versionDate") or ""),
+            "stars": e.get("stars") or 0, "deck": "steam-deck" in (e.get("features") or []),
+            "windows": "windows" in (e.get("platforms") or []),
+            "requires": str(e.get("requires") or "")[:300], "summary": str(e.get("summary") or "")[:600],
+            "cover": RH_SITE + cover if re.fullmatch(r"assets/covers/[\w.-]+\.(webp|png|jpe?g)", cover) else "",
+        })
+    out.sort(key=lambda x: (RH_TIERS.index(x["tier"]) if x["tier"] else 9, -x["stars"]))
+    return out
+
+
+def parse_recomphaven_consoles(text):
+    """{key: {"label", "short", "color"}} from Recomp Haven's data/tables.js."""
+    start = text.index("{", text.index("window.RECOMPHAVEN_TABLES"))
+    tables, _end = json.JSONDecoder().raw_decode(text, start)
+    out = {}
+    for k, v in (tables.get("consoles") or {}).items():
+        if isinstance(v, dict):
+            color = str(v.get("color") or "")
+            out[str(k)] = {"label": str(v.get("label") or k), "short": str(v.get("short") or k),
+                           "color": color if re.fullmatch(r"#[0-9a-fA-F]{3,8}", color) else ""}
+    return out
+
+
+def _rh_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with _opener.open(req, timeout=30) as r:
+        return r.read(32 * 1024 * 1024).decode("utf-8")
+
+
+def recomphaven(refresh=False):
+    """{"items", "fetched_at", "site", "stale"}: the cached list, refetched once a day or on request."""
+    cache = None
+    try:
+        cache = json.loads(RH_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if cache and not refresh and time.time() - cache.get("fetched_at", 0) < RH_MAX_AGE:
+        return dict(cache, site=RH_SITE, stale="")
+    try:
+        data = {"fetched_at": time.time(), "items": parse_recomphaven(_rh_get(RH_DATA_URL)), "consoles": {}}
+    except Exception as e:
+        if cache:
+            return dict(cache, site=RH_SITE, stale="Couldn't refresh (%s), showing the saved list" % e)
+        raise RuntimeError("Couldn't load Recomp Haven: %s" % e)
+    try:
+        data["consoles"] = parse_recomphaven_consoles(_rh_get(RH_TABLES_URL))
+    except Exception:
+        data["consoles"] = (cache or {}).get("consoles") or {}  # labels are a nicety; keys still show
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = RH_CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, RH_CACHE)
+    return dict(data, site=RH_SITE, stale="")
 
 
 # --------------------------------------------------------------------------- Steam shortcuts
@@ -1498,8 +1653,11 @@ class Server:
 
         if path == "/api/preview":
             src = resolve_source(body.get("repo", ""))
+            if body.get("skip_titles"):
+                re.compile(body["skip_titles"])
             rel = fetch_release(src, body.get("prerelease", False),
-                                self.gh_token() if src["provider"] == "github" else "")
+                                self.gh_token() if src["provider"] == "github" else "",
+                                body.get("skip_titles", ""), bool(body.get("latest_only")))
             pattern = body.get("pattern", "")
             assets = rel.get("assets", [])
             picked = pick_asset(assets, pattern)
@@ -1551,6 +1709,9 @@ class Server:
         if path == "/api/add":
             app = new_app(body.get("repo", ""), body.get("name", ""), body.get("pattern", ""),
                           body.get("prerelease", False))
+            apply_options(app, body)
+            if body.get("rh_id"):
+                app["rh_id"] = str(body["rh_id"])[:120]
             with _lock:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
@@ -1570,12 +1731,7 @@ class Server:
             with _lock:
                 if "name" in body and body["name"].strip():
                     app["name"] = body["name"].strip()
-                if "pattern" in body:
-                    if body["pattern"]:
-                        re.compile(body["pattern"])
-                    app["pattern"] = body["pattern"]
-                if "prerelease" in body:
-                    app["prerelease"] = bool(body["prerelease"])
+                apply_options(app, body)
                 adopt = validate_adopt_path(cfg, body["adopt_path"], app["id"]) if body.get("adopt_path") else None
                 if adopt:
                     app["target_path"] = adopt
@@ -1588,7 +1744,7 @@ class Server:
             return {"ok": True}
 
         if path == "/api/check":
-            targets = [self._app(body)] if body.get("id") else list(cfg["apps"])
+            targets = self._apps(body) if body.get("id") or body.get("ids") else list(cfg["apps"])
             for a in targets:
                 self.check(a)
             return {"ok": True}
@@ -1602,6 +1758,8 @@ class Server:
                     raise ValueError("%s is already up to date" % app["name"])
                 app.pop("skip", None)  # updating on purpose undoes "Skip this version"
                 targets = [app]
+            elif body.get("ids"):
+                targets = [a for a in self._apps(body) if has_update(a, honor_skip=False)]
             else:
                 targets = [a for a in cfg["apps"] if has_update(a)]
             for a in targets:
@@ -1672,11 +1830,40 @@ class Server:
             return {"ok": True}
 
         if path == "/api/remove":
-            app = self._app(body)
+            targets = self._apps(body)
+            running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
+            if running:
+                raise ValueError("Wait for %s to finish first" % ", ".join(running))
             with _lock:
-                remove_app(cfg, app, body.get("delete_files", False))
+                for app in targets:
+                    remove_app(cfg, app, body.get("delete_files", False))
                 self.save()
-            return {"ok": True}
+            return {"ok": True, "count": len(targets)}
+
+        if path == "/api/category":
+            targets = self._apps(body)
+            with _lock:
+                for app in targets:
+                    apply_options(app, {"category": body.get("category", "")})
+                self.save()
+            return {"ok": True, "count": len(targets)}
+
+        if path == "/api/move":
+            app = self._app(body)
+            new = app.get("moved_to")
+            if not new:
+                raise ValueError("%s hasn't moved" % app["name"])
+            with _lock:
+                moved = dict(app, repo=new)
+                if any(a["id"] != app["id"] and same_source(a, moved) for a in cfg["apps"]):
+                    raise ValueError("%s is already tracked" % display_repo(moved))
+                app["repo"] = new
+                app.pop("moved_to", None)
+                self.save()
+            return {"ok": True, "repo": display_repo(app)}
+
+        if path == "/api/recomphaven":
+            return recomphaven(bool(body.get("refresh")))
 
         if path == "/api/launch":
             launch_app(self._app(body))
@@ -1748,6 +1935,14 @@ class Server:
         if not app:
             raise LookupError("app not found")
         return app
+
+    def _apps(self, body):
+        """The apps named by "ids" (a list), or by "id"."""
+        ids = body.get("ids") if isinstance(body.get("ids"), list) else [body.get("id", "")]
+        apps = [a for a in self.cfg["apps"] if a["id"] in ids]
+        if not apps:
+            raise LookupError("app not found")
+        return apps
 
 
 def make_handler(srv, httpd_ref):
@@ -2306,12 +2501,73 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .menu button small{display:block;color:var(--faint);font-size:11.5px}
 .menu hr{border:0;border-top:1px solid var(--edge);margin:4px 6px}
 .summary:empty{display:none}
+
+/* ---- tabs: My apps | Recomp Haven */
+.tabs{display:flex;align-items:center;gap:6px;margin:0 0 18px;border-bottom:1px solid var(--edge)}
+.tabs>button{background:none;border:0;box-shadow:none;border-radius:12px 12px 0 0;min-height:44px;padding:8px 14px;
+  color:var(--dim);display:flex;align-items:center;gap:8px;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs>button.on{color:#fff;border-bottom-color:var(--blue-400)}
+.tabs>button[data-tab=rh].on{border-bottom-color:var(--rh)}
+.tabs-end{margin-left:auto} .tabs-end button{min-height:36px;padding:6px 12px;font-size:13.5px}
+.group{grid-column:1/-1;margin:6px 2px -6px;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.group span{color:var(--faint);font-weight:500;margin-left:4px}
+
+/* ---- select mode */
+body.selecting .card{cursor:pointer;user-select:none}
+body.selecting .card .actions{pointer-events:none;opacity:.45}
+.card .pickbox{display:none}
+body.selecting .card .pickbox{display:grid;place-items:center;position:absolute;top:14px;right:14px;width:24px;height:24px;
+  border-radius:8px;border:1.5px solid var(--edge-hi);background:rgba(5,8,20,.5)}
+body.selecting .card.sel{border-color:var(--blue-400);box-shadow:0 0 0 1px var(--blue-400),0 12px 32px -16px rgba(0,0,0,.7)}
+body.selecting .card.sel .pickbox{background:var(--blue-500);border-color:var(--blue-300)}
+body.selecting .card.sel .pickbox::after{content:"✓";color:#fff;font-size:14px;font-weight:700}
+.selbar{position:fixed;left:12px;right:12px;bottom:18px;margin:0 auto;width:max-content;z-index:12;display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  justify-content:center;padding:8px 10px 8px 16px;border-radius:18px;border:1px solid var(--edge-hi);max-width:calc(100vw - 24px);
+  box-shadow:inset 0 1px 0 var(--shine),0 18px 44px -14px rgba(0,0,0,.85)}
+.selbar button{min-height:38px;padding:6px 12px;font-size:13.5px}
+.selbar #selN{font-size:13.5px;color:var(--blue-100);margin-right:4px;white-space:nowrap}
+.sel-acts{display:flex;gap:6px;flex-wrap:wrap}
+body.selecting main{padding-bottom:96px}
+
+/* ---- Recomp Haven: its own section, in its own warm accent so it reads as a partner, not DeckPort */
+:root{--rh:#f5a524;--rh-soft:rgba(245,165,36,.14);--rh-edge:rgba(245,165,36,.38)}
+.rh-logo{display:grid;place-items:center;width:44px;height:44px;flex:none;border-radius:13px;font-weight:800;font-size:16px;letter-spacing:.5px;
+  color:#1a1205;background:linear-gradient(160deg,#ffd27a,var(--rh));box-shadow:0 6px 18px -6px rgba(245,165,36,.6)}
+.rh-logo.sm{width:22px;height:22px;border-radius:7px;font-size:9.5px;box-shadow:none}
+.rh-hero{padding:18px 20px;margin:0 0 14px;border-color:var(--rh-edge);
+  background:linear-gradient(120deg,rgba(245,165,36,.16),rgba(245,165,36,.03) 55%),var(--glass)}
+.rh-brand{display:flex;gap:14px;align-items:flex-start}
+.rh-brand h2{margin:0 0 3px;font-size:19px} .rh-brand p{margin:0;color:var(--blue-100);font-size:14px;max-width:62ch}
+.rh-site{margin-left:auto;white-space:nowrap;color:var(--rh);font-weight:600;font-size:14px;padding-top:2px}
+.rh-site:hover{color:#ffd27a}
+.rh-credit{margin-top:12px;font-size:12.5px;color:var(--dim)} .rh-credit a{color:var(--rh)}
+.rh-tools{display:flex;flex-direction:column;gap:10px;margin:0 0 10px}
+.rh-tools .summary{margin:0}
+#rhChips button.on{border-color:var(--rh-edge);background:var(--rh-soft)}
+#vRh .hint{margin:0 0 12px}
+.rh-grid{grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.rh-card{display:flex;gap:14px;padding:12px;min-height:150px}
+.rh-cover{position:relative;flex:none;width:96px;height:128px;border-radius:12px;overflow:hidden;display:grid;place-items:center;
+  background:var(--cc,#1e3a8a);color:rgba(255,255,255,.85);font-weight:800;font-size:22px}
+.rh-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.rh-tier{position:absolute;left:6px;top:6px;z-index:1;min-width:24px;height:24px;padding:0 6px;border-radius:8px;display:grid;place-items:center;
+  font-size:13px;font-weight:800;color:#111;background:var(--tc);box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.rh-body{min-width:0;display:flex;flex-direction:column;gap:5px;flex:1}
+.rh-title{font-weight:650;font-size:15.5px;line-height:1.25}
+.rh-meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font-size:12.5px;color:var(--dim)}
+.rh-meta .tag{border-color:var(--cc,var(--edge));color:var(--blue-100)}
+.rh-req{font-size:12.5px;color:var(--faint);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rh-act{display:flex;gap:8px;align-items:center;margin-top:auto;flex-wrap:wrap}
+.rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
+.rh-act a{font-size:13px}
+.rh-act .added{color:var(--good);font-size:13px;font-weight:600}
 .found-line{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 16px;margin:0 0 16px;font-size:13.5px;color:var(--dim)}
 .found-line span{flex:1}
 .found-line button{min-height:38px;padding:5px 12px;font-size:13px}
 .inl{display:flex;gap:8px}.inl input{flex:1;min-width:0}
 
-@media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}}
+@media (max-width:640px){header{padding:12px 14px} main{padding:14px} .brand .sub{display:none}
+  .rh-brand{flex-wrap:wrap} .rh-site{margin-left:58px} .rh-grid{grid-template-columns:1fr}}
 /* Users who turn transparency off get solid panels and no blur at all. */
 @media (prefers-reduced-transparency:reduce){
   .glass,.frost,dialog,#toast{background:#0b1638;-webkit-backdrop-filter:none;backdrop-filter:none}
@@ -2345,7 +2601,33 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <button id="btnUpdAll" class="primary" hidden>Update all</button>
   <button id="btnSet" class="icon ghost" title="Settings" aria-label="Settings"><svg><use href="#gear"/></svg></button>
 </header>
-<main><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="grid"></div></main>
+<main>
+<nav class="tabs" id="tabs" role="tablist">
+  <button type="button" role="tab" data-tab="apps" class="on">My apps</button>
+  <button type="button" role="tab" data-tab="rh"><span class="rh-logo sm">RH</span>Recomp Haven</button>
+  <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
+</nav>
+<section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="grid"></div></section>
+<section id="vRh" hidden>
+  <div class="rh-hero glass">
+    <div class="rh-brand"><div class="rh-logo">RH</div>
+      <div><h2>Recomp Haven</h2><p>A tracker for every game recompilation and PC port. Here are the ones with a Linux release that DeckPort can install and keep up to date.</p></div>
+      <a class="rh-site" href="https://recomphaven.com/" target="_blank" rel="noopener">recomphaven.com ↗</a></div>
+    <div class="rh-credit">List, tiers and summaries by <a href="https://github.com/rikuwru/recomphaven" target="_blank" rel="noopener">Recomp Haven</a> (rikuwru), based on Recompendium. Box art belongs to each game's publisher. Every recomp needs your own copy of the game.</div>
+  </div>
+  <div class="rh-tools"><input type="text" id="rhQ" placeholder="Search games, projects or consoles" autocomplete="off" spellcheck="false">
+    <div class="summary" id="rhChips"></div></div>
+  <div class="hint" id="rhInfo"></div>
+  <div id="rhList" class="grid rh-grid"></div>
+</section>
+</main>
+<div id="selbar" class="selbar frost" hidden>
+  <span id="selN">0 selected</span>
+  <button type="button" class="ghost" id="selAll">Select all</button>
+  <span class="sel-acts"><button type="button" id="selCheck">Check</button><button type="button" id="selUpd">Update</button>
+  <button type="button" id="selCat">Category…</button><button type="button" class="danger" id="selRm">Remove…</button></span>
+  <button type="button" class="primary" id="selDone">Done</button>
+</div>
 
 <dialog id="dAdd"><form class="dlg" method="dialog" id="fAdd">
   <h2 id="addTitle">Add app</h2>
@@ -2354,8 +2636,11 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <div class="hint" id="aInfo"></div>
   <div class="using" id="aUsing" hidden></div>
   <label class="row" id="aRenL" hidden><input type="checkbox" id="aRen" checked> <span>Rename to <span class="mono" id="aRenName"></span></span></label>
-  <details class="adv" id="aAdv"><summary>Advanced: name, asset, pre-releases</summary><div>
+  <details class="adv" id="aAdv"><summary>Advanced: name, category, which release and file</summary><div>
     <label>Name<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
+    <label>Category<input type="text" id="aCatg" list="catList" maxlength="40" placeholder="Optional, e.g. Emulators. Apps with one are listed together"></label>
+    <label>Skip releases named (regex)<input type="text" id="aSkip" placeholder="e.g. nightly|beta: releases whose title or tag match are ignored"></label>
+    <label class="row"><input type="checkbox" id="aLatest"> <span>Only the release the developer marked “Latest”</span></label>
     <label>Asset pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
     <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
     <div class="assets" id="aAssets" hidden></div>
@@ -2404,6 +2689,14 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <div class="assets progs" id="lList"></div>
   <div class="hint" id="lHint"></div>
   <div class="btns"><button type="button" class="ghost" onclick="dLaunch.close()">Cancel</button><button type="button" class="primary" id="lOk">Use this</button></div>
+</form></dialog>
+
+<dialog id="dCat"><form class="dlg" method="dialog" id="fCat">
+  <h2 id="cTitle">Category</h2>
+  <p>Apps with the same category are listed together.</p>
+  <label>Category<input type="text" id="cName" list="catList" maxlength="40" placeholder="e.g. Emulators, Recomps" autocomplete="off"></label>
+  <datalist id="catList"></datalist>
+  <div class="btns"><button type="button" class="ghost" onclick="dCat.close()">Cancel</button><button type="button" class="ghost" id="cClear">No category</button><button class="primary" type="submit">Save</button></div>
 </form></dialog>
 
 <dialog id="dAsk"><form class="dlg" method="dialog">
@@ -2493,13 +2786,14 @@ function card(a,i){
   if(a.in_steam)ver+='<span class="tag steam">in Steam</span>';
   // A file the user brought keeps its own (often versioned) name, so show which one it is.
   const fname=a.target_path&&a.file_name?`<div class="fname mono" title="Your file, updated in place">${esc(a.file_name)}</div>`:"";
-  return `<div class="card glass st-${st} ${isNew?"enter":""}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}">
+  return `<div class="card glass st-${st} ${isNew?"enter":""} ${SEL&&SEL.has(a.id)?"sel":""}" data-card="${a.id}" style="${isNew?`animation-delay:${Math.min(i,8)*45}ms`:""}"><span class="pickbox"></span>
    <div class="top"><div class="name"><span class="dot" title="${STATE[st]}"></span>${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a></div>
    ${ver?`<div class="ver">${ver}</div>`:""}
    ${fname}
    ${a.error&&!job?`<div class="err">${esc(a.error)}</div>`:""}
    ${a.notice&&!a.error&&!job?`<div class="fname">${esc(a.notice)}</div>`:""}
+   ${a.moved_to&&!job?`<div class="fname">Repo moved to <span class="mono">${esc(a.moved_to)}</span> · <a href="#" data-a="move" data-id="${a.id}">Use new link</a></div>`:""}
    ${jobHtml}
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
@@ -2528,9 +2822,16 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n,c])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" style="--c:${c}"><i></i>${t} <b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” to pick a popular emulator or port, or paste a link to any release page.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty glass enter" style="grid-column:1/-1"><svg><use href="#logo"/></svg><b>No apps yet</b>Click “Add app” and paste a link to any release page, or <a href="#" data-tab="rh">browse Recomp Haven</a> for recomps and PC ports.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No apps match this filter.</div>'}
-  else L.innerHTML=shown.map(card).join("");
+  else{
+    const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
+    if(cats.some(c=>c)){
+      let i=0;
+      L.innerHTML=cats.map(c=>{const g=shown.filter(a=>(a.category||"")==c);
+        return `<h3 class="group">${c?esc(c):"Other"}<span>${g.length}</span></h3>`+g.map(a=>card(a,i++)).join("")}).join("");
+    }else L.innerHTML=shown.map(card).join("");
+  }
   shown.forEach(a=>seen.add(a.id));
   // Safety net: if the webview pauses animations (hidden/occluded window), still show the cards.
   setTimeout(()=>L.querySelectorAll(".enter").forEach(el=>el.classList.remove("enter")),1500);
@@ -2539,6 +2840,11 @@ function render(){
   const checking=Object.values(S.jobs||{}).some(j=>j.state=="running"&&j.label=="Checking");
   const last=Math.max(0,...S.apps.map(a=>a.checked_at||0));
   $("#btnCheck svg").classList.toggle("spin",checking);
+  $("#btnSel").hidden=S.apps.length<2;
+  // The Recomp Haven tab marks what's in My apps; redraw it only when that changes.
+  if(TAB=="rh"&&RH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rhKey)renderRh();
+  if(SEL){for(const id of [...SEL])if(!S.apps.some(a=>a.id==id))SEL.delete(id);renderSel()}
+  $("#catList").innerHTML=[...new Set(S.apps.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">`).join("");
   $("#sub").textContent=checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"AppImages & PC ports, always up to date";
 }
 // Drop the entrance class once it has played so a card can never stay mid-animation.
@@ -2586,7 +2892,11 @@ async function doAction(k,a,el){
   else if(k=="steam"&&!a.steam_exe)openLaunch(a,true);
   else if(k=="steam")addSteam(a);
   else if(k=="program")openLaunch(a,false);
+  else if(k=="move")act("/api/move",{id},r=>`${a.name} now follows ${r.repo}`);
+  else if(k=="category")openCat([a.id]);
+  else if(k=="rhpage")openUrl(RH.site+"#"+encodeURIComponent(a.rh_id));
 }
+function openUrl(u){APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
 function addSteam(a){
   act("/api/steam_add",{id:a.id},r=>!r.added?`${a.name} is already in Steam`:r.proton
     ?`${a.name} added to Steam. Start Steam, then Properties > Compatibility > force Proton.`
@@ -2616,6 +2926,11 @@ async function openLaunch(a,thenSteam){
   dLaunch.showModal();
 }
 $("#list").addEventListener("click",e=>{
+  if(SEL){
+    const c=e.target.closest("[data-card]");if(!c)return;
+    e.preventDefault();const id=c.dataset.card;SEL.has(id)?SEL.delete(id):SEL.add(id);
+    c.classList.toggle("sel",SEL.has(id));renderSel();return;
+  }
   const b=e.target.closest("[data-a]");if(!b)return;
   if(b.tagName=="A")e.preventDefault();
   const a=S.apps.find(x=>x.id==b.dataset.id);if(a)doAction(b.dataset.a,a,b);
@@ -2642,7 +2957,9 @@ function openMenu(btn,a){
   }
   if(a.rename_to){const lock=a.in_steam&&S.steam_running;
     rows.push(it("rename",`Rename file to ${esc(a.rename_to)}`,{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":a.in_steam?"Also updates its Steam shortcut":""}))}
-  rows.push(it("release","Open release page"),"<hr>",it("edit","Edit"),it("remove","Remove…",{danger:true}));
+  rows.push(it("release","Open release page"));
+  if(a.rh_id)rows.push(it("rhpage","View on Recomp Haven"));
+  rows.push("<hr>",it("category","Category…",{hint:a.category?esc(a.category):""}),it("edit","Edit"),it("remove","Remove…",{danger:true}));
   menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
   menu.style.left=Math.max(8,Math.min(r.right-m.width,innerWidth-m.width-8))+"px";
@@ -2746,6 +3063,7 @@ function openAdd(a,adopt){
   // Non-GitHub repos need their host, or the preview would look them up on GitHub.
   $("#aRepo").value=a?(a.host&&a.host!="github.com"?`https://${a.host}/${a.repo}`:a.repo):"";$("#aRepo").disabled=!!a;
   $("#aName").value=a?a.name:"";$("#aPat").value=a?a.pattern||"":"";$("#aPre").checked=a?!!a.prerelease:false;
+  $("#aCatg").value=a?a.category||"":"";$("#aSkip").value=a?a.skip_titles||"":"";$("#aLatest").checked=a?!!a.latest_only:false;
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
   $("#aUsing").hidden=$("#aRenL").hidden=!ADOPT;$("#aRen").checked=true;renName();
@@ -2766,13 +3084,13 @@ $("#aRepo").oninput=()=>{
   if(isLink($("#aRepo").value))previewSoon();
   else{clearTimeout(prevTimer);lastPrev="";$("#aInfo").textContent="";$("#aAssets").hidden=true;$("#aTip").hidden=true}
 };
-$("#aPat").oninput=previewSoon;$("#aPre").onchange=preview;
+$("#aPat").oninput=$("#aSkip").oninput=previewSoon;$("#aPre").onchange=$("#aLatest").onchange=preview;
 async function preview(){
   const repo=$("#aRepo").value.trim();if(!isLink(repo))return;
-  const me=lastPrev=JSON.stringify([repo,$("#aPat").value,$("#aPre").checked]),box=$("#aAssets");
+  const me=lastPrev=JSON.stringify([repo,$("#aPat").value,$("#aPre").checked,$("#aSkip").value,$("#aLatest").checked]),box=$("#aAssets");
   $("#aInfo").textContent="Looking up the latest release…";
   try{
-    const r=await api("/api/preview",{repo,pattern:$("#aPat").value,prerelease:$("#aPre").checked});
+    const r=await api("/api/preview",{repo,pattern:$("#aPat").value,prerelease:$("#aPre").checked,skip_titles:$("#aSkip").value,latest_only:$("#aLatest").checked});
     if(me!=lastPrev)return;  // a newer lookup is on its way
     $("#aInfo").innerHTML=`<b>${esc(r.repo)}</b> · ${esc(r.tag)} · `+(r.picked?`will download <span class="mono">${esc(r.picked)}</span>`:"⚠ no Linux build found. Open Advanced and click the right file.");
     box.innerHTML=r.assets.map(x=>`<div class="${x.name==r.picked?"pick":""}" data-n="${esc(x.name)}">${esc(x.name)}<small>${mb(x.size)}</small></div>`).join("")||"<div>No files in this release</div>";
@@ -2787,13 +3105,103 @@ $("#fAdd").onsubmit=async e=>{
     toast("Paste a release link: owner/repo or the repo's URL",true);
     return;
   }
-  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,adopt_path:ADOPT?ADOPT.path:"",rename:!!ADOPT&&$("#aRen").checked};
+  const body={name:$("#aName").value,pattern:$("#aPat").value,prerelease:$("#aPre").checked,
+    category:$("#aCatg").value,skip_titles:$("#aSkip").value,latest_only:$("#aLatest").checked,adopt_path:ADOPT?ADOPT.path:"",rename:!!ADOPT&&$("#aRen").checked};
   try{
     if(editId)await api("/api/edit",{id:editId,...body});
     else await api("/api/add",{repo:$("#aRepo").value,...body});
     dAdd.close();foundKey="";toast(ADOPT?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
   }catch(err){toast(err.message,true)}
 };
+
+// ---- categories and select mode
+let SEL=null;  // ids picked while selecting, or null
+function setSel(on){SEL=on?new Set():null;document.body.classList.toggle("selecting",on);$("#selbar").hidden=!on;closeMenu();render();renderSel()}
+function renderSel(){
+  if(!SEL)return;const n=SEL.size;$("#selN").textContent=`${n} selected`;
+  $("#selbar").querySelectorAll(".sel-acts button").forEach(b=>b.disabled=!n);
+  $("#selAll").textContent=n&&n==S.apps.length?"Select none":"Select all";
+}
+$("#btnSel").onclick=()=>setSel(!SEL);
+$("#selDone").onclick=()=>setSel(false);
+$("#selAll").onclick=()=>{SEL=SEL.size==S.apps.length?new Set():new Set(S.apps.map(a=>a.id));render();renderSel()};
+$("#selCheck").onclick=()=>act("/api/check",{ids:[...SEL]},`Checking ${SEL.size} app(s)…`);
+$("#selUpd").onclick=()=>act("/api/update",{ids:[...SEL]},r=>r.count?`Updating ${r.count} app(s)`:"The selected apps are up to date");
+$("#selCat").onclick=()=>openCat([...SEL]);
+$("#selRm").onclick=async()=>{
+  const ids=[...SEL],r=await ask({title:`Remove ${ids.length} app(s)?`,text:"DeckPort will stop tracking them.",ok:"Remove",danger:true,check:"Also delete their downloaded files"});
+  if(r)act("/api/remove",{ids,delete_files:!!r.checked},x=>`Removed ${x.count} app(s)`);
+};
+let catIds=[];
+function openCat(ids){
+  catIds=ids;const apps=S.apps.filter(a=>ids.includes(a.id)),same=[...new Set(apps.map(a=>a.category||""))];
+  $("#cTitle").textContent=apps.length==1?`Category · ${apps[0].name}`:`Category · ${apps.length} apps`;
+  $("#cName").value=same.length==1?same[0]:"";dCat.showModal();$("#cName").focus();
+}
+function saveCat(c){dCat.close();act("/api/category",{ids:catIds,category:c},c?`Moved to ${c}`:"Category removed")}
+$("#fCat").onsubmit=e=>{e.preventDefault();saveCat($("#cName").value.trim())};
+$("#cClear").onclick=()=>saveCat("");
+
+// ---- tabs
+let TAB="apps";
+function setTab(t){
+  TAB=t;try{localStorage.setItem("deckport.tab",t)}catch(e){}
+  $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
+  $("#vApps").hidden=t!="apps";$("#vRh").hidden=t!="rh";$(".tabs-end").hidden=t!="apps";
+  if(t!="apps"&&SEL)setSel(false);
+  if(t=="rh")loadRh(false);
+}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
+
+// ---- Recomp Haven
+const TIERS={S:["Definitive","#f5c542"],A:["Complete","#86efac"],B:["Playable","#93c5fd"],C:["Rough","#fdba74"],D:["Experimental","#a3a9b8"]};
+const STAGES={released:"Released",beta:"Beta",development:"In development",abandoned:"Abandoned"};
+let RH={items:null,site:"https://recomphaven.com/",consoles:{}},rhTier="all",rhDeck=false,rhLoading=false,rhAdding=new Set(),rhKey="";
+async function loadRh(refresh){
+  if(rhLoading||(RH.items&&!refresh))return renderRh();
+  rhLoading=true;$("#rhInfo").textContent="Loading the list from Recomp Haven…";
+  try{RH=await api("/api/recomphaven",{refresh})}catch(e){$("#rhInfo").textContent="⚠ "+e.message}
+  rhLoading=false;renderRh();
+}
+function renderRh(){
+  if(!RH.items)return;
+  rhKey=S.apps.map(a=>a.host+"/"+a.repo).join();
+  const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
+  const q=$("#rhQ").value.trim().toLowerCase(),con=k=>RH.consoles[k]||{label:k,short:k.toUpperCase(),color:""};
+  const list=RH.items.filter(x=>(rhTier=="all"||x.tier==rhTier||(rhTier=="CD"&&"CD".includes(x.tier)))&&(!rhDeck||x.deck)
+    &&(!q||[x.title,x.project,x.genre,con(x.console).label,con(x.console).short].join(" ").toLowerCase().includes(q)));
+  const n=t=>RH.items.filter(x=>t=="CD"?"CD".includes(x.tier):x.tier==t).length;
+  $("#rhChips").innerHTML=[["all","All",RH.items.length],["S","S · Definitive",n("S")],["A","A · Complete",n("A")],["B","B · Playable",n("B")],["CD","C–D · Early",n("CD")]]
+    .map(([k,t,c])=>`<button class="${rhTier==k?"on":""}" data-tier="${k}" style="--c:${(TIERS[k[0]]||[0,"var(--rh)"])[1]}"><i></i>${t} <b>${c}</b></button>`).join("")
+    +`<button class="${rhDeck?"on":""}" data-deck="1" style="--c:var(--good)"><i></i>Steam Deck</button>`;
+  const when=RH.fetched_at?`Updated ${ago(RH.fetched_at)}`:"";
+  $("#rhInfo").innerHTML=`${list.length} of ${RH.items.length} recomps with a Linux release · ${when} · <a href="#" id="rhRefresh">Refresh</a>`+(RH.stale?` · ⚠ ${esc(RH.stale)}`:"");
+  $("#rhList").innerHTML=list.length?list.map(x=>{
+    const c=con(x.console),t=TIERS[x.tier],added=tracked.has(x.key),busy=rhAdding.has(x.id);
+    const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]).join("").toUpperCase();
+    return `<div class="rh-card glass" title="${esc(x.summary)}">
+      <div class="rh-cover" style="--cc:${esc(c.color||"#1e3a8a")}">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}
+        ${t?`<span class="rh-tier" style="--tc:${t[1]}" title="Tier ${x.tier}: ${t[0]}">${x.tier}</span>`:""}</div>
+      <div class="rh-body">
+        <div class="rh-title">${esc(x.title)}</div>
+        <div class="rh-meta"><span class="tag" style="--cc:${esc(c.color)}" title="${esc(c.label)}">${esc(c.short)}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span> · ${esc(STAGES[x.stage]||x.stage)}${x.deck?' <span class="tag ok">Steam Deck</span>':""}</div>
+        ${x.requires?`<div class="rh-req">${esc(x.requires)}</div>`:""}
+        <div class="rh-act">${added?'<span class="added">✓ In My apps</span>':`<button class="primary" data-rh="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
+          <a href="${esc(RH.site)}#${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
+      </div></div>`}).join(""):'<div class="empty glass" style="grid-column:1/-1"><b>Nothing here</b>No recomps match this search.</div>';
+}
+$("#rhQ").oninput=renderRh;
+$("#rhChips").onclick=e=>{const b=e.target.closest("button");if(!b)return;if(b.dataset.deck)rhDeck=!rhDeck;else rhTier=b.dataset.tier;renderRh()};
+$("#rhInfo").onclick=e=>{if(e.target.id=="rhRefresh"){e.preventDefault();RH.items=null;loadRh(true)}};
+$("#rhList").onclick=async e=>{
+  const b=e.target.closest("[data-rh]");if(!b)return;
+  const x=RH.items.find(i=>i.id==b.dataset.rh);if(!x)return;
+  rhAdding.add(x.id);renderRh();
+  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rh_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  catch(err){toast(err.message,true)}
+  rhAdding.delete(x.id);renderRh();
+};
+try{if(localStorage.getItem("deckport.tab")=="rh")setTab("rh")}catch(e){}
 
 $("#btnSet").onclick=()=>{
   $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTok").value="";

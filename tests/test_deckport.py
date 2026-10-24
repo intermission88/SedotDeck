@@ -522,4 +522,110 @@ try:
 except subprocess.TimeoutExpired:
     proc.kill(); raise AssertionError("server did not exit after stdin closed")
 
+# --- release choice: skip titles, Latest only, moved repos
+def ghrel(tag, name="", pre=False, repo="me/game"):
+    return {"tag_name": tag, "name": name or tag, "prerelease": pre, "draft": False,
+            "html_url": "https://github.com/%s/releases/tag/%s" % (repo, tag), "assets": []}
+ROUTES = {}
+def fake_json(url, token="", service=""):
+    if url not in ROUTES:
+        raise LookupError("not found")
+    return ROUTES[url]
+real_http_json, dp.http_json = dp.http_json, fake_json
+GH = "https://api.github.com/repos/me/game/releases"
+gsrc = {"provider": "github", "host": "github.com", "repo": "me/game"}
+ROUTES[GH + "/latest"] = ghrel("nightly-123", "Nightly build")
+ROUTES[GH + "?per_page=30"] = [ghrel("nightly-123", "Nightly build"), ghrel("v2.0"), ghrel("v1.0")]
+eq(dp.fetch_release(gsrc, False)["tag_name"], "nightly-123", "default: GitHub's Latest")
+eq(dp.fetch_release(gsrc, False, skip_titles="nightly")["tag_name"], "v2.0", "skipped title falls back to the list")
+try:
+    dp.fetch_release(gsrc, False, skip_titles="nightly", latest_only=True); raise AssertionError("latest_only + skipped latest")
+except RuntimeError as e:
+    eq("skip filter" in str(e), True, "latest_only says why")
+del ROUTES[GH + "/latest"]
+try:
+    dp.fetch_release(gsrc, False, latest_only=True); raise AssertionError("no Latest marker")
+except RuntimeError as e:
+    eq("no release marked Latest" in str(e), True, "latest_only without a Latest release")
+ROUTES[GH + "?per_page=30"] = [ghrel("nightly-1")]
+try:
+    dp.fetch_release(gsrc, False, skip_titles="nightly"); raise AssertionError("everything skipped")
+except RuntimeError as e:
+    eq("after skipping" in str(e), True, "all releases skipped")
+# Gitea/Forgejo: Latest only uses /releases/latest, otherwise the newest in the list
+CB = "https://codeberg.org/api/v1/repos/me/game/releases"
+csrc = {"provider": "gitea", "host": "codeberg.org", "repo": "me/game"}
+ROUTES[CB + "/latest"] = dict(ghrel("v1.0"), html_url="https://codeberg.org/me/game/releases/tag/v1.0")
+ROUTES[CB + "?limit=15"] = [dict(ghrel("v1.1"), html_url="https://codeberg.org/me/game/releases/tag/v1.1"), ROUTES[CB + "/latest"]]
+eq((dp.fetch_release(csrc, False)["tag_name"], dp.fetch_release(csrc, False, latest_only=True)["tag_name"]),
+   ("v1.1", "v1.0"), "gitea newest vs Latest")
+# a renamed repo: GitHub redirects the API, and the release's own link names the new repo
+mapp = dp.new_app("me/game")
+dp.apply_options(mapp, {"pattern": "", "skip_titles": "", "latest_only": False})
+ROUTES[GH + "/latest"] = dict(ghrel("v3", repo="newowner/Game"), assets=[{"id": 9, "name": "game-linux.AppImage",
+                                                                         "browser_download_url": "https://x/g"}])
+dp.check_app(mapp)
+eq(mapp.get("moved_to"), "newowner/Game", "moved repo detected")
+ROUTES[GH + "/latest"] = dict(ROUTES[GH + "/latest"], html_url="https://github.com/ME/GAME/releases/tag/v3")
+dp.check_app(mapp)
+eq("moved_to" in mapp, False, "case change alone isn't a move, and the notice clears")
+dp.http_json = real_http_json
+
+# --- per-app options: validation, export/import round trip, cleared values
+oapp = dp.new_app("me/opts")
+dp.apply_options(oapp, {"skip_titles": "nightly|beta", "latest_only": 1, "category": "  Ports   and  recomps "})
+eq((oapp["skip_titles"], oapp["latest_only"], oapp["category"]), ("nightly|beta", True, "Ports and recomps"), "options set")
+try:
+    dp.apply_options(oapp, {"skip_titles": "(", "category": "X"}); raise AssertionError("bad regex accepted")
+except ValueError:
+    eq(oapp["category"], "Ports and recomps", "nothing changed on a bad option")
+ocfg = {"settings": {}, "apps": [oapp]}
+exp = dp.export_apps(ocfg)
+eq({k: exp["apps"][0].get(k) for k in ("skip_titles", "latest_only", "category")},
+   {"skip_titles": "nightly|beta", "latest_only": True, "category": "Ports and recomps"}, "options exported")
+added, _skipped = dp.import_apps({"settings": {}, "apps": []}, exp)
+eq((added[0]["skip_titles"], added[0]["latest_only"], added[0]["category"]), ("nightly|beta", True, "Ports and recomps"), "options imported")
+bad = json.loads(json.dumps(exp)); bad["apps"][0]["skip_titles"] = "("
+try:
+    dp.import_apps({"settings": {}, "apps": []}, bad); raise AssertionError("bad import accepted")
+except ValueError as e:
+    eq("Entry 1" in str(e), True, "import names the bad entry")
+dp.apply_options(oapp, {"skip_titles": "", "latest_only": False, "category": ""})
+eq([k for k in ("skip_titles", "latest_only", "category") if k in oapp], [], "cleared options are dropped")
+
+# --- Recomp Haven: what DeckPort lists from its data file
+RH_JS = """/* header */
+window.RECOMPHAVEN_META = {"snapshot": "2026-10-23"};
+
+window.RECOMPS = [
+  {"id": "b-game", "title": "B Game", "repo": "https://github.com/b/b", "version": "v1", "quality": "B", "stars": 5,
+   "platforms": ["windows", "linux"], "features": ["steam-deck"], "cover": "assets/covers/b-game.webp", "console": "n64"},
+  {"id": "s-game", "title": "S Game", "repo": "https://github.com/s/s", "version": "v2", "quality": "S", "stars": 1,
+   "platforms": ["linux"], "cover": "javascript:alert(1)"},
+  {"id": "roms", "title": "Has ROMs", "repo": "https://github.com/r/r", "version": "v1", "quality": "A", "platforms": ["linux"], "romFiles": ["x.z64"]},
+  {"id": "win", "title": "Windows only", "repo": "https://github.com/w/w", "version": "v1", "quality": "A", "platforms": ["windows"]},
+  {"id": "norel", "title": "No release", "repo": "https://github.com/n/n", "version": null, "quality": "D", "platforms": ["linux"]},
+  {"id": "gl", "title": "Elsewhere", "repo": "https://gitlab.com/g/g", "version": "v1", "quality": "A", "platforms": ["linux"]}
+];
+"""
+rh = dp.parse_recomphaven(RH_JS)
+eq([x["id"] for x in rh], ["s-game", "b-game"], "linux releases from GitHub only, no ROM hosts, best tier first")
+eq((rh[1]["repo"], rh[1]["key"], rh[1]["deck"], rh[1]["windows"]), ("b/b", "github.com/b/b", True, True), "entry fields")
+eq((rh[1]["cover"], rh[0]["cover"]), ("https://recomphaven.com/assets/covers/b-game.webp", ""), "only real cover paths")
+eq(dp.parse_recomphaven_consoles('window.RECOMPHAVEN_TABLES = {"consoles": {"n64": {"label": "Nintendo 64", "short": "N64", "color": "red;}"}}};'),
+   {"n64": {"label": "Nintendo 64", "short": "N64", "color": ""}}, "console labels, colours checked")
+# cached for a day; a failed refresh keeps the saved list
+rh_tmp = Path(tempfile.mkdtemp(), "rh.json")
+real_cache, real_get = dp.RH_CACHE, dp._rh_get
+dp.RH_CACHE, calls = rh_tmp, []
+dp._rh_get = lambda url: calls.append(url) or (RH_JS if url == dp.RH_DATA_URL else 'window.RECOMPHAVEN_TABLES = {"consoles": {}};')
+eq(len(dp.recomphaven()["items"]), 2, "fetched"); n = len(calls)
+eq((len(dp.recomphaven()["items"]), len(calls)), (2, n), "served from the cache")
+def offline(url):
+    raise OSError("offline")
+dp._rh_get = offline
+d = dp.recomphaven(refresh=True)
+eq((len(d["items"]), "offline" in d["stale"]), (2, True), "stale cache when the refresh fails")
+dp.RH_CACHE, dp._rh_get = real_cache, real_get
+
 print("all %d checks passed" % ok)
