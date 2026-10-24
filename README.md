@@ -13,6 +13,8 @@ Paste a release link, search GitHub by a game's name, or pick a recomp from [Rec
 
 [Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit)
 
+<img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
+
 </div>
 
 > SedotDeck is in alpha (0.0.x). It was called DeckPort before; your app list moves over by itself on first start.
@@ -102,13 +104,17 @@ In **⋯** → **Edit** → **Advanced**. The preview updates as you type.
 
 ## Discover: search GitHub
 
-The **Discover** tab searches GitHub repositories by name and description, for example `bloodborne` or `god of war 3`. Each result shows its stars, language and when it was last updated, and you can sort by **Best match** or **Most stars**. **Add** opens the usual dialog, which looks at the project's latest release and shows the file it would download before anything is saved.
+The **Discover** tab searches GitHub repositories by name and description, for example `bloodborne` or `god of war 3`. Each result shows its stars, language and when it was last updated, and you can sort by **Best match** or **Most stars**.
+
+<img src="docs/screenshots/discover.png" alt="Discover tab: GitHub results for bloodborne, each with stars, language and an Add button" width="640"> **Add** opens the usual dialog, which looks at the project's latest release and shows the file it would download before anything is saved.
 
 Without a GitHub token, GitHub allows 10 searches a minute.
 
 ## Recomp Haven
 
 [Recomp Haven](https://recomphaven.com/) tracks every game recompilation and PC port. SedotDeck's **Recomp Haven** tab lists the ones with a Linux release on GitHub, using the site's own logo, box art and tiers.
+
+<img src="docs/screenshots/recomp-haven.png" alt="Recomp Haven tab: recomps with box art, tier, system and an Add button, with filters for system and tier" width="640">
 
 - Search by game or project, filter by **system** (console) or tier, or show only the ones marked **Steam Deck**.
 - Sort by tier, system (grouped under a heading per console), stars, name or newest release.
