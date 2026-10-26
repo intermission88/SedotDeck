@@ -10,12 +10,16 @@ Paste a release link, search GitHub by a game's name, or pick a recomp from [Rec
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1a9fff?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
 ![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-23272e?style=flat-square)
+![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 
 [Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit)
 
 <img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
 
 </div>
+
+> [!IMPORTANT]
+> **SedotDeck is heavily AI-made.** Nearly all of its code, this README and the logo were written by [Claude](https://claude.com/claude-code), Anthropic's AI, through Claude Code. I ([intermission88](https://github.com/intermission88)) decide what it does, review the changes and test it. Every commit made with Claude says so with `Co-Authored-By: Claude`. Details are in [Credit](#credit).
 
 > SedotDeck is in alpha (0.0.x). It was called DeckPort before; your app list moves over by itself on first start.
 
@@ -241,22 +245,57 @@ GitHub Actions builds both on every push to `main`, and `v*` tags are published 
 
 ## Credit
 
-SedotDeck is built on other people's work:
+SedotDeck stands on other people's work. If something of yours is used here and isn't credited properly, please [open an issue](https://github.com/intermission88/SedotDeck/issues) and it will be fixed.
 
-| Feature | Credit |
+### Who made what
+
+| Part | Made by |
 |---|---|
-| Recomp Haven tab (list, tiers, summaries, system labels, logo) | [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) |
+| Idea, direction, feature choices, reviewing changes, testing, bug reports | [intermission88](https://github.com/intermission88) (human) |
+| Almost all code: `sedotdeck.py`, the web UI, the Decky plugin, the Tauri shell, `install.sh`, tests, CI | [Claude](https://claude.com/claude-code) by Anthropic, through Claude Code |
+| This README and the other docs | Claude, edited and approved by intermission88 |
+| The logo (generated from geometry by [`design/logo/build_kit.py`](design/logo)) | Claude |
+| Screenshots | Taken by Claude with a headless browser against a test setup |
+
+So far every commit was made with Claude and is marked `Co-Authored-By: Claude`, so `git log` shows exactly which ones. SedotDeck isn't made or endorsed by Anthropic.
+
+### Data and content shown in the app
+
+| What | From |
+|---|---|
+| Recomp Haven tab: the list, tiers, summaries, system labels and logo | [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) (MIT). Downloaded from its repository when the tab is opened, not copied into SedotDeck. |
 | Recomp Haven's base data | [Recompendium](https://github.com/nio03/unricopie) (MIT) |
-| Box art in the Recomp Haven tab | Belongs to each game's publisher, collected by Recomp Haven from [libretro thumbnails](https://thumbnails.libretro.com/) and Wikipedia |
-| The idea behind SedotDeck, release title filters, "Latest" releases, moved-repo detection, categories and bulk actions | [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98 |
-| Recognizing AppImages from embedded update information | The update information spec from [AppImage](https://github.com/AppImage/AppImageSpec) |
-| Desktop window (AppImage) | [Tauri](https://v2.tauri.app) and WebKitGTK |
-| Game Mode plugin | [Decky Loader](https://decky.xyz) (`@decky/api`, `@decky/ui`) and [react-icons](https://react-icons.github.io/react-icons/) |
-| Windows games through Proton | [Proton](https://github.com/ValveSoftware/Proton) by Valve |
-| Code and documentation | [Claude](https://claude.com/claude-code) by Anthropic (see below) |
+| Box art in the Recomp Haven tab | Belongs to each game's publisher; collected by Recomp Haven from [libretro thumbnails](https://thumbnails.libretro.com/) and Wikipedia |
+| Release info and the Discover search | The public APIs of GitHub, GitLab, Codeberg, Gitea and Forgejo |
+| The emulators, recomps and ports you install | Their own developers. SedotDeck only downloads their releases; support them in their repositories. |
 
-The emulators and ports you install with SedotDeck are their developers' work. Support them in their own repositories.
+### Ideas taken from other projects
 
-### Made with Claude
+| Idea | From |
+|---|---|
+| The whole concept (track apps by their release page and update them in one place), release title filters, following only the "Latest" release, moved-repo detection, categories and bulk actions | [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98, the Android app that does this for APKs. SedotDeck copies its ideas, not its code (Obtainium is GPL-3.0 and written in Dart). |
+| Recognizing AppImages from their embedded update information | The [AppImage update information spec](https://github.com/AppImage/AppImageSpec) |
+| A look close to SteamOS | Valve's SteamOS interface. No Valve artwork or fonts are included. |
 
-SedotDeck is built with [Claude](https://claude.com/claude-code), Anthropic's AI model, through Claude Code. The direction and decisions are mine ([intermission88](https://github.com/intermission88)), and I test every feature myself. Commits made with Claude carry `Co-Authored-By: Claude`.
+### Software SedotDeck uses
+
+| Part | Software |
+|---|---|
+| Desktop window (AppImage) | [Tauri](https://v2.tauri.app) with `tauri-plugin-dialog`, and WebKitGTK |
+| Game Mode plugin | [Decky Loader](https://decky.xyz) (`@decky/api`, `@decky/ui`, `@decky/rollup`) and [react-icons](https://react-icons.github.io/react-icons/) |
+| Core | Python and its standard library, as shipped with SteamOS |
+| Flatpak bundles | [Flatpak](https://flatpak.org) (`flatpak install --user`) |
+| Windows games | [Proton](https://github.com/ValveSoftware/Proton) by Valve |
+| Badges in this README | [Shields.io](https://shields.io) and [Simple Icons](https://simpleicons.org) |
+
+### Tools used while building it
+
+| Tool | Used for |
+|---|---|
+| [Claude Code](https://claude.com/claude-code) | Writing the code, docs and logo (see [Who made what](#who-made-what)) |
+| [Anti Slop](https://github.com/miqdadbadjuber/anti-slop) by miqdadbadjuber (MIT) | Rules that steer Claude away from generic AI-looking UI and comments; kept in `.claude/skills/` |
+| GitHub Actions | Building the AppImage and the Decky ZIP, and publishing releases |
+
+### Trademarks
+
+Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is a fan-made tool and isn't affiliated with or endorsed by Valve, Decky Loader, Recomp Haven, Obtainium or any game publisher.
