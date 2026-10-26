@@ -1477,6 +1477,98 @@ def recomphaven(refresh=False):
     return dict(data, site=RH_SITE, logo=RH_LOGO, stale="")
 
 
+# --------------------------------------------------------------------------- Quiver catalog
+
+# quiverlauncher.com (by Thomas Georgiadis) is the catalog behind Quiver Launcher. Its public API lists the apps
+# and, separately, the repository each one releases from; SedotDeck joins the two and keeps the result for a day.
+# Quiver's name may be used to say where the list comes from, but not its logo or icons (TRADEMARKS.md in its repo).
+QV_SITE = "https://quiverlauncher.com/"
+QV_API = "https://api.quiverlauncher.com/api/v1"
+QV_CACHE = CONFIG_DIR / "quiver.json"
+QV_MAX_AGE = 24 * 3600
+QV_HOSTS = {"github": "github.com", "gitlab": "gitlab.com"}
+
+
+def parse_quiver(apps, statuses):
+    """Catalog apps SedotDeck can install (a verified Linux release on GitHub or GitLab), newest first."""
+    repos = {}
+    for s in statuses:
+        if isinstance(s, dict) and s.get("provider") in QV_HOSTS and s.get("repository"):
+            repos[str(s.get("slug") or "")] = (s["provider"], str(s["repository"]))
+    out = []
+    for e in apps:
+        if not isinstance(e, dict) or "linux" not in (e.get("supportedOS") or []):
+            continue
+        slug, verified = str(e.get("slug") or ""), e.get("verified") or {}
+        provider, repo = repos.get(slug, ("", ""))
+        if not verified.get("version") or not re.fullmatch(r"[\w.-]+(/[\w.-]+)+", repo):
+            continue
+        art = e.get("libraryArt") or {}
+        cover = str(art.get("capsule") or e.get("artwork") or "")
+        # SteamGridDB's full grids are ~1 MB PNGs; its thumbnail of the same image is a small JPEG.
+        cover = re.sub(r"^https://cdn2\.steamgriddb\.com/grid/(\w+)\.\w+$", r"https://cdn2.steamgriddb.com/thumb/\1.jpg", cover)
+        dev = e.get("developer") or {}
+        out.append({
+            "id": slug, "title": str(e.get("name") or repo)[:200], "project": str(e.get("projectName") or "")[:200],
+            "console": str((e.get("consoles") or [""])[0]), "type": str(e.get("projectType") or ""),
+            "ai": e.get("aiLevel") if e.get("aiLevel") in ("none", "assisted", "generated") else "",
+            "provider": provider, "repo": repo, "key": ("%s/%s" % (QV_HOSTS[provider], repo)).lower(),
+            "version": str(verified["version"]), "released": (e.get("lastReleaseAt") or 0) / 1000,
+            "added": (e.get("addedAt") or 0) / 1000, "developer": str(dev.get("name") or "")[:120],
+            "summary": str(e.get("description") or "")[:600], "recommended": int(e.get("recommended") or 0),
+            "broken": int(e.get("reportBroken") or 0),
+            "cover": cover if re.fullmatch(r"https://[^\s\"'<>()]+", cover) else "",
+        })
+    out.sort(key=lambda x: -x["added"])
+    return out
+
+
+def _qv_get(path):
+    req = urllib.request.Request(QV_API + path, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with _opener.open(req, timeout=30) as r:
+        return json.loads(r.read(16 * 1024 * 1024).decode("utf-8"))
+
+
+def _qv_all(path):
+    """Every item of a paged list (100 a page, following nextCursor)."""
+    items, cursor = [], None
+    for _ in range(50):
+        page = _qv_get(path + ("&cursor=" + urllib.parse.quote(cursor, safe="") if cursor else ""))
+        items += page.get("items") or []
+        cursor = page.get("nextCursor")
+        if page.get("isDone", True) or not cursor:
+            break
+    return items
+
+
+def quiver(refresh=False):
+    """{"items", "consoles", "fetched_at", "site", "stale"}: the cached catalog, refetched once a day or on request."""
+    cache = None
+    try:
+        cache = json.loads(QV_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if cache and not refresh and time.time() - cache.get("fetched_at", 0) < QV_MAX_AGE:
+        return dict(cache, site=QV_SITE, stale="")
+    try:
+        items = parse_quiver(_qv_all("/apps?limit=100&os=linux&sort=added"), _qv_all("/release-status?limit=100"))
+        data = {"fetched_at": time.time(), "items": items, "consoles": {}}
+    except Exception as e:
+        if cache:
+            return dict(cache, site=QV_SITE, stale="Couldn't refresh (%s), showing the saved list" % e)
+        raise RuntimeError("Couldn't load the Quiver catalog: %s" % e)
+    try:
+        data["consoles"] = {str(c["id"]): str(c.get("name") or c["id"]) for c in _qv_get("/facets").get("consoles") or []
+                            if isinstance(c, dict) and c.get("id")}
+    except Exception:
+        data["consoles"] = (cache or {}).get("consoles") or {}  # labels are a nicety; ids still show
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = QV_CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, QV_CACHE)
+    return dict(data, site=QV_SITE, stale="")
+
+
 # --------------------------------------------------------------------------- Steam shortcuts
 
 STEAM_ROOTS = ("~/.steam/steam", "~/.local/share/Steam", "~/.var/app/com.valvesoftware.Steam/.local/share/Steam")
@@ -1929,6 +2021,8 @@ class Server:
             apply_options(app, body)
             if body.get("rh_id"):
                 app["rh_id"] = str(body["rh_id"])[:120]
+            if body.get("qv_id"):
+                app["qv_id"] = str(body["qv_id"])[:120]
             with _lock:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
@@ -2081,6 +2175,9 @@ class Server:
 
         if path == "/api/recomphaven":
             return recomphaven(bool(body.get("refresh")))
+
+        if path == "/api/quiver":
+            return quiver(bool(body.get("refresh")))
 
         if path == "/api/github_search":
             tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
@@ -2754,6 +2851,9 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .rh-act{display:flex;gap:10px;align-items:center;margin-top:auto;flex-wrap:wrap}
 .rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
 .rh-act a{font-size:13.5px}
+/* ---- Quiver: the same cards; player reports sit under the summary */
+.qv-rep{font-size:12.5px;color:var(--faint)}
+.qv-rep b{color:var(--text);font-weight:600}
 
 @media (max-width:760px){
   header{padding:10px 12px} main{padding:12px} .brand .sub{display:none}
@@ -2786,6 +2886,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <button type="button" role="tab" data-tab="apps" class="on">My apps</button>
   <button type="button" role="tab" data-tab="gh">Discover</button>
   <button type="button" role="tab" data-tab="rh"><img src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">Recomp Haven</button>
+  <button type="button" role="tab" data-tab="qv">Quiver</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
 <section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
@@ -2808,6 +2909,19 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <div class="summary" id="rhChips"></div>
   <div class="hint" id="rhInfo"></div>
   <div id="rhList" class="rh-grid"></div>
+</section>
+<section id="vQv" hidden>
+  <div class="rh-head">
+    <div><b>Quiver catalog</b><span class="hint">Ports and recomps with a Linux release that Quiver has verified. List, descriptions and player reports from the catalog behind Quiver Launcher; SedotDeck isn't part of Quiver. Box art, mostly from SteamGridDB, belongs to each game's publisher, and every port needs your own copy of the game.</span></div>
+    <a class="rh-site" href="https://quiverlauncher.com/" target="_blank" rel="noopener">quiverlauncher.com ↗</a></div>
+  <div class="rh-tools"><input type="text" id="qvQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search the Quiver catalog">
+    <label>System<select id="qvCon"><option value="">All systems</option></select></label>
+    <label>Sort<select id="qvSort">
+      <option value="added">Newly added</option><option value="released">Newest release</option><option value="recommended">Most recommended</option>
+      <option value="system">System</option><option value="name">Name</option></select></label></div>
+  <div class="summary" id="qvChips"></div>
+  <div class="hint" id="qvInfo"></div>
+  <div id="qvList" class="rh-grid"></div>
 </section>
 </main>
 <div id="selbar" class="selbar" hidden>
@@ -3020,7 +3134,7 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or <a href="#" data-tab="rh">browse Recomp Haven</a>.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a> and the <a href="#" data-tab="qv">Quiver catalog</a>.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
@@ -3035,6 +3149,7 @@ function render(){
   $("#btnSel").hidden=S.apps.length<2;
   // The Recomp Haven tab marks what's in My apps; redraw it only when that changes.
   if(TAB=="rh"&&RH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rhKey)renderRh();
+  if(TAB=="qv"&&QV.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=qvKey)renderQv();
   if(TAB=="gh"&&GH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=ghKey)renderGh();
   if(SEL){for(const id of [...SEL])if(!S.apps.some(a=>a.id==id))SEL.delete(id);renderSel()}
   $("#catList").innerHTML=[...new Set(S.apps.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">`).join("");
@@ -3089,6 +3204,7 @@ async function doAction(k,a,el){
   else if(k=="move")act("/api/move",{id},r=>`${a.name} now follows ${r.repo}`);
   else if(k=="category")openCat([a.id]);
   else if(k=="rhpage")openUrl(RH.site+"#"+encodeURIComponent(a.rh_id));
+  else if(k=="qvpage")openUrl(QV.site+"apps/"+encodeURIComponent(a.qv_id));
 }
 function openUrl(u){APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
 function addSteam(a){
@@ -3153,6 +3269,7 @@ function openMenu(btn,a){
     rows.push(it("rename",`Rename file to ${esc(a.rename_to)}`,{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":a.in_steam?"Also updates its Steam shortcut":""}))}
   rows.push(it("release","Open release page"));
   if(a.rh_id)rows.push(it("rhpage","View on Recomp Haven"));
+  if(a.qv_id)rows.push(it("qvpage","View on quiverlauncher.com"));
   rows.push("<hr>",it("category","Category…",{hint:a.category?esc(a.category):""}),it("edit","Edit"),it("remove","Remove…",{danger:true}));
   menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
@@ -3341,9 +3458,10 @@ let TAB="apps";
 function setTab(t){
   TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$(".tabs-end").hidden=t!="apps";
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
   if(t=="rh")loadRh(false);
+  if(t=="qv")loadQv(false);
   if(t=="gh")$("#ghQ").focus();
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
@@ -3421,6 +3539,77 @@ $("#rhList").onclick=async e=>{
   try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rh_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
   catch(err){toast(err.message,true)}
   rhAdding.delete(x.id);renderRh();
+};
+
+// ---- Quiver catalog (quiverlauncher.com)
+const AI_USE={none:"No AI",assisted:"AI-assisted",generated:"AI-generated"};
+let QV={items:null,site:"https://quiverlauncher.com/",consoles:{}},qvAi="all",qvLoading=false,qvAdding=new Set(),qvKey="";
+try{$("#qvSort").value=localStorage.getItem("sedotdeck.qvsort")||"added"}catch(e){}
+async function loadQv(refresh){
+  if(qvLoading||(QV.items&&!refresh))return renderQv();
+  qvLoading=true;$("#qvInfo").textContent="Loading the catalog from quiverlauncher.com…";
+  try{QV=await api("/api/quiver",{refresh})}catch(e){$("#qvInfo").textContent=e.message}
+  qvLoading=false;renderQv();
+}
+const qvCon=k=>QV.consoles[k]||k||"Other";
+const QV_SORT={
+  added:(a,b)=>b.added-a.added,
+  released:(a,b)=>b.released-a.released,
+  recommended:(a,b)=>b.recommended-a.recommended||a.broken-b.broken||b.added-a.added,
+  system:(a,b)=>qvCon(a.console).localeCompare(qvCon(b.console))||a.title.localeCompare(b.title),
+  name:(a,b)=>a.title.localeCompare(b.title),
+};
+function qvCard(x,tracked){
+  const added=tracked.has(x.key),busy=qvAdding.has(x.id);
+  const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]).join("").toUpperCase();
+  const rep=[x.recommended?`<b>${x.recommended}</b> recommend`:"",x.broken?`<b>${x.broken}</b> report it broken`:""].filter(Boolean).join(" · ");
+  return `<div class="rh-card">
+    <div class="rh-cover">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
+    <div class="rh-body">
+      <div class="rh-title">${esc(x.title)}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(qvCon(x.console))}">${esc((x.console||"?").toUpperCase())}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span>${AI_USE[x.ai]?" · "+AI_USE[x.ai]:""}</div>
+      ${x.summary?`<div class="rh-req" title="${esc(x.summary)}">${esc(x.summary)}</div>`:""}
+      ${rep?`<div class="qv-rep">${rep}</div>`:""}
+      <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-qv="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
+        <a href="${esc(QV.site)}apps/${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
+    </div></div>`;
+}
+function renderQv(){
+  if(!QV.items)return;
+  qvKey=S.apps.map(a=>a.host+"/"+a.repo).join();
+  const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
+  const sel=$("#qvCon"),cur=sel.value,per={};
+  QV.items.forEach(x=>per[x.console]=(per[x.console]||0)+1);
+  sel.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>qvCon(a).localeCompare(qvCon(b)))
+    .map(k=>`<option value="${esc(k)}">${esc(qvCon(k))} (${per[k]})</option>`).join("");
+  sel.value=per[cur]?cur:"";
+  const q=$("#qvQ").value.trim().toLowerCase(),con=sel.value,sort=$("#qvSort").value;
+  const list=QV.items.filter(x=>(qvAi=="all"||x.ai==qvAi)&&(!con||x.console==con)
+    &&(!q||[x.title,x.project,x.developer,x.repo,qvCon(x.console),x.console].join(" ").toLowerCase().includes(q))).sort(QV_SORT[sort]||QV_SORT.added);
+  const n=k=>QV.items.filter(x=>x.ai==k).length;
+  $("#qvChips").innerHTML=[["all","Any AI use",QV.items.length],["none","No AI",n("none")],["assisted","AI-assisted",n("assisted")],["generated","AI-generated",n("generated")]]
+    .map(([k,t,c])=>`<button class="${qvAi==k?"on":""}" data-ai="${k}" aria-pressed="${qvAi==k}">${t}<b>${c}</b></button>`).join("");
+  const when=QV.fetched_at?`Updated ${ago(QV.fetched_at)}`:"";
+  $("#qvInfo").innerHTML=`${list.length} of ${QV.items.length} apps with a Linux release · ${when} · <a href="#" id="qvRefresh">Refresh</a>`+(QV.stale?` · ${esc(QV.stale)}`:"");
+  if(!list.length){$("#qvList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No apps match these filters. Clear the search or pick All systems.</div>';return}
+  if(sort=="system"&&!con){
+    const groups=[...new Set(list.map(x=>x.console))];
+    $("#qvList").innerHTML=groups.map(k=>{const g=list.filter(x=>x.console==k);
+      return `<h3 class="group">${esc(qvCon(k))}<span>${g.length}</span></h3>`+g.map(x=>qvCard(x,tracked)).join("")}).join("");
+  }else $("#qvList").innerHTML=list.map(x=>qvCard(x,tracked)).join("");
+}
+$("#qvQ").oninput=renderQv;$("#qvCon").onchange=renderQv;
+$("#qvSort").onchange=()=>{try{localStorage.setItem("sedotdeck.qvsort",$("#qvSort").value)}catch(e){}renderQv()};
+$("#qvChips").onclick=e=>{const b=e.target.closest("button");if(!b)return;qvAi=b.dataset.ai;renderQv()};
+$("#qvInfo").onclick=e=>{if(e.target.id=="qvRefresh"){e.preventDefault();QV.items=null;loadQv(true)}};
+$("#qvList").onclick=async e=>{
+  const b=e.target.closest("[data-qv]");if(!b)return;
+  const x=QV.items.find(i=>i.id==b.dataset.qv);if(!x)return;
+  qvAdding.add(x.id);renderQv();
+  const host=x.provider=="gitlab"?"https://gitlab.com/":"https://github.com/";
+  try{await api("/api/add",{repo:host+x.repo,name:x.title,qv_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  catch(err){toast(err.message,true)}
+  qvAdding.delete(x.id);renderQv();
 };
 
 // ---- Discover: find a project on GitHub by the game's name, most stars first

@@ -635,6 +635,47 @@ d = dp.recomphaven(refresh=True)
 eq((len(d["items"]), "offline" in d["stale"]), (2, True), "stale cache when the refresh fails")
 dp.RH_CACHE, dp._rh_get = real_cache, real_get
 
+# --- Quiver catalog: apps joined with the repository each one releases from
+QV_APPS = [
+    {"slug": "old", "name": "Old Port", "projectName": "OldP", "consoles": ["n64"], "supportedOS": ["windows", "linux"],
+     "aiLevel": "none", "addedAt": 1000, "lastReleaseAt": 5000, "verified": {"version": "v1"}, "recommended": 3,
+     "libraryArt": {"capsule": "https://cdn2.steamgriddb.com/grid/a.png"}, "developer": {"name": "Dev"}},
+    {"slug": "new", "name": "New Port", "consoles": ["ps1"], "supportedOS": ["linux"], "aiLevel": "weird",
+     "addedAt": 2000, "verified": {"version": "v2"}, "artwork": "javascript:alert(1)"},
+    {"slug": "gl", "name": "GitLab Port", "supportedOS": ["linux"], "addedAt": 1500, "verified": {"version": "v3"}},
+    {"slug": "win", "name": "Windows only", "supportedOS": ["windows"], "verified": {"version": "v1"}},
+    {"slug": "unverified", "name": "Unchecked", "supportedOS": ["linux"], "verified": None},
+    {"slug": "norepo", "name": "No repo", "supportedOS": ["linux"], "verified": {"version": "v1"}},
+]
+QV_STATUS = [{"slug": "old", "provider": "github", "repository": "o/old"}, {"slug": "new", "provider": "github", "repository": "n/new"},
+             {"slug": "gl", "provider": "gitlab", "repository": "grp/sub/gl"}, {"slug": "win", "provider": "github", "repository": "w/w"},
+             {"slug": "unverified", "provider": "github", "repository": "u/u"}, {"slug": "norepo", "provider": "codeberg", "repository": "c/c"}]
+qv = dp.parse_quiver(QV_APPS, QV_STATUS)
+eq([x["id"] for x in qv], ["new", "gl", "old"], "verified Linux releases on GitHub or GitLab, newest first")
+eq((qv[2]["repo"], qv[2]["key"], qv[2]["ai"], qv[2]["recommended"], qv[2]["released"], qv[2]["developer"]),
+   ("o/old", "github.com/o/old", "none", 3, 5.0, "Dev"), "entry fields")
+eq((qv[1]["provider"], qv[1]["key"]), ("gitlab", "gitlab.com/grp/sub/gl"), "GitLab subgroups")
+eq((qv[2]["cover"], qv[0]["cover"], qv[0]["ai"]), ("https://cdn2.steamgriddb.com/thumb/a.jpg", "", ""), "SteamGridDB thumbnails, only https covers, known AI levels")
+# paged lists follow nextCursor; cached for a day; a failed refresh keeps the saved list
+real_cache, real_get = dp.QV_CACHE, dp._qv_get
+dp.QV_CACHE, calls = Path(tempfile.mkdtemp(), "qv.json"), []
+def qv_get(path):
+    calls.append(path)
+    if path.startswith("/apps"):
+        return {"items": QV_APPS[:2], "nextCursor": "c/1", "isDone": False} if "cursor" not in path else {"items": QV_APPS[2:], "isDone": True}
+    if path.startswith("/release-status"):
+        return {"items": QV_STATUS, "isDone": True}
+    return {"consoles": [{"id": "n64", "name": "Nintendo 64"}]}
+dp._qv_get = qv_get
+d = dp.quiver()
+eq((len(d["items"]), d["consoles"], "cursor=c%2F1" in "".join(calls)), (3, {"n64": "Nintendo 64"}, True), "fetched every page")
+n = len(calls)
+eq((len(dp.quiver()["items"]), len(calls)), (3, n), "served from the cache")
+dp._qv_get = offline
+d = dp.quiver(refresh=True)
+eq((len(d["items"]), "offline" in d["stale"]), (3, True), "stale cache when the refresh fails")
+dp.QV_CACHE, dp._qv_get = real_cache, real_get
+
 # --- Flatpak bundles
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-linux.tar.gz", "Game.flatpakref"))["name"], "Game-x86_64.flatpak", "bundle beats a tarball")
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-x86_64.AppImage"))["name"], "Game-x86_64.AppImage", "AppImage still wins")

@@ -5,7 +5,7 @@
 # SedotDeck
 
 **One place to keep every AppImage, Flatpak bundle and PC port on your Steam Deck up to date.**<br>
-Paste a release link, search GitHub by a game's name, or pick a recomp from [Recomp Haven](https://recomphaven.com/). SedotDeck checks, downloads, verifies and swaps the old version out without breaking your Steam shortcuts.
+Paste a release link, search GitHub by a game's name, or pick a recomp from [Recomp Haven](https://recomphaven.com/) or the [Quiver](https://quiverlauncher.com/) catalog. SedotDeck checks, downloads, verifies and swaps the old version out without breaking your Steam shortcuts.
 
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1a9fff?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
@@ -13,7 +13,7 @@ Paste a release link, search GitHub by a game's name, or pick a recomp from [Rec
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-[Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
+[Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Quiver](#quiver-catalog) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
 
 <img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
 
@@ -30,6 +30,7 @@ Paste a release link, search GitHub by a game's name, or pick a recomp from [Rec
 - **Picks the right Linux file by itself**: an AppImage first, then a `.flatpak` bundle, then a `linux`/`steamdeck` build in a zip or tar. Windows, macOS and ARM builds are skipped.
 - **Discover**: search GitHub for a game or port by name and see each project's stars before you add it.
 - **Recomp Haven tab**: hundreds of recomps and PC ports with a Linux release, filterable by tier and system.
+- **Quiver tab**: ports and recomps from the [quiverlauncher.com](https://quiverlauncher.com/) catalog with a verified Linux release, filterable by system and AI use.
 - **File paths never change**, so Steam shortcuts keep working after updates. **Add to Steam** works for AppImages, Flatpaks, folder ports and Windows `.exe` games through Proton.
 - **AppImages you already have** in `~/Applications` are recognized and updated in place.
 - **Safe**: SHA-256 verification, a `.old` backup with **Rollback**, and saves and configs in port folders are never touched.
@@ -85,7 +86,7 @@ Open **SedotDeck** from the app menu (*Utilities*). The script also removes an o
 
 ## Using it
 
-1. Press **Add app** and paste the repository link (`owner/repo` works too), search for it under **Discover**, or press **Add** in the **Recomp Haven** tab.
+1. Press **Add app** and paste the repository link (`owner/repo` works too), search for it under **Discover**, or press **Add** in the **Recomp Haven** or **Quiver** tab.
 2. The preview shows which file will be downloaded. Wrong one? Open **Advanced** and pick the right file.
 3. **Install**. From then on, **Update all** is enough.
 4. **⋯** → **Add to Steam**, once (in Desktop Mode, close Steam first; see the [FAQ](#faq)).
@@ -125,6 +126,15 @@ Without a GitHub token, GitHub allows 10 searches a minute.
 - Sort by tier, system (grouped under a heading per console), stars, name or newest release.
 - **Add** puts it in **My apps**; **Details ↗** opens its page on recomphaven.com.
 - Projects that hand out game files (ROMs or ISOs) are not shown. Every recomp needs your own copy of the game.
+
+## Quiver catalog
+
+[quiverlauncher.com](https://quiverlauncher.com/) is the community catalog behind [Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher). SedotDeck's **Quiver** tab reads its public API and lists the apps with a Linux release that Quiver has verified, on GitHub or GitLab. SedotDeck isn't part of Quiver, and it doesn't use Quiver's name or logo for itself.
+
+- Search by game, project or developer, filter by **system** or by how much **AI** went into the project (as the catalog labels it: no AI, AI-assisted or AI-generated).
+- Sort by newly added, newest release, most recommended, system or name. Player reports from the site (how many recommend it or report it broken) show on each card.
+- **Add** puts it in **My apps**; **Details ↗** opens its page on quiverlauncher.com.
+- Every port needs your own copy of the game.
 
 ## Folder ports
 
@@ -212,9 +222,10 @@ On start, SedotDeck asks GitHub for its newest release (at most every 6 hours). 
 
 - App list and settings: `~/.config/sedotdeck/config.json` (moved from `~/.config/deckport` if you used DeckPort)
 - Recomp Haven cache (one day): `~/.config/sedotdeck/recomphaven.json`
+- Quiver catalog cache (one day): `~/.config/sedotdeck/quiver.json`
 - Games and apps: `~/Applications/` (change it in **Settings**)
 
-SedotDeck sends no telemetry. It only contacts the forge APIs where releases live, GitHub's search when you use Discover, and Recomp Haven when its tab is open.
+SedotDeck sends no telemetry. It only contacts the forge APIs where releases live, GitHub's search when you use Discover, and Recomp Haven or quiverlauncher.com when their tab is open.
 </details>
 
 ## How it works
@@ -232,6 +243,7 @@ flowchart LR
   P -- "flatpak install --user" --> K["Flatpak"]
   P -- "Add to Steam" --> V["Steam shortcuts.vdf"]
   R["Recomp Haven"] -- "recomp list" --> P
+  Q["quiverlauncher.com"] -- "catalog API" --> P
   P <--> C["~/.config/sedotdeck"]
 ```
 
@@ -267,6 +279,8 @@ So far every commit was made with Claude and is marked `Co-Authored-By: Claude`,
 | Recomp Haven tab: the list, tiers, summaries, system labels and logo | [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) (MIT). Downloaded from its repository when the tab is opened, not copied into SedotDeck. |
 | Recomp Haven's base data | [Recompendium](https://github.com/nio03/unricopie) (MIT) |
 | Box art in the Recomp Haven tab | Belongs to each game's publisher; collected by Recomp Haven from [libretro thumbnails](https://thumbnails.libretro.com/) and Wikipedia |
+| Quiver tab: the list, descriptions, AI-use labels, player reports and verified releases | The [quiverlauncher.com](https://quiverlauncher.com/) catalog by Thomas Georgiadis ([Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher)). Quiver's name and logo are its own marks. |
+| Box art in the Quiver tab | Belongs to each game's publisher; collected by Quiver, mostly from [SteamGridDB](https://www.steamgriddb.com/) |
 | Release info and the Discover search | The public APIs of GitHub, GitLab, Codeberg, Gitea and Forgejo |
 | The emulators, recomps and ports you install | Their own developers. SedotDeck only downloads their releases; support them in their repositories. |
 
