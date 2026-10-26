@@ -121,13 +121,12 @@ jobs:
         with:
           name: decky
           path: dist
-      # The notes are the annotated tag's message; a tag with a dash (v0.1.0-alpha) is a pre-release.
+      # The notes are the annotated tag's message. Every release, alpha included, is marked Latest.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
           gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .message > notes.md || echo "SedotDeck $GITHUB_REF_NAME" > notes.md
-          pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" dist/SedotDeck-x86_64.AppImage dist/SedotDeck-decky-*.zip \
-            --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --notes-file notes.md $pre
+            --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --notes-file notes.md --latest
