@@ -41,7 +41,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.0.1-alpha"
+VERSION = "0.0.2-alpha"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sedotdeck"
 LEGACY_CONFIG_DIR = CONFIG_DIR.with_name("deckport")  # SedotDeck was called DeckPort before 0.0.1-alpha
 CONFIG_FILE = CONFIG_DIR / "config.json"
