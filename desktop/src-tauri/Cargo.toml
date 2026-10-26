@@ -3,6 +3,7 @@ name = "sedotdeck"
 version = "0.0.1-alpha"
 description = "SedotDeck desktop app: AppImage & PC port updater for Steam Deck"
 authors = ["intermission88"]
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]

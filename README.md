@@ -11,8 +11,9 @@ Paste a release link, search GitHub by a game's name, or pick a recomp from [Rec
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
 ![Sources](https://img.shields.io/badge/GitHub%20·%20GitLab%20·%20Codeberg%20·%20Gitea%20·%20Forgejo-23272e?style=flat-square)
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
+![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-[Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit)
+[Install](#install) · [Using it](#using-it) · [Discover](#discover-search-github) · [Recomp Haven](#recomp-haven) · [Folder ports](#folder-ports) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
 
 <img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
 
@@ -299,3 +300,7 @@ So far every commit was made with Claude and is marked `Co-Authored-By: Claude`,
 ### Trademarks
 
 Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is a fan-made tool and isn't affiliated with or endorsed by Valve, Decky Loader, Recomp Haven, Obtainium or any game publisher.
+
+## License
+
+SedotDeck is released under the [MIT License](LICENSE). That covers SedotDeck's own code, docs and logo. The projects, data and box art listed in [Credit](#credit) keep their own licenses, and the apps you install with SedotDeck are under their developers' licenses.

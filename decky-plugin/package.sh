@@ -16,7 +16,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 P="$STAGE/SedotDeck"
 mkdir -p "$P/dist" "$P/py_modules" "$OUT"
-cp plugin.json main.py "$P/"
+cp plugin.json main.py "$ROOT/LICENSE" "$P/"
 # Keep the plugin's version in step with sedotdeck.py.
 sed "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json > "$P/package.json"
 cp dist/index.js "$P/dist/"
