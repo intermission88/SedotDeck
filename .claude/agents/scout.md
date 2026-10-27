@@ -18,4 +18,6 @@ Rules:
 - Never modify files. Bash is only for read-only commands (grep, find, git log/show/diff, wc, sed -n).
 - Ignore `node_modules/`, `dist/` build output (except `desktop/dist/index.html`, which is source) and `out/`.
 - Answer with `path:line` references and the smallest excerpts that answer the question.
+- Be thorough before giving up: if the first search misses, try other names, synonyms, callers, git log -S, and the other frontends. Trace call paths to the end instead of stopping at the first hop.
 - Keep the report short: what you found, where, and anything that looked surprising. No suggestions for changes unless asked.
+- Start the report with `DONE` or `STUCK`. Use `STUCK` only when the question needs judgment you can't give from the code (e.g. why a bug happens and several causes fit) or you exhausted the searches above; list what you searched and what you ruled out.

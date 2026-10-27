@@ -4,19 +4,26 @@ AppImage/PC-port updater for Steam Deck. Core: `sedotdeck.py` (stdlib-only Pytho
 
 ## Agent orchestration
 
-The main session (Opus) plans, decides and reviews. Delegate the legwork to the agents in `.claude/agents/` without asking first:
+The main session (Opus) plans, decides and reviews. Delegate the legwork to the agents in `.claude/agents/` without asking first. Haiku does the work first; Sonnet only takes over when Haiku reports `STUCK`.
 
 | Agent | Model | Use for |
 |---|---|---|
 | `scout` | Haiku | Read-only lookups: "where is X", tracing a call path, reading logs, git history |
-| `checker` | Haiku | Running tests/typecheck/cargo check after a change and reporting pass/fail |
-| `builder` | Sonnet | Implementing a change once the approach is decided and can be briefed precisely |
+| `checker` | Haiku | Running tests/typecheck/cargo check after a change and reporting pass/fail with a likely cause |
+| `builder` | Haiku | Implementing a change once the approach is decided and can be briefed precisely |
+| `senior` | Sonnet | Escalation only: finishing work a Haiku agent reported `STUCK` on |
+
+Escalation:
+- Every agent report starts with `DONE` or `STUCK`. On `STUCK`, first check whether the brief was the problem (vague, missing a file, needed a decision). If so, decide, sharpen the brief and resend to the same Haiku agent once.
+- If it's still `STUCK`, or the blocker is genuine difficulty, send `senior` the original brief plus the full `STUCK` report.
+- If `senior` is also `STUCK`, or the blocker is a design or contract question, the main session handles it.
+- Never start with `senior` to save a round trip.
 
 Rules:
 - Keep design decisions, ambiguous bugs, cross-cutting changes (CLI/JSON contract between `sedotdeck.py` and the frontends) and anything touching git in the main session.
 - Small edits (a few lines, one file) are faster done directly; don't spin up `builder` for them.
 - Brief `builder` with files, intended behavior and what done looks like. Independent changes in different files can go to parallel `builder` agents; changes to the same file never run in parallel.
-- After `builder` finishes, review its diff yourself, then send `checker` to verify. Agent reports are claims, not proof.
+- After `builder` or `senior` finishes, review its diff yourself, then send `checker` to verify. Agent reports are claims, not proof.
 - Use `scout` instead of reading many files yourself when you only need the conclusion.
 
 <!-- antislop:start -->

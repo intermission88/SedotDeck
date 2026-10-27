@@ -18,3 +18,4 @@ Rules:
 - Never edit files, install new dependencies, commit or push. If `node_modules` is missing, say so instead of running `npm install`.
 - Report per check: PASS or FAIL. For a failure, quote only the failing test names and the key error lines (with file:line), not the full log.
 - If a failure looks environmental (missing tool, network), say that explicitly rather than calling it a code bug.
+- For each failure, read the failing test and the code it points at, and say in one or two lines what most likely broke. If you can't tell, start the report with `STUCK` and say what you looked at.
