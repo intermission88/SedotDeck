@@ -1268,15 +1268,15 @@ def scan_folder(cfg):
 
 # --------------------------------------------------------------------------- GitHub search
 
-def github_search(query, token="", tracked=(), by_stars=False):
+def github_search(query, token="", tracked=(), sort="best"):
     """Repositories whose name or description match query, so a port can be found by the game's name.
-    GitHub's best match by default: sorting by stars alone surfaces spam repos that mention every game."""
+    Sort is "best" (GitHub's best match), "stars" or "updated": stars alone surfaces spam repos that mention every game."""
     query = " ".join(str(query or "").split())[:200]
     if len(query) < 2:
         raise ValueError("Type at least two characters to search")
     params = {"q": query + " in:name,description fork:false", "per_page": 30}
-    if by_stars:
-        params.update(sort="stars", order="desc")
+    if sort in ("stars", "updated"):
+        params.update(sort=sort, order="desc")
     url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode(params)
     data = http_json(url, token, "github")
     tracked = {t.lower() for t in tracked}
@@ -1541,6 +1541,31 @@ def _qv_all(path):
     return items
 
 
+def _known_stars():
+    """{key: stars} from the Recomp Haven and Recomp Launcher lists already saved on disk; nothing is fetched."""
+    known = {}
+    for path in (RH_CACHE, RL_CACHE):
+        try:
+            items = json.loads(path.read_text()).get("items")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for x in items if isinstance(items, list) else []:
+            if not isinstance(x, dict) or not x.get("key"):
+                continue
+            try:
+                known[x["key"]] = max(int(x.get("stars") or 0), known.get(x["key"], 0))
+            except (TypeError, ValueError):
+                pass
+    return known
+
+
+def _qv_out(data, stale):
+    """The saved Quiver list with the stars another catalog knows for each repository (0 when none)."""
+    known = _known_stars()
+    items = [dict(x, stars=known.get(x.get("key"), 0)) for x in data.get("items") or []]
+    return dict(data, items=items, site=QV_SITE, stale=stale)
+
+
 def quiver(refresh=False):
     """{"items", "consoles", "fetched_at", "site", "stale"}: the cached catalog, refetched once a day or on request."""
     cache = None
@@ -1549,13 +1574,13 @@ def quiver(refresh=False):
     except (OSError, ValueError):
         pass
     if cache and not refresh and time.time() - cache.get("fetched_at", 0) < QV_MAX_AGE:
-        return dict(cache, site=QV_SITE, stale="")
+        return _qv_out(cache, "")
     try:
         items = parse_quiver(_qv_all("/apps?limit=100&os=linux&sort=added"), _qv_all("/release-status?limit=100"))
         data = {"fetched_at": time.time(), "items": items, "consoles": {}}
     except Exception as e:
         if cache:
-            return dict(cache, site=QV_SITE, stale="Couldn't refresh (%s), showing the saved list" % e)
+            return _qv_out(cache, "Couldn't refresh (%s), showing the saved list" % e)
         raise RuntimeError("Couldn't load the Quiver catalog: %s" % e)
     try:
         data["consoles"] = {str(c["id"]): str(c.get("name") or c["id"]) for c in _qv_get("/facets").get("consoles") or []
@@ -1566,7 +1591,78 @@ def quiver(refresh=False):
     tmp = QV_CACHE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data))
     os.replace(tmp, QV_CACHE)
-    return dict(data, site=QV_SITE, stale="")
+    return _qv_out(data, "")
+
+
+# --------------------------------------------------------------------------- Recomp Launcher catalog
+
+# recomplauncher.com (RecompLauncher) lists PC recomps from each developer's GitHub; SedotDeck reads its public
+# pc-catalog.json and keeps it for a day. Its logo isn't used.
+RL_SITE = "https://recomplauncher.com/"
+RL_DATA_URL = RL_SITE + "pc-catalog.json"
+RL_CACHE = CONFIG_DIR / "recomplauncher.json"
+RL_MAX_AGE = 24 * 3600
+
+
+def _rl_int(v):
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def parse_recomplauncher(data):
+    """Entries SedotDeck can install from the catalog (a Linux release on GitHub), most stars first."""
+    out = []
+    for e in data.get("apps") or []:
+        if not isinstance(e, dict) or "linux" not in (e.get("systems") or []) or e.get("soon") or not e.get("version"):
+            continue
+        repo = str(e.get("repo") or "")
+        if not valid_repo(repo):
+            continue
+        cover = str(e.get("cover") or "")
+        out.append({
+            "id": str(e.get("id") or ""), "title": str(e.get("name") or repo)[:200], "game": str(e.get("game") or "")[:200],
+            "console": str(e.get("origin") or ""), "repo": repo, "key": ("github.com/" + repo).lower(),
+            "version": str(e["version"]), "released": str(e.get("released") or ""), "added": str(e.get("added") or ""),
+            "stars": _rl_int(e.get("stars")), "downloads": _rl_int(e.get("downloads")),
+            "developer": str(e.get("author") or "")[:120], "summary": str(e.get("blurb") or "")[:600],
+            "needs": str(e.get("needs") or "")[:300],
+            "cover": cover if re.fullmatch(r"https://[^\s\"'<>()]+", cover) else "",
+        })
+    out.sort(key=lambda x: -x["stars"])
+    return out
+
+
+def _rl_get():
+    req = urllib.request.Request(RL_DATA_URL, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with _opener.open(req, timeout=30) as r:
+        return json.loads(r.read(16 * 1024 * 1024).decode("utf-8"))
+
+
+def recomplauncher(refresh=False):
+    """{"items", "consoles", "fetched_at", "site", "stale"}: the cached catalog, refetched once a day or on request."""
+    cache = None
+    try:
+        cache = json.loads(RL_CACHE.read_text())
+    except (OSError, ValueError):
+        pass
+    if cache and not refresh and time.time() - cache.get("fetched_at", 0) < RL_MAX_AGE:
+        return dict(cache, site=RL_SITE, stale="")
+    try:
+        raw = _rl_get()
+        data = {"fetched_at": time.time(), "items": parse_recomplauncher(raw),
+                "consoles": {str(o["id"]): str(o.get("name") or o["id"]) for o in raw.get("origins") or []
+                             if isinstance(o, dict) and o.get("id")}}
+    except Exception as e:
+        if cache:
+            return dict(cache, site=RL_SITE, stale="Couldn't refresh (%s), showing the saved list" % e)
+        raise RuntimeError("Couldn't load the Recomp Launcher catalog: %s" % e)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = RL_CACHE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, RL_CACHE)
+    return dict(data, site=RL_SITE, stale="")
 
 
 # --------------------------------------------------------------------------- Steam shortcuts
@@ -2023,6 +2119,8 @@ class Server:
                 app["rh_id"] = str(body["rh_id"])[:120]
             if body.get("qv_id"):
                 app["qv_id"] = str(body["qv_id"])[:120]
+            if body.get("rl_id"):
+                app["rl_id"] = str(body["rl_id"])[:120]
             with _lock:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
@@ -2179,9 +2277,12 @@ class Server:
         if path == "/api/quiver":
             return quiver(bool(body.get("refresh")))
 
+        if path == "/api/recomplauncher":
+            return recomplauncher(bool(body.get("refresh")))
+
         if path == "/api/github_search":
             tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
-            return github_search(body.get("q"), self.gh_token(), tracked, body.get("sort") == "stars")
+            return github_search(body.get("q"), self.gh_token(), tracked, str(body.get("sort") or "best"))
 
         if path == "/api/self_update_check":
             info = self_update_check(self.gh_token(), bool(body.get("refresh")))
@@ -2198,6 +2299,8 @@ class Server:
             def fn(job):
                 def prog(done, total):
                     job["progress"] = (done / total) if total else 0
+                    job["done"] = done
+                    job["total"] = total
                 job["message"] = "Installed %s. Restart SedotDeck to use it." % self_update(self.gh_token(), prog)
             if not self.jobs.start("__self__", "Updating SedotDeck", fn):
                 raise ValueError("SedotDeck is already updating")
@@ -2735,6 +2838,9 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .bar.wait i{opacity:.4}
 .jobtxt{font-size:12.5px;color:var(--dim);margin-top:4px}
 .done-check{color:var(--good);font-size:13px;font-weight:600}
+#selfProg{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-height:44px;padding:4px 8px;font-size:12.5px;font-weight:400;color:var(--dim)}
+#selfProg .bar{display:block;width:120px;max-width:100%}
+.su-prog{display:flex;flex-direction:column;gap:8px}
 
 /* ---- select mode */
 body.selecting .app{cursor:pointer;user-select:none;padding-left:46px}
@@ -2847,6 +2953,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .rh-body{min-width:0;display:flex;flex-direction:column;gap:4px;flex:1}
 .rh-title{font-weight:600;font-size:15px;line-height:1.3}
 .rh-meta{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;font-size:13px;color:var(--dim)}
+.rh-stars{color:var(--text);font-weight:600;white-space:nowrap}
 .rh-req{font-size:12.5px;color:var(--faint);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .rh-act{display:flex;gap:10px;align-items:center;margin-top:auto;flex-wrap:wrap}
 .rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
@@ -2855,10 +2962,18 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .qv-rep{font-size:12.5px;color:var(--faint)}
 .qv-rep b{color:var(--text);font-weight:600}
 
+/* ---- controller and D-pad: keep the focused control clear of the sticky header and the hint strip */
+main :is(a,button,input,select,textarea,summary,[tabindex]){scroll-margin-top:84px;scroll-margin-bottom:24px}
+.pad :focus{outline:3px solid var(--accent);outline-offset:2px}
+.padhint{position:fixed;left:0;right:0;bottom:0;z-index:10;padding:6px 16px;background:var(--panel);border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--dim)}
+body:has(.padhint:not([hidden])) main{padding-bottom:96px}
+
 @media (max-width:760px){
-  header{padding:10px 12px} main{padding:12px} .brand .sub{display:none}
+  header{padding:10px 12px} main{padding:12px} .brand .sub:not(:has(#selfProg)){display:none}
   .app,.repo-row{grid-template-columns:minmax(0,1fr)} .actions{justify-content:flex-start}
   .rh-grid{grid-template-columns:1fr}
+  .tabs{overflow-x:auto;scrollbar-width:none} .tabs>button{flex:none}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
@@ -2887,12 +3002,13 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <button type="button" role="tab" data-tab="gh">Discover</button>
   <button type="button" role="tab" data-tab="rh"><img src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">Recomp Haven</button>
   <button type="button" role="tab" data-tab="qv">Quiver</button>
+  <button type="button" role="tab" data-tab="rl">Recomp Launcher</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
 <section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
 <section id="vGh" hidden>
   <form class="search" id="ghForm"><input type="search" id="ghQ" placeholder="Search GitHub, e.g. god of war 3 or bloodborne" autocomplete="off" spellcheck="false" aria-label="Search GitHub">
-    <select id="ghSort" aria-label="Sort results"><option value="best">Best match</option><option value="stars">Most stars</option></select>
+    <select id="ghSort" aria-label="Sort results"><option value="best">Best match</option><option value="stars">Most stars</option><option value="updated">Recently updated</option></select>
     <button class="primary" type="submit">Search</button></form>
   <div class="hint" id="ghInfo">Finds GitHub projects by name or description. Add looks at the latest release before anything downloads.</div>
   <div id="ghList" class="list"></div>
@@ -2917,11 +3033,23 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <div class="rh-tools"><input type="text" id="qvQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search the Quiver catalog">
     <label>System<select id="qvCon"><option value="">All systems</option></select></label>
     <label>Sort<select id="qvSort">
-      <option value="added">Newly added</option><option value="released">Newest release</option><option value="recommended">Most recommended</option>
+      <option value="added">Newly added</option><option value="released">Newest release</option><option value="recommended">Most recommended</option><option value="stars">Most stars</option>
       <option value="system">System</option><option value="name">Name</option></select></label></div>
   <div class="summary" id="qvChips"></div>
   <div class="hint" id="qvInfo"></div>
   <div id="qvList" class="rh-grid"></div>
+</section>
+<section id="vRl" hidden>
+  <div class="rh-head">
+    <div><b>Recomp Launcher</b><span class="hint">PC recomps with a Linux release from the catalog behind RecompLauncher (recomplauncher.com); SedotDeck isn't part of it. Each entry links to its developer's GitHub. Box art belongs to each game's publisher, and every recomp needs your own copy of the game.</span></div>
+    <a class="rh-site" href="https://recomplauncher.com/" target="_blank" rel="noopener">recomplauncher.com ↗</a></div>
+  <div class="rh-tools"><input type="text" id="rlQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search the Recomp Launcher catalog">
+    <label>System<select id="rlCon"><option value="">All systems</option></select></label>
+    <label>Sort<select id="rlSort">
+      <option value="stars">Most stars</option><option value="released">Newest release</option><option value="added">Newly added</option>
+      <option value="system">System</option><option value="name">Name</option></select></label></div>
+  <div class="hint" id="rlInfo"></div>
+  <div id="rlList" class="rh-grid"></div>
 </section>
 </main>
 <div id="selbar" class="selbar" hidden>
@@ -3012,10 +3140,11 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
   <h2 id="suTitle"></h2>
   <div class="hint" id="suMeta"></div>
   <div class="notes" id="suBody"></div>
-  <div class="btns"><button type="button" class="ghost" id="suSkip">Skip this version</button><button type="button" class="ghost" onclick="dSelf.close()">Later</button><button type="button" class="primary" id="suGo">Update now</button></div>
+  <div class="btns"><button type="button" class="ghost" id="suSkip">Skip this version</button><button type="button" class="ghost" id="suLater">Later</button><button type="button" class="primary" id="suGo">Update now</button><button type="button" class="ghost" id="suClose">Close</button><button type="button" class="primary" id="suPrimary">Keep using SedotDeck</button></div>
 </form></dialog>
 <div id="menu" class="menu" role="menu" hidden></div>
 <div id="toast"></div>
+<div id="padHint" class="padhint" aria-hidden="true" hidden>A Select · B Back · X App menu · Y Search · LB / RB Tabs · Start Settings</div>
 
 <script>
 const TOKEN="__TOKEN__";
@@ -3119,7 +3248,7 @@ function render(){
   // Remember installs that just finished, for the check-mark animation.
   for(const [id,p] of Object.entries(prevJobs)){
     const j=S.jobs[id];
-    if(id=="__self__"){if(p.state=="running"&&j&&j.state!="running")toast(j.message,j.state!="done");continue}
+    if(id=="__self__"){if(p.state=="running"&&j&&j.state!="running")selfEnd(j);continue}
     if(p.state=="running"&&p.label!="Checking"&&j&&j.state=="done") doneAt[id]=Date.now();
   }
   prevJobs=S.jobs||{};
@@ -3134,7 +3263,7 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a> and the <a href="#" data-tab="qv">Quiver catalog</a>.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a>, the <a href="#" data-tab="qv">Quiver catalog</a> and <a href="#" data-tab="rl">Recomp Launcher</a>.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
@@ -3150,13 +3279,22 @@ function render(){
   // The Recomp Haven tab marks what's in My apps; redraw it only when that changes.
   if(TAB=="rh"&&RH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rhKey)renderRh();
   if(TAB=="qv"&&QV.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=qvKey)renderQv();
+  if(TAB=="rl"&&RL.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rlKey)renderRl();
   if(TAB=="gh"&&GH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=ghKey)renderGh();
   if(SEL){for(const id of [...SEL])if(!S.apps.some(a=>a.id==id))SEL.delete(id);renderSel()}
   $("#catList").innerHTML=[...new Set(S.apps.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">`).join("");
-  const self=S.jobs.__self__;
-  $("#sub").textContent=self&&self.state=="running"?`Updating SedotDeck… ${Math.round((self.progress||0)*100)}%`
+  const self=S.jobs.__self__, selfRun=self&&self.state=="running";
+  if(selfRun){selfSample(self.done||0);if(dSelf.open&&selfMode=="progress")selfPaint()}
+  // While SedotDeck downloads its own update, the subtitle is a button that opens the progress view.
+  if(selfRun){
+    if(!$("#selfProg"))$("#sub").innerHTML='<button type="button" class="ghost" id="selfProg"><span></span><span class="bar"><i></i></span></button>';
+    $("#selfProg>span").textContent=`Updating SedotDeck… ${Math.round((self.progress||0)*100)}%`;
+    $("#selfProg i").style.transform=`scaleX(${(self.progress||0).toFixed(3)})`;
+  }
+  else $("#sub").textContent=selfMode=="done"?`SedotDeck ${selfTag} installed. Restart to use it.`
     :checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"Keeps your AppImages, Flatpaks and PC ports up to date";
 }
+$("#sub").addEventListener("click",e=>{if(e.target.closest("#selfProg"))openSelf()});
 $("#summary").addEventListener("click",e=>{
   const c=e.target.closest("button[data-f]");if(!c)return;
   FILTER=c.dataset.f;try{localStorage.setItem("sedotdeck.filter",FILTER)}catch(err){}
@@ -3205,6 +3343,7 @@ async function doAction(k,a,el){
   else if(k=="category")openCat([a.id]);
   else if(k=="rhpage")openUrl(RH.site+"#"+encodeURIComponent(a.rh_id));
   else if(k=="qvpage")openUrl(QV.site+"apps/"+encodeURIComponent(a.qv_id));
+  else if(k=="rlpage")openUrl(RL.site+"game/"+encodeURIComponent(a.rl_id));
 }
 function openUrl(u){APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
 function addSteam(a){
@@ -3270,6 +3409,7 @@ function openMenu(btn,a){
   rows.push(it("release","Open release page"));
   if(a.rh_id)rows.push(it("rhpage","View on Recomp Haven"));
   if(a.qv_id)rows.push(it("qvpage","View on quiverlauncher.com"));
+  if(a.rl_id)rows.push(it("rlpage","View on recomplauncher.com"));
   rows.push("<hr>",it("category","Category…",{hint:a.category?esc(a.category):""}),it("edit","Edit"),it("remove","Remove…",{danger:true}));
   menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
@@ -3458,13 +3598,16 @@ let TAB="apps";
 function setTab(t){
   TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$(".tabs-end").hidden=t!="apps";
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$("#vRl").hidden=t!="rl";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
   if(t=="rh")loadRh(false);
   if(t=="qv")loadQv(false);
+  if(t=="rl")loadRl(false);
   if(t=="gh")$("#ghQ").focus();
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
+
+const stars=n=>n>=1e3?(n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,"")+"k":String(n);
 
 // ---- Recomp Haven
 const TIERS={S:["Definitive","#f5c542"],A:["Complete","#8bd17c"],B:["Playable","#6fb8ff"],C:["Rough","#f0a35e"],D:["Experimental","#a3a9b8"]};
@@ -3494,7 +3637,7 @@ function rhCard(x,tracked){
       ${t?`<span class="rh-tier" style="--tc:${t[1]}" title="Tier ${x.tier}: ${t[0]}">${x.tier}</span>`:""}</div>
     <div class="rh-body">
       <div class="rh-title">${esc(x.title)}</div>
-      <div class="rh-meta"><span class="tag" title="${esc(c.label)}">${esc(c.short)}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span> · ${esc(STAGES[x.stage]||x.stage)}${x.deck?' <span class="tag ok">Steam Deck</span>':""}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(c.label)}">${esc(c.short)}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span> · ${esc(STAGES[x.stage]||x.stage)}${x.deck?' <span class="tag ok">Steam Deck</span>':""}${x.stars>0?`<span class="rh-stars" title="${x.stars.toLocaleString()} GitHub stars">★ ${stars(x.stars)}</span>`:""}</div>
       ${x.requires?`<div class="rh-req">${esc(x.requires)}</div>`:""}
       <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-rh="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
         <a href="${esc(RH.site)}#${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
@@ -3556,6 +3699,7 @@ const QV_SORT={
   added:(a,b)=>b.added-a.added,
   released:(a,b)=>b.released-a.released,
   recommended:(a,b)=>b.recommended-a.recommended||a.broken-b.broken||b.added-a.added,
+  stars:(a,b)=>b.stars-a.stars||b.added-a.added,
   system:(a,b)=>qvCon(a.console).localeCompare(qvCon(b.console))||a.title.localeCompare(b.title),
   name:(a,b)=>a.title.localeCompare(b.title),
 };
@@ -3567,7 +3711,7 @@ function qvCard(x,tracked){
     <div class="rh-cover">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
     <div class="rh-body">
       <div class="rh-title">${esc(x.title)}</div>
-      <div class="rh-meta"><span class="tag" title="${esc(qvCon(x.console))}">${esc((x.console||"?").toUpperCase())}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span>${AI_USE[x.ai]?" · "+AI_USE[x.ai]:""}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(qvCon(x.console))}">${esc((x.console||"?").toUpperCase())}</span>${esc(x.project)} · <span class="mono">${esc(short(x.version))}</span>${AI_USE[x.ai]?" · "+AI_USE[x.ai]:""}${x.stars>0?`<span class="rh-stars" title="${x.stars.toLocaleString()} GitHub stars">★ ${stars(x.stars)}</span>`:""}</div>
       ${x.summary?`<div class="rh-req" title="${esc(x.summary)}">${esc(x.summary)}</div>`:""}
       ${rep?`<div class="qv-rep">${rep}</div>`:""}
       <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-qv="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
@@ -3612,10 +3756,72 @@ $("#qvList").onclick=async e=>{
   qvAdding.delete(x.id);renderQv();
 };
 
-// ---- Discover: find a project on GitHub by the game's name, most stars first
+// ---- Recomp Launcher catalog (recomplauncher.com)
+let RL={items:null,site:"https://recomplauncher.com/",consoles:{}},rlLoading=false,rlAdding=new Set(),rlKey="";
+try{$("#rlSort").value=localStorage.getItem("sedotdeck.rlsort")||"stars"}catch(e){}
+async function loadRl(refresh){
+  if(rlLoading||(RL.items&&!refresh))return renderRl();
+  rlLoading=true;$("#rlInfo").textContent="Loading the catalog from recomplauncher.com…";
+  try{RL=await api("/api/recomplauncher",{refresh})}catch(e){$("#rlInfo").textContent=e.message}
+  rlLoading=false;renderRl();
+}
+const rlCon=k=>RL.consoles[k]||k||"Other";
+const RL_SORT={
+  stars:(a,b)=>b.stars-a.stars,
+  released:(a,b)=>String(b.released).localeCompare(String(a.released))||b.stars-a.stars,
+  added:(a,b)=>String(b.added).localeCompare(String(a.added))||b.stars-a.stars,
+  system:(a,b)=>rlCon(a.console).localeCompare(rlCon(b.console))||a.title.localeCompare(b.title),
+  name:(a,b)=>a.title.localeCompare(b.title),
+};
+function rlCard(x,tracked){
+  const added=tracked.has(x.key),busy=rlAdding.has(x.id);
+  const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]).join("").toUpperCase();
+  return `<div class="rh-card">
+    <div class="rh-cover">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
+    <div class="rh-body">
+      <div class="rh-title">${esc(x.title)}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(rlCon(x.console))}">${esc((x.console||"?").toUpperCase())}</span>${x.game?esc(x.game)+" · ":""}<span class="mono">${esc(short(x.version))}</span>${x.stars>0?`<span class="rh-stars" title="${x.stars.toLocaleString()} GitHub stars">★ ${stars(x.stars)}</span>`:""}</div>
+      ${x.summary?`<div class="rh-req" title="${esc(x.summary)}">${esc(x.summary)}</div>`:""}
+      <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-rl="${esc(x.id)}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}
+        <a href="${esc(RL.site)}game/${encodeURIComponent(x.id)}" target="_blank" rel="noopener">Details ↗</a></div>
+    </div></div>`;
+}
+function renderRl(){
+  if(!RL.items)return;
+  rlKey=S.apps.map(a=>a.host+"/"+a.repo).join();
+  const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
+  const sel=$("#rlCon"),cur=sel.value,per={};
+  RL.items.forEach(x=>per[x.console]=(per[x.console]||0)+1);
+  sel.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>rlCon(a).localeCompare(rlCon(b)))
+    .map(k=>`<option value="${esc(k)}">${esc(rlCon(k))} (${per[k]})</option>`).join("");
+  sel.value=per[cur]?cur:"";
+  const q=$("#rlQ").value.trim().toLowerCase(),con=sel.value,sort=$("#rlSort").value;
+  const list=RL.items.filter(x=>(!con||x.console==con)
+    &&(!q||[x.title,x.game,x.developer,x.repo,rlCon(x.console),x.console].join(" ").toLowerCase().includes(q))).sort(RL_SORT[sort]||RL_SORT.stars);
+  const when=RL.fetched_at?`Updated ${ago(RL.fetched_at)}`:"";
+  $("#rlInfo").innerHTML=`${list.length} of ${RL.items.length} recomps with a Linux release · ${when} · <a href="#" id="rlRefresh">Refresh</a>`+(RL.stale?` · ${esc(RL.stale)}`:"");
+  if(!list.length){$("#rlList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No recomps match these filters. Clear the search or pick All systems.</div>';return}
+  if(sort=="system"&&!con){
+    const groups=[...new Set(list.map(x=>x.console))];
+    $("#rlList").innerHTML=groups.map(k=>{const g=list.filter(x=>x.console==k);
+      return `<h3 class="group">${esc(rlCon(k))}<span>${g.length}</span></h3>`+g.map(x=>rlCard(x,tracked)).join("")}).join("");
+  }else $("#rlList").innerHTML=list.map(x=>rlCard(x,tracked)).join("");
+}
+$("#rlQ").oninput=renderRl;$("#rlCon").onchange=renderRl;
+$("#rlSort").onchange=()=>{try{localStorage.setItem("sedotdeck.rlsort",$("#rlSort").value)}catch(e){}renderRl()};
+$("#rlInfo").onclick=e=>{if(e.target.id=="rlRefresh"){e.preventDefault();RL.items=null;loadRl(true)}};
+$("#rlList").onclick=async e=>{
+  const b=e.target.closest("[data-rl]");if(!b)return;
+  const x=RL.items.find(i=>i.id==b.dataset.rl);if(!x)return;
+  rlAdding.add(x.id);renderRl();
+  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rl_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  catch(err){toast(err.message,true)}
+  rlAdding.delete(x.id);renderRl();
+};
+
+// ---- Discover: find a project on GitHub by the game's name
 let GH={items:null,q:"",total:0},ghBusy=false,ghKey="";
 $("#ghSort").onchange=()=>{if(GH.items)$("#ghForm").requestSubmit()};
-const stars=n=>n>=1e3?(n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,"")+"k":String(n);
 $("#ghForm").onsubmit=async e=>{
   e.preventDefault();const q=$("#ghQ").value.trim();if(!q||ghBusy)return;
   ghBusy=true;$("#ghInfo").textContent=`Searching GitHub for “${q}”…`;
@@ -3645,18 +3851,66 @@ async function checkSelf(manual){
   if(SELF.newer&&(manual||!SELF.skipped))openSelf();
   else if(manual)toast(`SedotDeck ${SELF.current} is the newest version`);
 }
+// The dialog shows one of four views: the offer (selfMode null), "progress", "done" or "error".
+let selfMode=null, selfTag="", selfErr="", selfS=[];
+const mbs=b=>((b||0)/1e6).toFixed(1);
+const selfCan=()=>SELF.method=="appimage"||SELF.method=="script";
 function openSelf(){
-  const can=SELF.method=="appimage"||SELF.method=="script";
-  $("#suTitle").textContent=`SedotDeck ${SELF.latest} is available`;
+  if(S.jobs.__self__&&S.jobs.__self__.state=="running")selfMode="progress";
+  selfPaint();
+  if(!dSelf.open)dSelf.showModal();
+}
+function selfPaint(){
+  const m=selfMode, offer=!m, prog=m=="progress", done=m=="done", err=m=="error", j=S.jobs.__self__||{};
+  $("#suTitle").textContent=prog?`Downloading SedotDeck ${SELF.latest}`:done?`SedotDeck ${selfTag} is installed`
+    :err?"The update didn't finish":`SedotDeck ${SELF.latest} is available`;
   $("#suMeta").innerHTML=`You have ${esc(SELF.current)}`+(SELF.published?` · released ${esc(SELF.published.slice(0,10))}`:"")
     +` · <a href="${esc(SELF.url)}" target="_blank" rel="noopener">Release page</a>`
     +(SELF.method=="decky"?" · Update the Decky plugin from Decky's settings.":"");
-  $("#suBody").innerHTML=md(SELF.notes||"")||'<span class="dim">No release notes.</span>';
-  const go=$("#suGo");go.textContent=can?"Update now":"Open release page";
-  go.onclick=()=>{dSelf.close();if(can)act("/api/self_update",{},`Downloading SedotDeck ${SELF.latest}…`);else openUrl(SELF.url)};
-  $("#suSkip").onclick=()=>{dSelf.close();act("/api/self_update_skip",{tag:SELF.latest},`Skipped ${SELF.latest}. You'll be asked again for the next version.`)};
-  dSelf.showModal();
+  const body=$("#suBody");
+  if(offer)body.innerHTML=md(SELF.notes||"")||'<span class="dim">No release notes.</span>';
+  else if(prog){
+    const sp=selfSpeed(), d=j.done||0, t=j.total||0;
+    const txt=(t?`${mbs(d)} of ${mbs(t)} MB`:`${mbs(d)} MB downloaded`)+(sp?` · ${mbs(sp)} MB/s`:"");
+    body.innerHTML=`<div class="su-prog"><div class="bar"><i style="transform:scaleX(${(j.progress||0).toFixed(3)})"></i></div><div class="jobtxt">${txt}</div>`
+      +`<div class="hint">You can keep using SedotDeck while it downloads. Closing the window doesn't stop it: the download finishes first.</div></div>`;
+  }
+  else body.textContent=done?"Restart SedotDeck to use it.":selfErr;
+  for(const id of ["#suSkip","#suLater","#suGo"])$(id).hidden=!offer;
+  $("#suGo").textContent=selfCan()?"Update now":"Open release page";
+  $("#suClose").hidden=!err;
+  $("#suPrimary").hidden=offer;
+  $("#suPrimary").textContent=prog?"Keep using SedotDeck":done?"Close":"Try again";
 }
+// Speed is the change over the last ~3 s of polls, so one slow poll does not make the number jump.
+function selfSample(d){
+  const now=Date.now();
+  if(!selfS.length||selfS[selfS.length-1].d!=d)selfS.push({t:now,d});
+  selfS=selfS.filter(s=>now-s.t<=3000);
+}
+function selfSpeed(){
+  if(selfS.length<2)return 0;
+  const a=selfS[0],b=selfS[selfS.length-1];
+  return b.t>a.t?(b.d-a.d)/((b.t-a.t)/1000):0;
+}
+async function startSelf(){
+  selfMode="progress";selfS=[];selfPaint();
+  try{await api("/api/self_update",{});refresh()}
+  catch(e){selfMode="error";selfErr=e.message;selfPaint()}
+}
+// Called once when the download job ends: the open dialog changes view, a closed one leaves a toast or the header note.
+function selfEnd(j){
+  const ok=j.state=="done";
+  if(ok&&SELF)selfTag=SELF.latest;
+  if(dSelf.open){selfMode=ok?"done":"error";selfErr=j.message||"";selfPaint()}
+  else{selfMode=ok?"done":null;toast(j.message,!ok)}
+}
+dSelf.addEventListener("close",()=>{if(selfMode=="error")selfMode=null});
+$("#suGo").onclick=()=>{if(selfCan())startSelf();else{dSelf.close();openUrl(SELF.url)}};
+$("#suSkip").onclick=()=>{dSelf.close();act("/api/self_update_skip",{tag:SELF.latest},`Skipped ${SELF.latest}. You'll be asked again for the next version.`)};
+$("#suLater").onclick=()=>dSelf.close();
+$("#suClose").onclick=()=>dSelf.close();
+$("#suPrimary").onclick=()=>{if(selfMode=="error")startSelf();else dSelf.close()};
 $("#sSelf").onclick=()=>{dSet.close();checkSelf(true)};
 
 $("#btnSet").onclick=()=>{
@@ -3700,6 +3954,147 @@ $("#sImportFile").onchange=async e=>{
 // In the desktop app, closing the window quits; the button is only for the browser version.
 $("#sQuit").hidden=APP;
 $("#sQuit").onclick=async()=>{try{await api("/api/quit")}catch(e){}document.body.innerHTML='<div class="empty"><b>SedotDeck closed</b>You can close this tab.</div>'};
+// ---- Controller and D-pad: focus moves to the nearest control in the pressed direction
+const FOCUSABLE='a[href],button:not(:disabled),input:not([type=hidden]):not(:disabled),select:not(:disabled),textarea,summary,[tabindex]:not([tabindex="-1"])';
+const topDialog=()=>{const d=document.querySelectorAll("dialog[open]");return d[d.length-1]||null};
+// The topmost open dialog, else the row menu when it's open, else the page.
+function navScope(){return topDialog()||(menu.hidden?document:menu)}
+function shown(el){
+  if(el.closest("dialog:not([open])"))return false;
+  if(el.checkVisibility){if(!el.checkVisibility())return false}
+  else if(!el.getClientRects().length||el.offsetParent===null&&getComputedStyle(el).position!="fixed")return false;
+  // A closed <details> hides its body; only the summary stays reachable.
+  for(let d=el.closest("details:not([open])");d;d=d.parentElement&&d.parentElement.closest("details:not([open])")){
+    const s=d.querySelector(":scope>summary");
+    if(!s||!s.contains(el))return false;
+  }
+  return true;
+}
+const navList=()=>[...navScope().querySelectorAll(FOCUSABLE)].filter(shown);
+function focusEl(el){el.focus({preventScroll:true});el.scrollIntoView({block:"nearest",inline:"nearest"})}
+// Nothing in scope has focus yet: start on the active tab, else the first control.
+function navStart(list){
+  const tab=navScope()===document&&document.querySelector("#tabs .on");
+  const el=list.includes(tab)?tab:list[0];
+  if(el)focusEl(el);
+}
+function navMove(dir){
+  const list=navList(),cur=document.activeElement;
+  if(!list.length)return;
+  if(!list.includes(cur)){navStart(list);return}
+  const h=dir=="left"||dir=="right",s=dir=="right"||dir=="down"?1:-1;
+  const r=cur.getBoundingClientRect(),c=h?r.left+r.width/2:r.top+r.height/2;
+  const k1=h?"left":"top",k2=h?"right":"bottom",a1=h?r.top:r.left,a2=h?r.bottom:r.right;
+  let best=null,score=Infinity;
+  for(const el of list){
+    if(el===cur)continue;
+    const q=el.getBoundingClientRect(),ahead=s*((s>0?q[k1]:q[k2])-c);
+    if(ahead<-1)continue;
+    const b1=h?q.top:q.left,b2=h?q.bottom:q.right,v=Math.max(0,ahead)+2*Math.max(0,b1-a2,a1-b2);
+    if(v<score){score=v;best=el}
+  }
+  if(best)focusEl(best);
+  else if(navScope()===document&&!h)scrollBy(0,s*innerHeight*0.6);
+}
+const ARROWS={ArrowUp:"up",ArrowDown:"down",ArrowLeft:"left",ArrowRight:"right"};
+const isText=el=>!!el&&(el.tagName=="TEXTAREA"||el.tagName=="INPUT"&&/^(text|search|url|number|password|email)$/.test(el.type));
+// Left/Right step a select and keep the caret in a text field; everything else moves focus.
+// Returns false when the key should keep its normal browser behavior.
+function dirInput(dir){
+  const el=document.activeElement,h=dir=="left"||dir=="right";
+  if(h&&el&&el.tagName=="SELECT"){
+    const i=el.selectedIndex+(dir=="right"?1:-1);
+    if(i>=0&&i<el.options.length){el.selectedIndex=i;el.dispatchEvent(new Event("change",{bubbles:true}))}
+    return true;
+  }
+  if(h&&isText(el))return false;
+  navMove(dir);
+  return true;
+}
+document.addEventListener("keydown",e=>{
+  const dir=ARROWS[e.key];
+  if(!dir||e.ctrlKey||e.altKey||e.metaKey||e.shiftKey||!menu.hidden)return;  // the row menu handles its own keys
+  if(dirInput(dir))e.preventDefault();
+});
+
+// ---- Gamepad, standard mapping. Polled only while a pad is connected.
+let padRaf=0,padPrev=[],padHeld="",padNext=0;
+const PAD_DIRS=["up","down","left","right"];  // buttons 12 to 15
+function padRead(){
+  const list=[...(navigator.getGamepads?.()||[])].filter(Boolean);
+  return list.find(p=>p.mapping=="standard")||list[0]||null;
+}
+// The D-pad, else the left stick (the dominant axis wins past a 0.5 deadzone).
+function padDirOf(p){
+  const k=[12,13,14,15].find(k=>p.buttons[k]&&p.buttons[k].pressed);
+  if(k)return PAD_DIRS[k-12];
+  const x=p.axes[0]||0,y=p.axes[1]||0;
+  if(Math.max(Math.abs(x),Math.abs(y))<=0.5)return"";
+  if(Math.abs(x)>Math.abs(y))return x<0?"left":"right";
+  return y<0?"up":"down";
+}
+function padButton(i){
+  const el=document.activeElement;
+  if(i==0){  // A: press the focused control
+    if(!navList().includes(el)){navStart(navList());return}
+    if(el.tagName=="SELECT"){try{el.showPicker()}catch(e){}}
+    else if(!isText(el))el.click();
+  }
+  else if(i==1){  // B: back, one level at a time
+    const d=topDialog();
+    if(!menu.hidden)closeMenu();
+    // Same path as Escape, so ask() sees the close and resolves as cancelled.
+    else if(d){if(d.requestClose)d.requestClose();else if(d.dispatchEvent(new Event("cancel",{cancelable:true})))d.close()}
+    else if(SEL)setSel(false);
+    else if(el&&el.closest("main section"))focusEl($("#tabs .on"));
+  }
+  else if(i==2){  // X: the row menu of the focused app (not while selecting)
+    const card=el&&el.closest("[data-card]"),more=card&&!SEL&&card.querySelector("[data-a=menu]");
+    if(more)more.click();
+  }
+  else if(i==3){  // Y: search on the current tab
+    const q={gh:"#ghQ",rh:"#rhQ",qv:"#qvQ",rl:"#rlQ"}[TAB];
+    if(q&&!topDialog())focusEl($(q));
+  }
+  else if(i==4||i==5){  // LB / RB: previous or next tab
+    if(topDialog())return;
+    const tabs=[...$("#tabs").querySelectorAll("[data-tab]")],at=tabs.findIndex(b=>b.dataset.tab==TAB);
+    const t=tabs[(at+(i==5?1:-1)+tabs.length)%tabs.length];
+    setTab(t.dataset.tab);focusEl(t);
+  }
+  else if(i==9){if(!topDialog())$("#btnSet").click()}  // Start: Settings
+}
+function padScroll(dy){const d=topDialog();if(d)d.scrollTop+=dy;else scrollBy(0,dy)}
+// The hint strip shows while a pad is in use, and not while Select mode has its own bar.
+function padUi(){
+  const h=$("#padHint"),want=document.documentElement.classList.contains("pad")&&$("#selbar").hidden;
+  if(h.hidden==want)h.hidden=!want;
+}
+function padStart(){if(!padRaf)padRaf=requestAnimationFrame(padFrame)}
+function padFrame(t){
+  const p=padRead();
+  if(!p){padRaf=0;padPrev=[];padHeld="";$("#padHint").hidden=true;return}
+  padRaf=requestAnimationFrame(padFrame);
+  const b=Array.from(p.buttons,x=>!!(x&&x.pressed));
+  let used=false;
+  // Buttons act once per press.
+  for(const i of [0,1,2,3,4,5,9])if(b[i]&&!padPrev[i]){used=true;padButton(i)}
+  padPrev=b;
+  // Directions repeat: first after 350 ms, then every 110 ms.
+  const d=padDirOf(p);
+  if(d&&d!=padHeld){padHeld=d;padNext=t+350;used=true;dirInput(d)}
+  else if(d&&t>=padNext){padNext=t+110;dirInput(d)}
+  else if(!d)padHeld="";
+  if(Math.abs(p.axes[3]||0)>0.25){used=true;padScroll(p.axes[3]*24)}  // right stick scrolls
+  if(used)document.documentElement.classList.add("pad");
+  padUi();
+}
+addEventListener("gamepadconnected",padStart);
+addEventListener("gamepaddisconnected",padStart);
+addEventListener("mousedown",()=>document.documentElement.classList.remove("pad"));
+addEventListener("pointermove",e=>{if(e.movementX||e.movementY)document.documentElement.classList.remove("pad")});
+padStart();
+
 refresh();
 </script></body></html>
 """

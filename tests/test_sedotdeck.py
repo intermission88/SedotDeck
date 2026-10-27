@@ -676,6 +676,61 @@ d = dp.quiver(refresh=True)
 eq((len(d["items"]), "offline" in d["stale"]), (3, True), "stale cache when the refresh fails")
 dp.QV_CACHE, dp._qv_get = real_cache, real_get
 
+# --- Recomp Launcher catalog: Linux releases on GitHub, most stars first
+RL_DATA = {"catalogVersion": 1, "platform": "pc", "apps": [
+    {"id": "tiny", "name": "Tiny Port", "game": "Tiny Game", "origin": "x360", "repo": "p/tiny", "version": "2.0",
+     "stars": 10, "downloads": 5, "author": "P", "systems": ["linux"], "cover": "javascript:alert(1)"},
+    {"id": "win", "name": "Windows only", "repo": "w/w", "version": "1", "stars": 99999, "systems": ["windows"]},
+    {"id": "soon", "name": "Not yet", "repo": "s/s", "version": "1", "stars": 50, "systems": ["linux"], "soon": True},
+    {"id": "bad", "name": "Bad repo", "repo": "https://github.com/b/b", "version": "1", "stars": 60, "systems": ["linux"]},
+    {"id": "zelda64recomp", "name": "Zelda 64: Recompiled", "game": "The Legend of Zelda: Majora's Mask", "origin": "n64",
+     "repo": "Zelda64Recomp/Zelda64Recomp", "version": "1.2.2", "released": "2025-08-27", "added": "2026-10-26",
+     "downloads": 378566, "stars": 7538, "author": "Zelda64Recomp", "blurb": "Majora's Mask as a PC game", "needs": "Your copy",
+     "cover": "https://recompstore.com/media/pc-zelda64recomp-cover.jpg", "systems": ["windows", "linux", "macos"]},
+], "origins": [{"id": "n64", "name": "Nintendo 64"}, {"id": "x360", "name": "Xbox 360"}]}
+rl = dp.parse_recomplauncher(RL_DATA)
+eq([x["id"] for x in rl], ["zelda64recomp", "tiny"], "Linux releases with a valid repo, most stars first")
+eq((rl[0]["title"], rl[0]["game"], rl[0]["console"], rl[0]["repo"], rl[0]["key"]),
+   ("Zelda 64: Recompiled", "The Legend of Zelda: Majora's Mask", "n64", "Zelda64Recomp/Zelda64Recomp", "github.com/zelda64recomp/zelda64recomp"), "entry names")
+eq((rl[0]["version"], rl[0]["released"], rl[0]["added"], rl[0]["downloads"], rl[0]["stars"], rl[0]["developer"]),
+   ("1.2.2", "2025-08-27", "2026-10-26", 378566, 7538, "Zelda64Recomp"), "entry numbers and developer")
+eq((rl[0]["cover"], rl[1]["cover"]), ("https://recompstore.com/media/pc-zelda64recomp-cover.jpg", ""), "only https covers")
+# fetched once a day; a failed refresh keeps the saved list; no list and no network is an error
+real_cache, real_get = dp.RL_CACHE, dp._rl_get
+dp.RL_CACHE, calls = Path(tempfile.mkdtemp(), "rl.json"), []
+dp._rl_get = lambda: calls.append(1) or RL_DATA
+d = dp.recomplauncher()
+eq((len(d["items"]), d["consoles"]), (2, {"n64": "Nintendo 64", "x360": "Xbox 360"}), "fetched, consoles from origins")
+n = len(calls)
+eq((len(dp.recomplauncher()["items"]), len(calls)), (2, n), "served from the cache")
+def rl_offline():
+    raise OSError("offline")
+dp._rl_get = rl_offline
+d = dp.recomplauncher(refresh=True)
+eq((len(d["items"]), "offline" in d["stale"]), (2, True), "stale cache when the refresh fails")
+dp.RL_CACHE = Path(tempfile.mkdtemp(), "none.json")
+try:
+    dp.recomplauncher(); raise AssertionError("no cache and offline")
+except RuntimeError:
+    ok += 1
+dp.RL_CACHE, dp._rl_get = real_cache, real_get
+
+# Quiver items get the stars that Recomp Haven or Recomp Launcher already saved; nothing is fetched
+real_rh, real_rl, real_qv = dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE
+star_tmp = Path(tempfile.mkdtemp())
+dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = star_tmp / "rh.json", star_tmp / "rl.json", star_tmp / "qv.json"
+dp.RH_CACHE.write_text(json.dumps({"items": [{"key": "github.com/o/old", "stars": 40}, {"key": "github.com/n/new", "stars": 3}]}))
+dp.RL_CACHE.write_text("not json")
+eq(dp._known_stars(), {"github.com/o/old": 40, "github.com/n/new": 3}, "a broken list is ignored")
+dp.RL_CACHE.write_text(json.dumps({"items": [{"key": "github.com/o/old", "stars": 55}, {"key": "github.com/x/none", "stars": 1}]}))
+eq(dp._known_stars(), {"github.com/o/old": 55, "github.com/n/new": 3, "github.com/x/none": 1}, "the higher count wins")
+dp.QV_CACHE.write_text(json.dumps({"fetched_at": time.time(), "consoles": {}, "items": [
+    {"key": "github.com/o/old", "title": "Old"}, {"key": "gitlab.com/grp/gl", "title": "GL"}]}))
+qs = [(x["title"], x["stars"]) for x in dp.quiver()["items"]]
+eq(qs, [("Old", 55), ("GL", 0)], "Quiver items carry the known stars, 0 when none")
+eq("stars" in json.loads(dp.QV_CACHE.read_text())["items"][0], False, "stars not written to the Quiver cache")
+dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = real_rh, real_rl, real_qv
+
 # --- Flatpak bundles
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-linux.tar.gz", "Game.flatpakref"))["name"], "Game-x86_64.flatpak", "bundle beats a tarball")
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-x86_64.AppImage"))["name"], "Game-x86_64.AppImage", "AppImage still wins")
@@ -736,6 +791,12 @@ try:
     dp.github_search("x"); raise AssertionError("one letter searched")
 except ValueError:
     ok += 1
+searched = []
+dp.http_json = lambda url, token="", service="": searched.append(url) or {"items": []}
+for s in ("best", "stars", "updated"):
+    dp.github_search("bloodborne", sort=s)
+eq([("sort=" in u, "sort=stars" in u, "sort=updated" in u, "order=desc" in u) for u in searched],
+   [(False, False, False, False), (True, True, False, True), (True, False, True, True)], "sort: best match, stars, updated")
 dp.SELF_CACHE, dp.http_json, dp.VERSION = real_self, real_json, real_ver
 
 # --- the rename: DeckPort's config and exports carry over
