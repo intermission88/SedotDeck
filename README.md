@@ -137,7 +137,7 @@ Without a GitHub token, GitHub allows 10 searches a minute.
 
 [Recomp Haven](https://recomphaven.com/) tracks every game recompilation and PC port. SedotDeck's **Recomp Haven** tab lists the ones with a Linux release on GitHub, using the site's own logo, box art and tiers.
 
-<img src="docs/screenshots/recomp-haven.png" alt="Recomp Haven tab: recomps with box art, tier, system and an Add button, with filters for system and tier" width="640">
+<img src="docs/screenshots/recomp-haven.png" alt="Recomp Haven tab: recomps with box art, tier, system, GitHub stars and an Add button, with filters for system and tier" width="640">
 
 - Search by game or project, filter by **system** (console) or tier, or show only the ones marked **Steam Deck**.
 - Sort by tier, system (grouped under a heading per console), stars, name or newest release. Each card shows the project's GitHub stars.
@@ -148,14 +148,18 @@ Without a GitHub token, GitHub allows 10 searches a minute.
 
 [quiverlauncher.com](https://quiverlauncher.com/) is the community catalog behind [Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher). SedotDeck's **Quiver** tab reads its public API and lists the apps with a Linux release that Quiver has verified, on GitHub or GitLab. SedotDeck isn't part of Quiver, and it doesn't use Quiver's name or logo for itself.
 
+<img src="docs/screenshots/quiver.png" alt="Quiver tab: ports with box art, system, version and AI use, player reports and an Add button, with filters for system and AI use" width="640">
+
 - Search by game, project or developer, filter by **system** or by how much **AI** went into the project (as the catalog labels it: no AI, AI-assisted or AI-generated).
-- Sort by newly added, newest release, most recommended, most stars, system or name. Player reports from the site (how many recommend it or report it broken) show on each card, and each card shows GitHub stars.
+- Sort by newly added, newest release, most recommended, most stars, system or name. Player reports from the site (how many recommend it or report it broken) show on each card, with GitHub stars when the Recomp Haven or Recomp Launcher list (already saved) knows the project.
 - **Add** puts it in **My apps**; **Details ↗** opens its page on quiverlauncher.com.
 - Every port needs your own copy of the game.
 
 ## Recomp Launcher
 
 [recomplauncher.com](https://recomplauncher.com/) is the catalog behind RecompLauncher. SedotDeck's **Recomp Launcher** tab reads its public catalog and lists the PC recomps with a Linux release on GitHub. SedotDeck isn't part of RecompLauncher, and it doesn't use its logo.
+
+<img src="docs/screenshots/recomp-launcher.png" alt="Recomp Launcher tab: PC recomps with box art, system, original game, version, GitHub stars and an Add button, sorted by most stars" width="640">
 
 - Search by game, project or developer, or filter by **system**. Every recomp needs your own copy of the game.
 - Sort by most stars, newest release, newly added, system or name. Each card shows GitHub stars.
