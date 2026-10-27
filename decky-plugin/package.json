@@ -1,6 +1,6 @@
 {
   "name": "sedotdeck",
-  "version": "0.0.2-alpha",
+  "version": "0.0.3-alpha",
   "description": "SedotDeck for Decky Loader: update AppImages and PC ports from Game Mode",
   "type": "module",
   "private": true,

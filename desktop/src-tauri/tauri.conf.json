@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SedotDeck",
-  "version": "0.0.2-alpha",
+  "version": "0.0.3-alpha",
   "identifier": "io.github.intermission88.sedotdeck",
   "build": {
     "frontendDist": "../dist"
