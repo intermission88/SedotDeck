@@ -13,7 +13,7 @@
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-[Why](#why-sedotdeck) · [Features](#features) · [Why not Quiver?](#but-quiver-launcher-already-exists) · [Install](#install) · [Using it](#using-it) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
+[Why](#why-sedotdeck) · [Features](#features) · [Why not Quiver or Gear Lever?](#but-quiver-launcher-already-exists) · [Install](#install) · [Using it](#using-it) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
 
 <img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
 
@@ -61,6 +61,8 @@ If you know [Obtainium](https://github.com/ImranR98/Obtainium) on Android, it's 
 - **More sources in one list.** Quiver's catalog sits next to Recomp Haven, Recomp Launcher and a GitHub search, and any release page on GitHub, GitLab, Codeberg, Gitea or Forgejo works too.
 
 Want one launcher for Windows, Linux and Android, a kiosk mode, or mods from Thunderstore and GameBanana? Quiver is the better fit there.
+
+**And Gear Lever?** [Gear Lever](https://github.com/mijorus/gearlever) manages AppImages on the Linux desktop and adds them to your app menu. SedotDeck manages games: it also handles ports that ship as a zip, Windows `.exe` builds through Proton, Flatpak bundles, Steam shortcuts and Game Mode. For desktop apps in your app menu, use Gear Lever.
 
 ## Install
 
@@ -115,11 +117,11 @@ All the logic is in [`sedotdeck.py`](sedotdeck.py) (Python standard library only
 - **Code**: [Claude](https://claude.com/claude-code) by Anthropic, through Claude Code. Commits made with Claude are marked `Co-Authored-By: Claude`. SedotDeck isn't made or endorsed by Anthropic.
 - **Maintainer**: [intermission88](https://github.com/intermission88).
 - **Catalog data**: [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) (MIT), based on [Recompendium](https://github.com/nio03/unricopie) (MIT); the [quiverlauncher.com](https://quiverlauncher.com/) catalog by Thomas Georgiadis ([Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher)); and [RecompLauncher](https://recomplauncher.com/)'s public catalog. Their names and logos are their own marks, and box art belongs to each game's publisher.
-- **Ideas**: [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98, the Android app that does this for APKs. Only ideas are borrowed, not code.
+- **Ideas**: [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98, the Android app that does this for APKs; moving deleted files to the Trash and not updating a running app come from [Gear Lever](https://github.com/mijorus/gearlever) by mijorus. Only ideas are borrowed, not code.
 - **Built on**: [Tauri](https://v2.tauri.app), [Decky Loader](https://decky.xyz), [Flatpak](https://flatpak.org), [Proton](https://github.com/ValveSoftware/Proton). UI rules from [Anti Slop](https://github.com/miqdadbadjuber/anti-slop) (MIT).
 - **The apps you install** belong to their own developers. Support them in their repositories.
 
-Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is a fan-made tool and isn't affiliated with Valve, Decky Loader, Recomp Haven, Quiver, RecompLauncher or Obtainium.
+Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is a fan-made tool and isn't affiliated with Valve, Decky Loader, Recomp Haven, Quiver, RecompLauncher, Obtainium or Gear Lever.
 
 Found something of yours used here without proper credit? [Open an issue](https://github.com/intermission88/SedotDeck/issues).
 

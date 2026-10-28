@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in SedotDeck doesn't work
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: SedotDeck version
+      description: Shown next to the SedotDeck title, or run `sedotdeck --version`.
+      placeholder: 0.0.3-alpha
+    validations:
+      required: true
+  - type: dropdown
+    id: form
+    attributes:
+      label: How do you run it?
+      options:
+        - AppImage (Desktop Mode)
+        - Decky plugin (Game Mode)
+        - install.sh script (Desktop Mode)
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: Which app?
+      description: The release page of the app it happened with, if any.
+      placeholder: https://github.com/owner/repo
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Paste any error message.
+    validations:
+      required: true
