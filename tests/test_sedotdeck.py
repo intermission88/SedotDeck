@@ -799,4 +799,50 @@ eq([("sort=" in u, "sort=stars" in u, "sort=updated" in u, "order=desc" in u) fo
    [(False, False, False, False), (True, True, False, True), (True, False, True, True)], "sort: best match, stars, updated")
 dp.SELF_CACHE, dp.http_json, dp.VERSION = real_self, real_json, real_ver
 
+# --- Trash and running apps
+tr = Path(tempfile.mkdtemp())
+real_xdg = os.environ.get("XDG_DATA_HOME")
+os.environ["XDG_DATA_HOME"] = str(tr / "share")
+for n in ("Game", "Game"):
+    (tr / n).mkdir(); (tr / n / "run.sh").write_text("x")
+    dp.move_to_trash(str(tr / n))
+files = sorted(os.listdir(tr / "share" / "Trash" / "files"))
+eq(files, ["Game", "Game.2"], "same name trashed twice keeps both")
+info = (tr / "share" / "Trash" / "info" / "Game.2.trashinfo").read_text()
+eq(info.splitlines()[:2], ["[Trash Info]", "Path=" + str(tr / "Game")], "trashinfo points at the old place")
+eq((tr / "share" / "Trash" / "files" / "Game.2" / "run.sh").read_text(), "x", "folder contents kept")
+(tr / "Solo.AppImage").write_text("a"); (tr / "Solo.AppImage.old").write_text("b")
+cfg_t = {"settings": {}, "apps": [{"id": "s", "name": "Solo", "installed": {"path": str(tr / "Solo.AppImage"), "kind": "appimage"}}]}
+dp.remove_app(cfg_t, cfg_t["apps"][0], delete_files=True)
+eq((cfg_t["apps"], (tr / "Solo.AppImage").exists(), sorted(os.listdir(tr / "share" / "Trash" / "files"))),
+   ([], False, ["Game", "Game.2", "Solo.AppImage", "Solo.AppImage.old"]), "remove trashes the AppImage and its backup")
+
+proc = tr / "proc"
+port = tr / "Port"; port.mkdir()
+def fakeproc(pid, exe="/usr/bin/x", cwd="/", args=(), env=()):
+    d = proc / str(pid); d.mkdir(parents=True)
+    os.symlink(exe, d / "exe"); os.symlink(cwd, d / "cwd")
+    (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in args))
+    (d / "environ").write_bytes(b"\0".join(e.encode() for e in env))
+real_proc, dp.PROC = dp.PROC, str(proc)
+fakeproc(10, args=["/usr/bin/bash"])
+fakeproc(11, args=["wine", str(tr / "Portable") + "/a.exe"])
+eq(dp.running_from(str(port)), [], "a similar folder name isn't a match")
+fakeproc(12, cwd=str(port))
+fakeproc(13, env=["HOME=/x", "APPIMAGE=" + str(tr / "Solo.AppImage")])
+eq((dp.running_from(str(port)), dp.running_from(str(tr / "Solo.AppImage"))), ([12], [13]), "cwd and $APPIMAGE found")
+papp = {"id": "p", "name": "Port", "installed": {"path": str(port), "kind": "archive"},
+        "latest": {"asset": {"name": "p.zip"}}}
+for what, fn in (("update", lambda: dp.install_app(papp, {"install_dir": str(tr)})),
+                 ("remove", lambda: dp.remove_app({"apps": [papp]}, papp, delete_files=True))):
+    try:
+        fn(); raise AssertionError(what + " of a running port went ahead")
+    except RuntimeError as e:
+        eq(("is running" in str(e), port.exists()), (True, True), what + " refused while running")
+dp.PROC = real_proc
+if real_xdg is None:
+    del os.environ["XDG_DATA_HOME"]
+else:
+    os.environ["XDG_DATA_HOME"] = real_xdg
+
 print("all %d checks passed" % ok)

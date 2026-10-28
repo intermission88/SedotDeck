@@ -766,11 +766,50 @@ def is_flatpak(app):
     return (app.get("installed") or {}).get("kind") == "flatpak"
 
 
+PROC = "/proc"
+
+
+def running_from(path):
+    """PIDs of the user's processes that run from path: its binary, working folder, a command-line
+    argument (Proton) or an AppImage's $APPIMAGE. Empty where there's no /proc."""
+    roots = {os.path.abspath(path), os.path.realpath(path)}  # /proc links are resolved, $APPIMAGE may not be
+    inside = lambda p: any(p == r or p.startswith(r + os.sep) for r in roots)
+    found = []
+    try:
+        pids = [p for p in os.listdir(PROC) if p.isdigit() and int(p) != os.getpid()]
+    except OSError:
+        return found
+    for pid in pids:
+        d = os.path.join(PROC, pid)
+        try:
+            links = [os.readlink(os.path.join(d, n)) for n in ("exe", "cwd") if os.path.islink(os.path.join(d, n))]
+            with open(os.path.join(d, "cmdline"), "rb") as f:
+                args = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+            with open(os.path.join(d, "environ"), "rb") as f:
+                env = [e.decode("utf-8", "replace")[9:] for e in f.read().split(b"\0") if e.startswith(b"APPIMAGE=")]
+        except OSError:
+            continue  # gone, or another user's process
+        if any(inside(p.removesuffix(" (deleted)")) for p in links) or any(inside(a) for a in args + env):
+            found.append(int(pid))
+    return found
+
+
+def ensure_not_running(app, path=None):
+    path = path or (app.get("installed") or {}).get("path")
+    if path and os.path.exists(path) and running_from(path):
+        raise RuntimeError("%s is running. Close it and try again." % app["name"])
+
+
 def install_app(app, settings, progress=None, phase=None):
     latest = app.get("latest") or {}
     asset = latest.get("asset")
     if not asset:
         raise RuntimeError(app.get("error") or "Nothing to install, run a check first")
+    inst = app.get("installed") or {}
+    if inst.get("path") and os.path.isdir(inst["path"]) and not is_flatpak(app):
+        # Overwriting a folder port under a running game can crash it or leave it half updated.
+        # A running AppImage is fine: the new file replaces the old one by rename.
+        ensure_not_running(app)
 
     install_dir = Path(os.path.expanduser(settings["install_dir"]))
     install_dir.mkdir(parents=True, exist_ok=True)
@@ -1019,16 +1058,66 @@ def remove_app(cfg, app, delete_files=False):
         if os.path.isdir(app["installed"]["path"]):
             flatpak_cmd("uninstall", "--user", "--noninteractive", "-y", app["installed"]["flatpak_id"])
     elif delete_files:
-        if app.get("launcher") and os.path.isfile(app["launcher"]):
-            os.remove(app["launcher"])
         p = (app.get("installed") or {}).get("path")
-        if p and os.path.isdir(p):
-            shutil.rmtree(p, ignore_errors=True)
-        elif p:
-            for f in (p, p + ".old"):
-                if os.path.exists(f):
-                    os.remove(f)
+        ensure_not_running(app)
+        if app.get("launcher") and os.path.isfile(app["launcher"]):
+            move_to_trash(app["launcher"])
+        for f in (p, p + ".old") if p else ():
+            if os.path.lexists(f):
+                move_to_trash(f)
     cfg["apps"] = [a for a in cfg["apps"] if a["id"] != app["id"]]
+
+
+def _device(path):
+    while not os.path.exists(path):
+        path = os.path.dirname(path)
+    return os.stat(path).st_dev
+
+
+def trash_dir(path):
+    """The freedesktop.org trash for path: the home trash on the home drive, else <mount>/.Trash-<uid>
+    (an SD card), so nothing gets copied across drives. Returns (trash, folder Path= is relative to)."""
+    home = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(Path.home(), ".local", "share"), "Trash")
+    if _device(path) == _device(home):
+        return home, None
+    top = os.path.dirname(os.path.abspath(path))
+    while not os.path.ismount(top):
+        top = os.path.dirname(top)
+    return os.path.join(top, ".Trash-%d" % os.getuid()), top
+
+
+def move_to_trash(path):
+    """Move a file or folder to the Trash so it can be restored from Dolphin. Falls back to deleting it."""
+    path = os.path.abspath(path)
+    try:
+        trash, top = trash_dir(path)
+        os.makedirs(os.path.join(trash, "files"), mode=0o700, exist_ok=True)
+        os.makedirs(os.path.join(trash, "info"), mode=0o700, exist_ok=True)
+        base, n = os.path.basename(path), 1
+        while True:  # the .trashinfo file reserves the name
+            name = base if n == 1 else "%s.%d" % (base, n)
+            info = os.path.join(trash, "info", name + ".trashinfo")
+            try:
+                fd = os.open(info, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                break
+            except FileExistsError:
+                n += 1
+        with os.fdopen(fd, "w") as f:
+            f.write("[Trash Info]\nPath=%s\nDeletionDate=%s\n" % (
+                urllib.parse.quote(os.path.relpath(path, top) if top else path),
+                time.strftime("%Y-%m-%dT%H:%M:%S")))
+        try:
+            os.rename(path, os.path.join(trash, "files", name))
+            return
+        except OSError:
+            os.remove(info)
+            raise
+    except OSError as e:
+        print("Warning: couldn't move %s to the Trash (%s), deleting it" % (path, e), file=sys.stderr)
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.lexists(path):
+        os.remove(path)
 
 
 def resolve_source(text):
@@ -2231,6 +2320,10 @@ class Server:
             running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
             if running:
                 raise ValueError("Wait for %s to finish first" % ", ".join(running))
+            if body.get("delete_files"):
+                for app in targets:  # before anything is removed, so a refusal changes nothing
+                    if not is_flatpak(app):
+                        ensure_not_running(app)
             with _lock:
                 for app in targets:
                     remove_app(cfg, app, body.get("delete_files", False))
@@ -2600,7 +2693,10 @@ def cmd_remove(args):
     a = find_app(cfg, args.name)
     if not a:
         sys.exit("Unknown app: %s" % args.name)
-    remove_app(cfg, a, args.delete_files)
+    try:
+        remove_app(cfg, a, args.delete_files)
+    except RuntimeError as e:
+        sys.exit(str(e))
     save_config(cfg)
     print("Removed", a["name"])
 
@@ -2704,7 +2800,7 @@ def main():
 
     s = sub.add_parser("remove", help="stop tracking an app")
     s.add_argument("name")
-    s.add_argument("--delete-files", action="store_true")
+    s.add_argument("--delete-files", action="store_true", help="also move its files to the Trash")
     s.set_defaults(fn=cmd_remove)
 
     s = sub.add_parser("rename", help="give an AppImage the clean name <App>.AppImage (updates its Steam shortcut)")
@@ -3314,7 +3410,7 @@ async function doAction(k,a,el){
   else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
   else if(k=="remove"){
     const r=await ask({title:`Remove ${a.name}?`,text:"SedotDeck will stop tracking it.",ok:"Remove",danger:true,
-                       check:a.installed&&a.exists?"Also delete its downloaded files":""});
+                       check:a.installed&&a.exists?"Also move its downloaded files to the Trash":""});
     if(r)act("/api/remove",{id,delete_files:!!r.checked},"Removed");
   }
   else if(k=="edit")openAdd(a);
@@ -3568,7 +3664,7 @@ $("#selCheck").onclick=()=>act("/api/check",{ids:[...SEL]},`Checking ${SEL.size}
 $("#selUpd").onclick=()=>act("/api/update",{ids:[...SEL]},r=>r.count?`Updating ${r.count} app(s)`:"The selected apps are up to date");
 $("#selCat").onclick=()=>openCat([...SEL]);
 $("#selRm").onclick=async()=>{
-  const ids=[...SEL],r=await ask({title:`Remove ${ids.length} app(s)?`,text:"SedotDeck will stop tracking them.",ok:"Remove",danger:true,check:"Also delete their downloaded files"});
+  const ids=[...SEL],r=await ask({title:`Remove ${ids.length} app(s)?`,text:"SedotDeck will stop tracking them.",ok:"Remove",danger:true,check:"Also move their downloaded files to the Trash"});
   if(r)act("/api/remove",{ids,delete_files:!!r.checked},x=>`Removed ${x.count} app(s)`);
 };
 let catIds=[];
