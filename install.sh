@@ -7,11 +7,6 @@ DEST="$HOME/.local/share/sedotdeck"
 BIN="$HOME/.local/bin"
 APPS="$HOME/.local/share/applications"
 
-# SedotDeck was called DeckPort: drop the old copy and menu entries (its config moves on first start).
-rm -rf "$HOME/.local/share/deckport"
-rm -f "$BIN/deckport" "$APPS/deckport.desktop" "$HOME/Desktop/deckport.desktop" \
-  "$HOME/.local/share/icons/hicolor/scalable/apps/deckport.svg"
-
 mkdir -p "$DEST" "$BIN" "$APPS"
 cp "$SRC/sedotdeck.py" "$DEST/sedotdeck.py"
 chmod +x "$DEST/sedotdeck.py"

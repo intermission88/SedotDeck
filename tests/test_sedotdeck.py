@@ -799,18 +799,4 @@ eq([("sort=" in u, "sort=stars" in u, "sort=updated" in u, "order=desc" in u) fo
    [(False, False, False, False), (True, True, False, True), (True, False, True, True)], "sort: best match, stars, updated")
 dp.SELF_CACHE, dp.http_json, dp.VERSION = real_self, real_json, real_ver
 
-# --- the rename: DeckPort's config and exports carry over
-mig = Path(tempfile.mkdtemp())
-real_dirs = dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR, dp.CONFIG_FILE
-dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR = mig / "sedotdeck", mig / "deckport"
-dp.CONFIG_FILE = dp.CONFIG_DIR / "config.json"
-dp.LEGACY_CONFIG_DIR.mkdir()
-(dp.LEGACY_CONFIG_DIR / "config.json").write_text(json.dumps({"apps": [{"id": "x", "name": "Old", "repo": "a/b"}]}))
-eq([a["name"] for a in dp.load_config()["apps"]], ["Old"], "DeckPort config moved over")
-eq((dp.LEGACY_CONFIG_DIR.exists(), dp.CONFIG_FILE.exists()), (False, True), "old folder renamed")
-dp.CONFIG_DIR, dp.LEGACY_CONFIG_DIR, dp.CONFIG_FILE = real_dirs
-added, _ = dp.import_apps({"settings": {}, "apps": []}, {"format": "deckport-apps", "apps": [
-    {"name": "A", "provider": "github", "host": "github.com", "repo": "a/b"}]})
-eq(len(added), 1, "DeckPort exports still import")
-
 print("all %d checks passed" % ok)

@@ -43,7 +43,6 @@ from pathlib import Path
 
 VERSION = "0.0.3-alpha"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sedotdeck"
-LEGACY_CONFIG_DIR = CONFIG_DIR.with_name("deckport")  # SedotDeck was called DeckPort before 0.0.1-alpha
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765
 USER_AGENT = "SedotDeck/" + VERSION
@@ -74,18 +73,8 @@ def default_config():
     }
 
 
-def migrate_legacy_config():
-    """Move ~/.config/deckport to ~/.config/sedotdeck once, so the app list survives the rename."""
-    if not CONFIG_DIR.exists() and LEGACY_CONFIG_DIR.is_dir():
-        try:
-            os.replace(LEGACY_CONFIG_DIR, CONFIG_DIR)
-        except OSError as e:
-            print("Warning: could not move %s (%s)" % (LEGACY_CONFIG_DIR, e), file=sys.stderr)
-
-
 def load_config():
     with _lock:
-        migrate_legacy_config()
         cfg = default_config()
         if CONFIG_FILE.exists():
             try:
@@ -1100,7 +1089,6 @@ def apply_options(app, opts):
 
 
 EXPORT_FORMAT = "sedotdeck-apps"
-LEGACY_EXPORT_FORMATS = ("deckport-apps",)
 EXPORT_FIELDS = ("name", "provider", "host", "repo", "pattern", "prerelease", "skip_titles", "latest_only", "category")
 
 
@@ -1116,7 +1104,7 @@ def export_apps(cfg):
 
 def import_apps(cfg, data):
     """Merge an export into cfg. Validates everything first, so a bad file changes nothing."""
-    if not isinstance(data, dict) or data.get("format") not in (EXPORT_FORMAT,) + LEGACY_EXPORT_FORMATS or not isinstance(data.get("apps"), list):
+    if not isinstance(data, dict) or data.get("format") != EXPORT_FORMAT or not isinstance(data.get("apps"), list):
         raise ValueError("This is not a SedotDeck export file")
     incoming = []
     for i, item in enumerate(data["apps"], 1):
