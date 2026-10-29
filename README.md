@@ -13,92 +13,61 @@
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-[Why](#why-sedotdeck) · [Features](#features) · [Why not Quiver or Gear Lever?](#but-quiver-launcher-already-exists) · [Install](#install) · [Using it](#using-it) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
-
 <img src="docs/screenshots/demo.gif" alt="Demo: adding Zelda 64: Recompiled from the Recomp Haven tab, installing it, adding it to Steam, then Update all bringing PCSX2 up to date" width="760">
 
 </div>
 
 > [!IMPORTANT]
-> **SedotDeck is written by AI.** The code is written by [Claude](https://claude.com/claude-code), Anthropic's AI, through Claude Code. [intermission88](https://github.com/intermission88) is the maintainer: they decide what it does, review every change and test it on a Steam Deck.
-
-> SedotDeck is in alpha (0.0.x).
-
-## Why SedotDeck
-
-Recomps and PC ports like Ship of Harkinian, Zelda64Recomp and OpenGOAL ship as releases on GitHub. On a Steam Deck, every new version means the same chores: open the release page, find the Linux file, download it, unzip it, mark it executable, and fix the Steam shortcut that just broke.
-
-SedotDeck does all of that. Add a game once, press **Update all** from then on, and keep playing from Game Mode.
-
-If you know [Obtainium](https://github.com/ImranR98/Obtainium) on Android, it's the same idea: apps come straight from their developers' release pages, with no store in between.
-
-*Sedot* is Indonesian for "to slurp", as in slurping down the latest releases.
+> **Written by AI, in alpha.** [Claude](https://claude.com/claude-code) writes the code; [intermission88](https://github.com/intermission88) decides what it does, reviews every change and tests it on a Steam Deck.
 
 ## Features
 
-- **Update all in one click** for apps released on GitHub, GitLab, Codeberg, Gitea and Forgejo. SedotDeck picks the Linux file by itself (AppImage, `.flatpak` bundle, or a Linux build in a zip/tar).
-- **Discover**: search GitHub for a game or port by name.
-- **Catalog tabs**: browse recomps and PC ports with a Linux release from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/) and [Recomp Launcher](https://recomplauncher.com/), and add them in one click.
-- **Steam shortcuts keep working**: file paths never change on update. **Add to Steam** works for AppImages, Flatpaks, folder ports and Windows `.exe` games through Proton.
-- **Safe updates**: SHA-256 verification, a backup with **Rollback**, and saves and configs are never touched. A game that's still running isn't updated, and deleted files go to the Trash.
-- **Controller support**: D-pad or left stick to move, A to select, B to go back, LB/RB to switch tabs.
-- **Game Mode**: a Decky plugin that checks for updates every 6 hours.
-- **Light**: one Python file on SteamOS's own Python. No `pip`, no `sudo`.
-
-## "But Quiver Launcher already exists?"
-
-[Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher) is a good launcher, and SedotDeck even includes its catalog as a tab. They solve different problems:
-
-- **SedotDeck lives in Steam.** Quiver is a launcher: you open Quiver to play. SedotDeck puts each game in your Steam library and then stays out of the way. You play from Game Mode like any other game, and updates never break the shortcut.
-- **Made only for the Deck.** A Decky plugin for Game Mode, controller navigation, Proton for Windows `.exe` builds, Flatpak bundles, and it runs on SteamOS's own Python with no `sudo`.
-- **More sources in one list.** Quiver's catalog sits next to Recomp Haven, Recomp Launcher and a GitHub search, and any release page on GitHub, GitLab, Codeberg, Gitea or Forgejo works too.
-
-Want one launcher for Windows, Linux and Android, a kiosk mode, or mods from Thunderstore and GameBanana? Quiver is the better fit there.
-
-**And Gear Lever?** [Gear Lever](https://github.com/mijorus/gearlever) manages AppImages on the Linux desktop and adds them to your app menu. SedotDeck manages games: it also handles ports that ship as a zip, Windows `.exe` builds through Proton, Flatpak bundles, Steam shortcuts and Game Mode. For desktop apps in your app menu, use Gear Lever.
+- **Update all in one click** for releases on GitHub, GitLab, Codeberg, Gitea and Forgejo. SedotDeck picks the Linux file itself.
+- **Browse and add** from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/) or a GitHub search.
+- **Steam shortcuts keep working**: paths never change on update. Works for AppImages, Flatpaks, zipped ports and Windows `.exe` through Proton.
+- **Safe**: SHA-256 checks, Rollback, saves untouched, running games left alone.
+- **Game Mode** plugin for Decky, with controller support.
+- **No `pip`, no `sudo`**: one Python file on SteamOS's own Python.
 
 ## Install
 
-Downloads are on the [Releases](https://github.com/intermission88/SedotDeck/releases) page. All three share the same app list, so you can install more than one.
+Get it from [Releases](https://github.com/intermission88/SedotDeck/releases):
 
-| Form | Runs in | How |
-|---|---|---|
-| **AppImage** (recommended) | Desktop Mode | Download `SedotDeck-x86_64.AppImage`, right-click → **Properties** → **Permissions** → tick **Is executable**, then double-click it. |
-| **Decky plugin** | Game Mode | Needs [Decky Loader](https://decky.xyz). Turn on **Developer mode** in Decky's settings, then **Install Plugin from ZIP File** with `SedotDeck-decky-….zip` (don't unzip it). |
-| **Script** | Desktop Mode | Copy this repository to the Deck and run `bash install.sh` in Konsole. Opens in a browser. |
+- **AppImage** (Desktop Mode): mark `SedotDeck-x86_64.AppImage` as executable (right-click → Properties → Permissions), then open it.
+- **Decky plugin** (Game Mode): in [Decky](https://decky.xyz) settings, turn on Developer mode and use **Install Plugin from ZIP File**.
 
-## Using it
-
-1. Press **Add app** and paste a release link (`owner/repo` works too), or press **Add** in **Discover** or one of the catalog tabs.
-2. Check the file shown in the preview, then **Install**. From then on, **Update all** is enough.
-3. **⋯** → **Add to Steam**, once. In Desktop Mode, close Steam first.
-
-Wrong file or unwanted nightly builds? **⋯** → **Edit** → **Advanced** lets you pick the file and filter releases.
+Then press **Add app**, or **Add** in any catalog tab, and **Install**. **⋯ → Add to Steam** once, and **Update all** from then on.
 
 ## FAQ
 
 <details>
+<summary><b>Why not Quiver Launcher or Gear Lever?</b></summary>
+
+[Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher) is a launcher you open to play; SedotDeck puts games in your Steam library and stays out of the way. [Gear Lever](https://github.com/mijorus/gearlever) puts desktop AppImages in your app menu; SedotDeck handles games, including zipped ports, `.exe` builds and Game Mode.
+</details>
+
+<details>
 <summary><b>"GitHub rate limit hit"</b></summary>
 
-Without a token GitHub allows 60 requests an hour. Create a read-only *fine-grained* token at <https://github.com/settings/tokens> and paste it in **Settings**.
+Paste a read-only fine-grained [GitHub token](https://github.com/settings/tokens) in **Settings**.
 </details>
 
 <details>
 <summary><b>Why close Steam for "Add to Steam"?</b></summary>
 
-Steam overwrites `shortcuts.vdf` when it exits. In Game Mode this isn't needed: the Decky plugin uses Steam's own API.
+Steam overwrites `shortcuts.vdf` when it exits. In Game Mode the Decky plugin uses Steam's own API, so there's no need.
 </details>
 
 <details>
 <summary><b>Where is my data?</b></summary>
 
-App list and settings in `~/.config/sedotdeck/`, games and apps in `~/Applications/`. SedotDeck sends no telemetry.
+Settings in `~/.config/sedotdeck/`, games in `~/Applications/`. No telemetry.
 </details>
 
 <details>
 <summary><b>Building it yourself</b></summary>
 
-All the logic is in [`sedotdeck.py`](sedotdeck.py) (Python standard library only). [`desktop/`](desktop) is the Tauri window and [`decky-plugin/`](decky-plugin) is the Game Mode plugin.
+Logic is in [`sedotdeck.py`](sedotdeck.py) (stdlib only); [`desktop/`](desktop) is the Tauri window, [`decky-plugin/`](decky-plugin) the Game Mode plugin. You can also run `bash install.sh` to use it from a browser.
 
 - AppImage: `cd desktop && npm ci && npm run build`
 - Decky plugin: `decky-plugin/package.sh`
@@ -107,17 +76,13 @@ All the logic is in [`sedotdeck.py`](sedotdeck.py) (Python standard library only
 
 ## Credit
 
-- **Code**: [Claude](https://claude.com/claude-code) by Anthropic, through Claude Code. Commits made with Claude are marked `Co-Authored-By: Claude`. SedotDeck isn't made or endorsed by Anthropic.
-- **Maintainer**: [intermission88](https://github.com/intermission88).
-- **Catalog data**: [Recomp Haven](https://recomphaven.com/) by [rikuwru](https://github.com/rikuwru/recomphaven) (MIT), based on [Recompendium](https://github.com/nio03/unricopie) (MIT); the [quiverlauncher.com](https://quiverlauncher.com/) catalog by Thomas Georgiadis ([Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher)); and [RecompLauncher](https://recomplauncher.com/)'s public catalog. Their names and logos are their own marks, and box art belongs to each game's publisher.
-- **Ideas**: [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98, the Android app that does this for APKs; moving deleted files to the Trash and not updating a running app come from [Gear Lever](https://github.com/mijorus/gearlever) by mijorus. Only ideas are borrowed, not code.
-- **Built on**: [Tauri](https://v2.tauri.app), [Decky Loader](https://decky.xyz), [Flatpak](https://flatpak.org), [Proton](https://github.com/ValveSoftware/Proton). UI rules from [Anti Slop](https://github.com/miqdadbadjuber/anti-slop) (MIT).
-- **The apps you install** belong to their own developers. Support them in their repositories.
+- **Code** by [Claude](https://claude.com/claude-code) (Anthropic), commits marked `Co-Authored-By: Claude`. Not made or endorsed by Anthropic. **Maintainer**: [intermission88](https://github.com/intermission88).
+- **Catalogs**: [Recomp Haven](https://github.com/rikuwru/recomphaven) by rikuwru (MIT, based on [Recompendium](https://github.com/nio03/unricopie)), [Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher) by Thomas Georgiadis, and [RecompLauncher](https://recomplauncher.com/). Names, logos and box art belong to their owners.
+- **Ideas** (no code) from [Obtainium](https://github.com/ImranR98/Obtainium) by ImranR98 and [Gear Lever](https://github.com/mijorus/gearlever) by mijorus.
+- **Built on** [Tauri](https://v2.tauri.app), [Decky Loader](https://decky.xyz), [Flatpak](https://flatpak.org), [Proton](https://github.com/ValveSoftware/Proton) and [Anti Slop](https://github.com/miqdadbadjuber/anti-slop) (MIT).
 
-Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is a fan-made tool and isn't affiliated with Valve, Decky Loader, Recomp Haven, Quiver, RecompLauncher, Obtainium or Gear Lever.
-
-Found something of yours used here without proper credit? [Open an issue](https://github.com/intermission88/SedotDeck/issues).
+Steam, Steam Deck, SteamOS and Proton are trademarks of Valve Corporation. SedotDeck is fan-made and not affiliated with Valve or any project above. Something of yours not credited properly? [Open an issue](https://github.com/intermission88/SedotDeck/issues).
 
 ## License
 
-[MIT](LICENSE). This covers SedotDeck's own code, docs and logo; the data, box art and apps listed above keep their own licenses.
+[MIT](LICENSE) for SedotDeck's own code, docs and logo. Catalog data, box art and the apps you install keep their own licenses.
