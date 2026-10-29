@@ -45,13 +45,6 @@ If you know [Obtainium](https://github.com/ImranR98/Obtainium) on Android, it's 
 - **Game Mode**: a Decky plugin that checks for updates every 6 hours.
 - **Light**: one Python file on SteamOS's own Python. No `pip`, no `sudo`.
 
-<p>
-<img src="docs/screenshots/discover.png" alt="Discover tab: GitHub results with stars, language and an Add button" width="49%">
-<img src="docs/screenshots/recomp-haven.png" alt="Recomp Haven tab: recomps with box art, tier, system and an Add button" width="49%">
-<img src="docs/screenshots/quiver.png" alt="Quiver tab: ports with box art, system, AI use, player reports and an Add button" width="49%">
-<img src="docs/screenshots/recomp-launcher.png" alt="Recomp Launcher tab: PC recomps with box art, system, GitHub stars and an Add button" width="49%">
-</p>
-
 ## "But Quiver Launcher already exists?"
 
 [Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher) is a good launcher, and SedotDeck even includes its catalog as a tab. They solve different problems:
