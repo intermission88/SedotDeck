@@ -15,7 +15,7 @@
 
 [Why](#why-sedotdeck) · [Features](#features) · [Why not Quiver or Gear Lever?](#but-quiver-launcher-already-exists) · [Install](#install) · [Using it](#using-it) · [FAQ](#faq) · [Credit](#credit) · [License](#license)
 
-<img src="docs/screenshots/my-apps.png" alt="SedotDeck's My apps list, grouped into Emulators and Recomps, with updates, installs and up-to-date apps" width="760">
+<img src="docs/screenshots/demo.gif" alt="Demo: adding Zelda 64: Recompiled from the Recomp Haven tab, installing it, adding it to Steam, then Update all bringing PCSX2 up to date" width="760">
 
 </div>
 
