@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -38,6 +39,7 @@ import uuid
 import webbrowser
 import zipfile
 import zlib
+from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -250,10 +252,80 @@ def _norm_gitlab(r, host, repo):
     }
 
 
-def fetch_release(src, prerelease, token="", skip_titles="", latest_only=False):
+# Tags that are moved to each new build instead of naming a version; treated as pre-releases, newest of all.
+ROLLING_TAG = re.compile(r"(^|[-_.])(nightly|continuous|latest|snapshot|canary|edge|unstable|devel|dev|preview)([-_.]|$)", re.I)
+PRE_SUFFIX = re.compile(r"alpha|beta|rc|pre|dev|preview|snapshot|nightly|test|(^|\.)[ab]\d", re.I)
+
+
+def _tag_pages(url, per, pages, token="", service=""):
+    """Every tag on up to `pages` pages; a full page means there may be more."""
+    out = []
+    for page in range(1, pages + 1):
+        got = http_json(url + "&page=%d" % page, token, service)
+        got = got if isinstance(got, list) else []
+        out += got
+        if len(got) < per:
+            break
+    return out
+
+
+def fetch_tags(src, token=""):
+    """Tags of a repo that publishes no releases, each shaped like a release whose only asset is the tag's
+    source archive: rolling tags (nightly…) first, then versions newest first, then any other tag."""
+    provider, host, repo = src["provider"], src["host"], src["repo"]
+    short = repo.rsplit("/", 1)[-1]
+    if provider == "github":
+        # Sorted by name, so v1.99 comes before v1.100: read a few pages to find the newest version.
+        raw = _tag_pages("https://api.github.com/repos/%s/tags?per_page=100" % repo, 100, 3, token, "github")
+        archive = lambda t: "https://github.com/%s/archive/refs/tags/%s.tar.gz" % (repo, urllib.parse.quote(t))
+        page = lambda t: "https://github.com/%s/tree/%s" % (repo, urllib.parse.quote(t))
+    elif provider == "gitea":
+        raw = _tag_pages("https://%s/api/v1/repos/%s/tags?limit=50" % (host, repo), 50, 4)
+        archive = lambda t: "https://%s/%s/archive/%s.tar.gz" % (host, repo, urllib.parse.quote(t))
+        page = lambda t: "https://%s/%s/src/tag/%s" % (host, repo, urllib.parse.quote(t))
+    elif provider == "gitlab":
+        api = "https://%s/api/v4/projects/%s/repository/tags?per_page=100" % (host, urllib.parse.quote(repo, safe=""))
+        try:
+            raw = http_json(api + "&order_by=version&sort=desc")
+        except RuntimeError:
+            raw = http_json(api)  # GitLab before 15.x can't sort by version
+        archive = lambda t: "https://%s/%s/-/archive/%s/%s-%s.tar.gz" % (
+            host, repo, urllib.parse.quote(t), short, urllib.parse.quote(t.replace("/", "-")))
+        page = lambda t: "https://%s/%s/-/tree/%s" % (host, repo, urllib.parse.quote(t))
+    else:
+        raise RuntimeError("Unknown provider %r" % provider)
+    tags = []
+    for t in raw if isinstance(raw, list) else []:
+        name = t.get("name") or ""
+        if not name:
+            continue
+        commit = t.get("commit") or {}
+        sha = commit.get("sha") or commit.get("id") or t.get("id") or name
+        when = commit.get("created") or commit.get("created_at") or ""
+        key = version_key(name)
+        rolling = not key and bool(ROLLING_TAG.search(name))
+        suffix = re.match(r"v?\d+(?:\.\d+)*-(.+)$", name)  # "-linux" or "-x64" is a build name, not a pre-release
+        tags.append({
+            "tag_name": name, "name": name, "published_at": when, "html_url": page(name),
+            "prerelease": rolling or bool(key and suffix and PRE_SUFFIX.search(suffix.group(1))),
+            "draft": False, "body": "", "source_only": True, "_rolling": rolling,
+            "assets": [{"id": sha, "name": "%s-%s.tar.gz" % (short, safe_name(name)), "size": 0, "updated_at": "",
+                        "browser_download_url": archive(name), "sha256": ""}],
+            "_key": key,
+        })
+    # The tags APIs sort by name or update time, not by version; tags that aren't versions keep that order.
+    versioned = sorted((t for t in tags if t["_key"]), key=lambda t: t["_key"], reverse=True)
+    tags = [t for t in tags if t["_rolling"]] + versioned + [t for t in tags if not t["_key"] and not t["_rolling"]]
+    for t in tags:
+        del t["_key"], t["_rolling"]
+    return tags
+
+
+def fetch_release(src, prerelease, token="", skip_titles="", latest_only=False, tags_first=False):
     """Latest release of src={provider, host, repo}, normalized to one shape for all forges.
     skip_titles: regex; releases whose title or tag match it are ignored (e.g. "nightly").
-    latest_only: take only the release the developer marked Latest, never another one."""
+    latest_only: take only the release the developer marked Latest, never another one.
+    tags_first: the repo had no releases at the last check, so read its tags straight away."""
     provider, host, repo = src["provider"], src["host"], src["repo"]
     skip = re.compile(skip_titles, re.I) if skip_titles else None
     wanted = lambda r: not (skip and (skip.search(r["name"]) or skip.search(r["tag_name"])))
@@ -272,26 +344,35 @@ def fetch_release(src, prerelease, token="", skip_titles="", latest_only=False):
     else:
         raise RuntimeError("Unknown provider %r" % provider)
     try:
-        # GitHub's Latest marker is the default for stable releases; elsewhere only when asked.
-        if latest_only or (provider == "github" and not prerelease):
-            try:
-                r = norm(http_json(latest_url, tok, svc))
-            except LookupError:
+        # A repo without releases last time costs one request (its tags) instead of three; a day later
+        # (see check_app) the releases are looked at again in case the project started publishing them.
+        rels = fetch_tags(src, tok) if tags_first and not latest_only else []
+        tags_only = bool(rels)
+        if not rels:
+            # GitHub's Latest marker is the default for stable releases; elsewhere only when asked.
+            if latest_only or (provider == "github" and not prerelease):
+                try:
+                    r = norm(http_json(latest_url, tok, svc))
+                except LookupError:
+                    if latest_only:
+                        raise RuntimeError("%s has no release marked Latest" % repo)
+                    r = None  # repo may only have pre-releases; fall through to the list
+                if r and wanted(r):
+                    return r
                 if latest_only:
-                    raise RuntimeError("%s has no release marked Latest" % repo)
-                r = None  # repo may only have pre-releases; fall through to the list
-            if r and wanted(r):
-                return r
-            if latest_only:
-                raise RuntimeError("The release marked Latest (%s) matches your skip filter" % (r["name"] or r["tag_name"]))
-        rels = [norm(r) for r in http_json(list_url, tok, svc)]
+                    raise RuntimeError("The release marked Latest (%s) matches your skip filter" % (r["name"] or r["tag_name"]))
+            rels = [norm(r) for r in http_json(list_url, tok, svc)]
+            tags_only = not [r for r in rels if not r["draft"]]
+            if tags_only:
+                rels = fetch_tags(src, tok)  # no releases at all, only git tags
     except LookupError:
         raise RuntimeError("Repo %s not found on %s" % (repo, host))
     rels = [r for r in rels if not r["draft"] and wanted(r)]
     if not prerelease:
         rels = [r for r in rels if not r["prerelease"]] or rels
     if not rels:
-        raise RuntimeError("No releases found in %s" % repo + (" after skipping %r" % skip_titles if skip else ""))
+        raise RuntimeError("No %s found in %s" % ("releases or tags" if tags_only else "releases", repo)
+                           + (" after skipping %r" % skip_titles if skip else ""))
     return rels[0]
 
 
@@ -334,11 +415,21 @@ def score_asset(name):
         s += 5  # a zipped AppImage beats a loose build of the same release
     if "sse2" in n:
         s -= 5  # builds for very old CPUs; the Deck has AVX2
+    if re.search(r"(^|[^a-z0-9])pgo($|[^a-z0-9])", n):
+        s += 2  # profile-guided build: same app, usually faster
     if re.search(r"steam[-_. ]?deck|steamos", n):
         s += 40
     if re.search(r"(^|[^a-z0-9])(x86[_-]?64|amd64|x64)($|[^a-z0-9])", n):
         s += 10
     return s
+
+
+def pick_release_asset(rel, pattern=""):
+    """pick_asset, except a tag without a release offers only its source archive, so that's the pick."""
+    asset = pick_asset(rel.get("assets", []), pattern)
+    if not asset and rel.get("source_only") and not pattern:
+        asset = rel["assets"][0]
+    return asset
 
 
 def pick_asset(assets, pattern=""):
@@ -417,18 +508,32 @@ def has_update(app, honor_skip=True):
     return newer and not (honor_skip and is_skipped(app))
 
 
+TAGS_RECHECK = 24 * 3600  # how long a repo found without releases goes straight to its tags
+
+
 def check_app(app, token=""):
     try:
+        tags_first = time.time() - _br_time({"fetched_at": app.get("tags_only_at")}) < TAGS_RECHECK
         rel = fetch_release(app, app.get("prerelease", False), token if app.get("provider") == "github" else "",
-                            app.get("skip_titles", ""), app.get("latest_only", False))
-        asset = pick_asset(rel.get("assets", []), app.get("pattern", ""))
+                            app.get("skip_titles", ""), app.get("latest_only", False), tags_first)
+        if not rel.get("source_only"):
+            app.pop("tags_only_at", None)
+        elif not tags_first:
+            app["tags_only_at"] = time.time()
+        asset = pick_release_asset(rel, app.get("pattern", ""))
         app["latest"] = release_info(rel, asset)
         moved = moved_repo(app, rel)
         if moved:
             app["moved_to"] = moved
         else:
             app.pop("moved_to", None)
-        app["error"] = "" if asset else "No matching Linux asset in release %s. Set an asset pattern." % rel.get("tag_name")
+        if asset:
+            app["error"] = ""
+        elif rel.get("source_only"):
+            app["error"] = ("%s publishes no releases. Tag %s only has its source code, and that doesn't match "
+                            "your asset pattern." % (app["repo"], rel.get("tag_name")))
+        else:
+            app["error"] = "No matching Linux asset in release %s. Set an asset pattern." % rel.get("tag_name")
     except Exception as e:
         app["error"] = str(e)
     app["checked_at"] = time.time()
@@ -1742,6 +1847,309 @@ def recomplauncher(refresh=False):
     return dict(data, site=RL_SITE, stale="")
 
 
+# --------------------------------------------------------------------------- Browse catalog
+
+# Browse lists ports, decomps and recomps from four public sites and merges them by repository. Each site is read
+# on its own and kept per source for a day, so one site being down leaves the others working. Logos are hotlinked
+# by the page and never stored.
+BR_SOURCES = {
+    "ub": {"name": "unbaked.games", "site": "https://unbaked.games/", "icon": "https://unbaked.games/favicon.svg",
+           "data": "https://unbaked.games/api/games.json"},
+    "db": {"name": "DecompBuddy", "site": "https://decompbuddy.com/", "icon": "https://decompbuddy.com/assets/favicon.png",
+           "data": "https://raw.githubusercontent.com/TanookiStudios/decomp-buddy/main/plans.json"},
+    "fg": {"name": "FanGamesDB", "site": "https://fangamesdb.com/", "icon": "https://fangamesdb.com/favicon.svg",
+           "data": "https://fangamesdb.com/"},
+    "ge": {"name": "The Gaming Emporium", "site": "https://thegamingemporium.com/",
+           "icon": "https://thegamingemporium.com/icons/apple-touch-icon.png", "data": "https://thegamingemporium.com/all/"},
+}
+BR_ORDER = ("db", "fg", "ge", "ub")  # title preference, best first; unbaked.games has no repositories, so it comes last
+BR_CACHE = CONFIG_DIR / "browse.json"
+BR_FORMAT = 2  # bump when a parser or the item shape changes, so saved lists from older versions are read again
+_br_lock = threading.Lock()
+BR_MAX_AGE = 24 * 3600
+BR_UB_GAME = "https://unbaked.games/api/games/%s.json"
+BR_SLUG = re.compile(r"[a-z0-9-]{1,120}")
+
+
+def _dig(obj, *keys):
+    """obj[k1][k2]... for parsed JSON; None wherever a level isn't an object."""
+    for k in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
+
+
+def _html_attr(tag, name):
+    m = re.search(r'(?<![\w-])%s="([^"]*)"' % re.escape(name), tag)
+    return unescape(m.group(1)).strip() if m else ""
+
+
+def _br_same_site(site, url):
+    try:
+        u = urllib.parse.urlsplit(url)
+        return u.scheme == "https" and bool(u.hostname) and u.hostname == urllib.parse.urlsplit(site).hostname
+    except ValueError:
+        return False
+
+
+def _br_page(site, href):
+    """An https page on the source's own site (relative links are joined to it), or "" for anything else."""
+    url = urllib.parse.urljoin(site, unescape(str(href or "")))
+    return url if _br_same_site(site, url) else ""
+
+
+def _br_repo(hrefs):
+    """(host, repo) of the first link to a repository on a known forge, or None. Nothing is fetched."""
+    for href in hrefs:
+        try:
+            _p, host, repo = parse_source(unescape(href))
+        except ValueError:
+            continue
+        if host in KNOWN_HOSTS:
+            return host, repo
+    return None
+
+
+# FanGamesDB and Emporium list ports for every platform; a title naming another target can't run on the Deck.
+BR_OTHER_TARGET = re.compile(r"android|\b(ios|iphone|ipad|ps ?vita|switch port|for (the )?switch|3ds port|wii ?u port)\b", re.I)
+
+
+def _br_item(src, id_, title, console="", host="", repo="", url="", deck=False, status=""):
+    """One entry of a source's list, in the shape merge_browse expects."""
+    return {"src": src, "id": str(id_)[:200], "title": str(title or repo or id_)[:200], "console": str(console or "")[:120],
+            "host": host, "provider": KNOWN_HOSTS.get(host, ""), "repo": repo,
+            "key": ("%s/%s" % (host, repo)).lower() if repo else "", "url": url, "deck": bool(deck),
+            "status": str(status or "")[:120]}
+
+
+def parse_unbaked(data):
+    """Games unbaked.games lists as native Linux builds. Its list has no repository; browse_resolve finds one."""
+    out = []
+    for g in _dig(data, "games") or []:
+        slug = str(_dig(g, "slug") or "")
+        if not BR_SLUG.fullmatch(slug) or _dig(g, "native_build") is not True or "Linux" not in (_dig(g, "runs_on") or []):
+            continue
+        out.append(_br_item("ub", slug, _dig(g, "title"), _dig(g, "platform"),
+                            url=_br_page(BR_SOURCES["ub"]["site"], _dig(g, "url"))))
+    return out
+
+
+def parse_decompbuddy(data):
+    """Projects with a Linux plan that downloads a release, one entry per GitHub or GitLab repository."""
+    plans = _dig(data, "plans")
+    out = []
+    for name, plan in (plans.items() if isinstance(plans, dict) else []):
+        m = re.fullmatch(r"(github|gitlab):(.+)", str(name))
+        host = {"github": "github.com", "gitlab": "gitlab.com"}.get(m.group(1)) if m else None
+        games = [g for g in _dig(plan, "targets", "linux", "games") or [] if isinstance(g, dict)]
+        game = next((g for g in games if _dig(g, "build", "method") == "release"), None)
+        if not game or not host or not valid_repo(m.group(2)):
+            continue
+        out.append(_br_item("db", name, _dig(game, "game_title"), _dig(game, "console"), host, m.group(2),
+                            BR_SOURCES["db"]["site"]))
+    return out
+
+
+def parse_fangamesdb(html):
+    """Fan games whose link is a repository on a known forge. deck is the site's "runs on Steam Deck" flag."""
+    out = []
+    for m in re.finditer(r'<tr role="row" data-cat="([^"]*)"[^>]*>(.*?)</tr>', html, re.S):
+        body = m.group(2)
+        name = re.search(r'<td[^>]*class="name"[^>]*><a href="([^"]*)"[^>]*>(.*?)</a>', body, re.S)
+        cell = re.search(r'data-label="Link".*?</td>', body, re.S)
+        repo = _br_repo(re.findall(r'href="([^"]*)"', cell.group(0))) if cell else None
+        if not name or not repo or BR_OTHER_TARGET.search(unescape(name.group(2))):
+            continue
+        status = re.search(r'<span class="st [^"]*">(?:<svg.*?</svg>)?([^<]*)</span>', body, re.S)
+        console = re.search(r'data-label="Console" data-v="([^"]*)"', body)
+        title = unescape(re.sub(r"<[^>]+>", "", name.group(2))).strip()
+        out.append(_br_item("fg", name.group(1), title, unescape(console.group(1)) if console else "", repo[0], repo[1],
+                            _br_page(BR_SOURCES["fg"]["site"], name.group(1)),
+                            deck="run:deck" in unescape(m.group(1)).split("|"),
+                            status=unescape(status.group(1)) if status else ""))
+    return out
+
+
+def parse_emporium(html):
+    """Projects in the list whose game card links to a repository on a known forge."""
+    out = []
+    for m in re.finditer(r'<div class="game-card"([^>]*)>(.*?)(?=<div class="game-card"|\Z)', html, re.S):
+        attrs, link = m.group(1), re.search(r'<a\b[^>]*class="game-card__link"[^>]*>', m.group(2))
+        repo = _br_repo([_html_attr(link.group(0), "href")]) if link else None
+        if not repo or BR_OTHER_TARGET.search(_html_attr(attrs, "data-title")):
+            continue
+        out.append(_br_item("ge", _html_attr(attrs, "data-favourite-id"), _html_attr(attrs, "data-title"),
+                            _html_attr(attrs, "data-platform"), repo[0], repo[1], BR_SOURCES["ge"]["data"],
+                            status=_html_attr(attrs, "data-category-display")))
+    return out
+
+
+def _br_norm(title):
+    """Title as matched between unbaked.games and the repository lists: no case, spaces, punctuation or leading "The"."""
+    return re.sub(r"[\W_]+", "", re.sub(r"^the\b", "", str(title or "").strip().casefold()))
+
+
+def _catalog_keys():
+    """{key: ["rh", "qv", "rl"]}: which saved catalogs list each repository. Nothing is fetched."""
+    listed = {}
+    for name, path in (("rh", RH_CACHE), ("qv", QV_CACHE), ("rl", RL_CACHE)):
+        try:
+            items = json.loads(path.read_text()).get("items")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for x in items if isinstance(items, list) else []:
+            if isinstance(x, dict) and x.get("key"):
+                names = listed.setdefault(str(x["key"]), [])
+                if name not in names:
+                    names.append(name)
+    return listed
+
+
+def merge_browse(per_source):
+    """Entries merged by repository, most sources first. per_source is {src: [items from the parse_* functions]}."""
+    known, listed = _known_stars(), _catalog_keys()
+    groups, by_key, by_title = [], {}, {}
+    for src in BR_ORDER:
+        for it in per_source.get(src) or []:
+            norm = _br_norm(it["title"])
+            g = by_key.get(it["key"]) if it["key"] else by_title.get(norm) if norm else None
+            if g is not None and not it["key"] and any(s["src"] == src for s in g["sources"]):
+                g = None  # a second unbaked.games game with the same title is a different game, not a duplicate
+            if g is None:
+                g = {"key": it["key"], "host": it["host"], "provider": it["provider"], "repo": it["repo"],
+                     "title": it["title"], "console": it["console"], "deck": False, "status": "", "sources": [],
+                     "stars": 0, "also": [], "ub_slug": "" if it["key"] else it["id"]}
+                groups.append(g)
+                if it["key"]:
+                    by_key[it["key"]] = g
+            if norm and it["key"]:
+                by_title.setdefault(norm, g)
+            if not any(s["src"] == src for s in g["sources"]):
+                g["sources"].append({"src": src, "id": it["id"], "url": it["url"]})
+            g["deck"] = g["deck"] or it["deck"]
+            g["status"] = g["status"] or it["status"]
+            g["console"] = g["console"] or it["console"]
+    for g in groups:
+        g["stars"] = known.get(g["key"], 0) if g["key"] else 0
+        g["also"] = list(listed.get(g["key"], [])) if g["key"] else []
+    groups.sort(key=lambda g: (-len(g["sources"]), -g["stars"], g["title"].casefold()))
+    return groups
+
+
+def _br_html(url):
+    """A source's HTML page; errors read like http_json's."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
+    host = urllib.parse.urlsplit(url).hostname
+    try:
+        with _opener.open(req, timeout=30) as r:
+            return r.read(16 * 1024 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("%s answered HTTP %d" % (host, e.code))
+    except urllib.error.URLError as e:
+        raise RuntimeError("Network error: %s" % e.reason)
+
+
+def _br_fetch(src):
+    """Entries of one source, read from its public data. An empty list means the page changed, not that the
+    site emptied, so it's an error and the saved list stays."""
+    if src == "ub":
+        items = parse_unbaked(http_json(BR_SOURCES[src]["data"]))
+    elif src == "db":
+        items = parse_decompbuddy(http_json(BR_SOURCES[src]["data"]))
+    else:
+        html = _br_html(BR_SOURCES[src]["data"])
+        items = parse_fangamesdb(html) if src == "fg" else parse_emporium(html)
+    if not items:
+        raise RuntimeError("found no projects; the site may have changed")
+    return items
+
+
+def _br_time(saved):
+    try:
+        return float(saved.get("fetched_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def browse(refresh=False):
+    """{"items", "sources", "fetched_at", "stale"}: each site is read again once a day or on request. A site that
+    fails keeps its saved list and says why in "sources". Raises only when no site has anything at all."""
+    # One reader at a time: a second window opening Browse waits and then gets the fresh lists from the cache.
+    with _br_lock:
+        return _browse(refresh)
+
+
+def _browse(refresh):
+    try:
+        cache = json.loads(BR_CACHE.read_text())
+        saved = cache.get("sources") if cache.get("format") == BR_FORMAT else None
+    except (OSError, ValueError, AttributeError):
+        saved = None
+    saved = saved if isinstance(saved, dict) else {}
+    per, info, errors, changed = {}, {}, [], False
+    due = [src for src in BR_SOURCES
+           if refresh or time.time() - _br_time(saved.get(src) if isinstance(saved.get(src), dict) else {}) >= BR_MAX_AGE]
+    fresh = {}
+    if due:
+        # About 20 MB across the four sites; reading them side by side keeps the first open short.
+        with concurrent.futures.ThreadPoolExecutor(len(due)) as pool:
+            jobs = {src: pool.submit(_br_fetch, src) for src in due}
+        for src, job in jobs.items():
+            try:
+                fresh[src] = job.result()
+            except Exception as e:
+                fresh[src] = e
+    for src, meta in BR_SOURCES.items():
+        keep = saved.get(src) if isinstance(saved.get(src), dict) else {}
+        items = keep.get("items") if isinstance(keep.get("items"), list) else []
+        error = ""
+        if src in fresh:
+            if isinstance(fresh[src], Exception):
+                error = "Couldn't refresh %s (%s)" % (meta["name"], fresh[src])
+                errors.append(error)
+            else:
+                items = fresh[src]
+                saved[src] = {"fetched_at": time.time(), "items": items}
+                changed = True
+        per[src] = items
+        info[src] = {"name": meta["name"], "site": meta["site"], "icon": meta["icon"], "count": len(items), "error": error}
+    if changed:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = BR_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"format": BR_FORMAT, "sources": saved}))
+        os.replace(tmp, BR_CACHE)
+    if errors and not any(per.values()):
+        raise RuntimeError("Couldn't load the Browse catalogs: " + "; ".join(errors))
+    fetched = max([_br_time(saved[s]) for s in BR_SOURCES if isinstance(saved.get(s), dict)] or [0])
+    return {"items": merge_browse(per), "sources": info, "fetched_at": fetched, "stale": bool(errors)}
+
+
+def browse_resolve(slug):
+    """Repository URL of the best Linux project unbaked.games lists for a game (most stars, not archived)."""
+    slug = str(slug or "")
+    if not BR_SLUG.fullmatch(slug):
+        raise ValueError("That isn't an unbaked.games game")
+    try:
+        game = http_json(BR_UB_GAME % slug)
+    except (LookupError, RuntimeError) as e:
+        raise RuntimeError("Couldn't look up %s on unbaked.games: %s" % (slug, e))
+    projects = _dig(game, "projects")
+    best = None
+    for p in projects if isinstance(projects, list) else []:
+        if not isinstance(p, dict) or p.get("archived") or "Linux" not in (p.get("runs_on") or []):
+            continue
+        try:
+            _provider, host, repo = parse_source(str(p.get("url") or ""))
+        except ValueError:
+            continue
+        if host in KNOWN_HOSTS and (best is None or _rl_int(p.get("stars")) > best[0]):
+            best = (_rl_int(p.get("stars")), "https://%s/%s" % (host, repo))
+    if best is None:
+        raise RuntimeError("unbaked.games lists no Linux project on GitHub, GitLab or Codeberg for %s" % slug)
+    return best[1]
+
+
 # --------------------------------------------------------------------------- Steam shortcuts
 
 STEAM_ROOTS = ("~/.steam/steam", "~/.local/share/Steam", "~/.var/app/com.valvesoftware.Steam/.local/share/Steam")
@@ -2142,7 +2550,7 @@ class Server:
                                 body.get("skip_titles", ""), bool(body.get("latest_only")))
             pattern = body.get("pattern", "")
             assets = rel.get("assets", [])
-            picked = pick_asset(assets, pattern)
+            picked = pick_release_asset(rel, pattern)
             return {
                 "repo": display_repo(src),
                 "provider": src["provider"],
@@ -2198,6 +2606,14 @@ class Server:
                 app["qv_id"] = str(body["qv_id"])[:120]
             if body.get("rl_id"):
                 app["rl_id"] = str(body["rl_id"])[:120]
+            if body.get("br_src") or body.get("br_url"):
+                br_src, br_url = str(body.get("br_src") or ""), str(body.get("br_url") or "")
+                if br_src not in BR_SOURCES:
+                    raise ValueError("Unknown Browse source")
+                if not _br_same_site(BR_SOURCES[br_src]["site"], br_url):
+                    raise ValueError("A Browse link has to be an https page on that source's own site")
+                app["br_src"] = br_src
+                app["br_url"] = br_url[:300]
             with _lock:
                 if any(same_source(a, app) for a in cfg["apps"]):
                     raise ValueError("%s is already tracked" % display_repo(app))
@@ -2360,6 +2776,12 @@ class Server:
 
         if path == "/api/recomplauncher":
             return recomplauncher(bool(body.get("refresh")))
+
+        if path == "/api/browse":
+            return browse(bool(body.get("refresh")))
+
+        if path == "/api/browse_resolve":
+            return {"repo": browse_resolve(body.get("slug"))}
 
         if path == "/api/github_search":
             tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
@@ -3023,6 +3445,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .rh-site{white-space:nowrap;font-size:14px}
 .rh-tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
 .rh-tools input{flex:1;min-width:200px}
+.rh-tools input[type=checkbox]{flex:none;min-width:0}
 .rh-tools label{flex-direction:row;align-items:center;gap:8px;white-space:nowrap}
 #vRh>.hint{margin:0 0 12px}
 .rh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:8px;align-items:start}
@@ -3042,6 +3465,7 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .rh-act{display:flex;gap:10px;align-items:center;margin-top:auto;flex-wrap:wrap}
 .rh-act button{min-height:36px;padding:6px 14px;font-size:13.5px}
 .rh-act a{font-size:13.5px}
+img.br-ico{width:14px;height:14px;border-radius:3px;flex:none;vertical-align:-2px}
 /* ---- Quiver: the same cards; player reports sit under the summary */
 .qv-rep{font-size:12.5px;color:var(--faint)}
 .qv-rep b{color:var(--text);font-weight:600}
@@ -3087,6 +3511,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <button type="button" role="tab" data-tab="rh"><img src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">Recomp Haven</button>
   <button type="button" role="tab" data-tab="qv">Quiver</button>
   <button type="button" role="tab" data-tab="rl">Recomp Launcher</button>
+  <button type="button" role="tab" data-tab="br">Browse</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
 <section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
@@ -3134,6 +3559,22 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
       <option value="system">System</option><option value="name">Name</option></select></label></div>
   <div class="hint" id="rlInfo"></div>
   <div id="rlList" class="rh-grid"></div>
+</section>
+<section id="vBr" hidden>
+  <div class="rh-head">
+    <div><b>Browse</b><span class="hint">Ports, decomps and recomps from unbaked.games, DecompBuddy, FanGamesDB and The Gaming Emporium, merged by repository. SedotDeck isn't part of any of these sites. DecompBuddy's catalog is GPL-3.0. Every project needs your own copy of the game.</span>
+      <span class="hint">Sources: <a href="https://unbaked.games/" target="_blank" rel="noopener"><img class="br-ico" src="https://unbaked.games/favicon.svg" width="16" height="16" alt="" onerror="this.remove()">unbaked.games ↗</a>
+        · <a href="https://decompbuddy.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://decompbuddy.com/assets/favicon.png" width="16" height="16" alt="" onerror="this.remove()">DecompBuddy ↗</a>
+        · <a href="https://fangamesdb.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://fangamesdb.com/favicon.svg" width="16" height="16" alt="" onerror="this.remove()">FanGamesDB ↗</a>
+        · <a href="https://thegamingemporium.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://thegamingemporium.com/icons/apple-touch-icon.png" width="16" height="16" alt="" onerror="this.remove()">The Gaming Emporium ↗</a></span></div></div>
+  <div class="rh-tools"><input type="text" id="brQ" placeholder="Search games, projects or repos" autocomplete="off" spellcheck="false" aria-label="Search Browse">
+    <label>Source<select id="brSrc"><option value="">All sources</option></select></label>
+    <label>System<select id="brCon"><option value="">All systems</option></select></label>
+    <label><input type="checkbox" id="brDeck"> Tested on Steam Deck</label>
+    <label>Sort<select id="brSort">
+      <option value="sources">Most sources</option><option value="stars">Stars</option><option value="name">Name</option><option value="system">System</option></select></label></div>
+  <div class="hint" id="brInfo"></div>
+  <div id="brList" class="rh-grid"></div>
 </section>
 </main>
 <div id="selbar" class="selbar" hidden>
@@ -3347,7 +3788,7 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a>, the <a href="#" data-tab="qv">Quiver catalog</a> and <a href="#" data-tab="rl">Recomp Launcher</a>.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a>, the <a href="#" data-tab="qv">Quiver catalog</a>, <a href="#" data-tab="rl">Recomp Launcher</a> and <a href="#" data-tab="br">Browse</a>.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
@@ -3364,6 +3805,7 @@ function render(){
   if(TAB=="rh"&&RH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rhKey)renderRh();
   if(TAB=="qv"&&QV.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=qvKey)renderQv();
   if(TAB=="rl"&&RL.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=rlKey)renderRl();
+  if(TAB=="br"&&BR.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=brKey)renderBr();
   if(TAB=="gh"&&GH.items&&S.apps.map(a=>a.host+"/"+a.repo).join()!=ghKey)renderGh();
   if(SEL){for(const id of [...SEL])if(!S.apps.some(a=>a.id==id))SEL.delete(id);renderSel()}
   $("#catList").innerHTML=[...new Set(S.apps.map(a=>a.category).filter(Boolean))].sort().map(c=>`<option value="${esc(c)}">`).join("");
@@ -3428,6 +3870,7 @@ async function doAction(k,a,el){
   else if(k=="rhpage")openUrl(RH.site+"#"+encodeURIComponent(a.rh_id));
   else if(k=="qvpage")openUrl(QV.site+"apps/"+encodeURIComponent(a.qv_id));
   else if(k=="rlpage")openUrl(RL.site+"game/"+encodeURIComponent(a.rl_id));
+  else if(k=="brpage")openUrl(a.br_url);
 }
 function openUrl(u){APP?act("/api/open_url",{url:u}):window.open(u,"_blank","noopener")}
 function addSteam(a){
@@ -3494,6 +3937,7 @@ function openMenu(btn,a){
   if(a.rh_id)rows.push(it("rhpage","View on Recomp Haven"));
   if(a.qv_id)rows.push(it("qvpage","View on quiverlauncher.com"));
   if(a.rl_id)rows.push(it("rlpage","View on recomplauncher.com"));
+  if(a.br_url)rows.push(it("brpage","View on "+(BR_NAMES[a.br_src]||"Browse")));
   rows.push("<hr>",it("category","Category…",{hint:a.category?esc(a.category):""}),it("edit","Edit"),it("remove","Remove…",{danger:true}));
   menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
@@ -3682,11 +4126,12 @@ let TAB="apps";
 function setTab(t){
   TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$("#vRl").hidden=t!="rl";$(".tabs-end").hidden=t!="apps";
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$("#vRl").hidden=t!="rl";$("#vBr").hidden=t!="br";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
   if(t=="rh")loadRh(false);
   if(t=="qv")loadQv(false);
   if(t=="rl")loadRl(false);
+  if(t=="br")loadBr(false);
   if(t=="gh")$("#ghQ").focus();
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
@@ -3901,6 +4346,85 @@ $("#rlList").onclick=async e=>{
   try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rl_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
   catch(err){toast(err.message,true)}
   rlAdding.delete(x.id);renderRl();
+};
+
+// ---- Browse: ports, decomps and recomps from four sites, merged by repository
+const BR_NAMES={ub:"unbaked.games",db:"DecompBuddy",fg:"FanGamesDB",ge:"The Gaming Emporium"};
+const BR_ALSO={rh:"Recomp Haven",qv:"Quiver",rl:"Recomp Launcher"};
+let BR={items:null,sources:{},fetched_at:0,stale:false},brLoading=false,brAdding=new Set(),brKey="",brShow=200;
+const BR_PAGE=200;  // thousands of cards at once make typing in the search box lag on the Deck
+try{$("#brSort").value=localStorage.getItem("sedotdeck.brsort")||"sources"}catch(e){}
+async function loadBr(refresh){
+  if(brLoading||(BR.items&&!refresh))return renderBr();
+  brLoading=true;$("#brInfo").textContent="Loading the catalogs…";
+  try{BR=await api("/api/browse",{refresh})}catch(e){$("#brInfo").textContent=e.message}
+  brLoading=false;renderBr();
+}
+const brCon=k=>k||"Other";
+const brId=x=>x.key||"ub:"+x.ub_slug;
+const BR_SORT={
+  sources:(a,b)=>b.sources.length-a.sources.length||b.stars-a.stars||a.title.localeCompare(b.title),
+  stars:(a,b)=>b.stars-a.stars||a.title.localeCompare(b.title),
+  name:(a,b)=>a.title.localeCompare(b.title),
+  system:(a,b)=>brCon(a.console).localeCompare(brCon(b.console))||a.title.localeCompare(b.title),
+};
+function brCard(x,tracked){
+  // Entries with a repository match by it; DecompBuddy and Emporium links are the site's own home page, not the entry's.
+  const added=x.key?tracked.has(x.key):tracked.has(x.sources[0].url),busy=brAdding.has(brId(x));
+  const badges=x.sources.map(s=>{const m=BR.sources[s.src]||{},name=m.name||BR_NAMES[s.src]||s.src;
+    return `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(name)}" aria-label="${esc(name)}"><img class="br-ico" src="${esc(m.icon||"")}" alt="" loading="lazy" onerror="this.remove()"></a>`}).join("");
+  return `<div class="rh-card"><div class="rh-body">
+      <div class="rh-title">${esc(x.title)}</div>
+      <div class="rh-meta"><span class="tag" title="${esc(brCon(x.console))}">${esc(brCon(x.console))}</span>${x.deck?'<span class="tag added">Tested on Steam Deck</span>':""}${x.status?`<span>${esc(x.status)}</span>`:""}${x.stars>0?`<span class="rh-stars" title="${x.stars.toLocaleString()} GitHub stars">★ ${stars(x.stars)}</span>`:""}</div>
+      <div class="rh-meta">${badges}${x.repo?`<span class="mono" title="${esc(x.host+"/"+x.repo)}">${esc(x.repo)}</span>`:""}</div>
+      ${x.also.length?`<div class="rh-req">Also in ${x.also.map(c=>BR_ALSO[c]).join(", ")}</div>`:""}
+      <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-br="${esc(brId(x))}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}</div>
+    </div></div>`;
+}
+function renderBr(){
+  if(!BR.items)return;
+  brKey=S.apps.map(a=>a.host+"/"+a.repo).join();
+  const tracked=new Set(S.apps.flatMap(a=>[(a.host+"/"+a.repo).toLowerCase(),a.br_url].filter(Boolean)));
+  const src=$("#brSrc"),scur=src.value;
+  src.innerHTML='<option value="">All sources</option>'+Object.keys(BR.sources).map(k=>`<option value="${esc(k)}">${esc(BR.sources[k].name)} (${BR.sources[k].count})</option>`).join("");
+  src.value=BR.sources[scur]?scur:"";
+  const con=$("#brCon"),ccur=con.value,per={};
+  BR.items.forEach(x=>per[brCon(x.console)]=(per[brCon(x.console)]||0)+1);
+  con.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>a.localeCompare(b))
+    .map(k=>`<option value="${esc(k)}">${esc(k)} (${per[k]})</option>`).join("");
+  con.value=per[ccur]?ccur:"";
+  const q=$("#brQ").value.trim().toLowerCase(),sel=src.value,system=con.value,deck=$("#brDeck").checked,sort=$("#brSort").value;
+  const list=BR.items.filter(x=>(!system||brCon(x.console)==system)&&(!sel||x.sources.some(s=>s.src==sel))&&(!deck||x.deck)
+    &&(!q||[x.title,x.console,x.repo].join(" ").toLowerCase().includes(q))).sort(BR_SORT[sort]||BR_SORT.sources);
+  const when=BR.fetched_at?`Updated ${ago(BR.fetched_at)}`:"";
+  const errors=Object.values(BR.sources).filter(s=>s.error).map(s=>esc(s.error));
+  $("#brInfo").innerHTML=[`${list.length} of ${BR.items.length} projects`,when,'<a href="#" id="brRefresh">Refresh</a>',...errors].filter(Boolean).join(" · ");
+  if(!list.length){$("#brList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No projects match these filters. Clear the search or pick All sources.</div>';return}
+  const shown=list.slice(0,brShow);
+  const more=list.length>shown.length?`<div class="empty" style="grid-column:1/-1"><button type="button" id="brMore">Show ${Math.min(BR_PAGE,list.length-shown.length)} more</button> ${shown.length} of ${list.length} shown</div>`:"";
+  if(sort=="system"&&!system){
+    const groups=[...new Set(shown.map(x=>brCon(x.console)))];
+    $("#brList").innerHTML=groups.map(k=>{const g=shown.filter(x=>brCon(x.console)==k);
+      return `<h3 class="group">${esc(k)}<span>${list.filter(x=>brCon(x.console)==k).length}</span></h3>`+g.map(x=>brCard(x,tracked)).join("")}).join("")+more;
+  }else $("#brList").innerHTML=shown.map(x=>brCard(x,tracked)).join("")+more;
+}
+const brFilter=()=>{brShow=BR_PAGE;renderBr()};
+$("#brQ").oninput=brFilter;$("#brSrc").onchange=brFilter;$("#brCon").onchange=brFilter;$("#brDeck").onchange=brFilter;
+$("#brSort").onchange=()=>{try{localStorage.setItem("sedotdeck.brsort",$("#brSort").value)}catch(e){}brFilter()};
+$("#brInfo").onclick=e=>{if(e.target.id=="brRefresh"){e.preventDefault();BR.items=null;loadBr(true)}};
+$("#brList").onclick=async e=>{
+  if(e.target.id=="brMore"){brShow+=BR_PAGE;renderBr();return}
+  const b=e.target.closest("[data-br]");if(!b)return;
+  const x=BR.items.find(i=>brId(i)==b.dataset.br);if(!x)return;
+  // "View on …" should open the entry's own page when a source has one (FanGamesDB, unbaked.games).
+  const s=x.sources.find(s=>s.src=="fg"||s.src=="ub")||x.sources[0];
+  brAdding.add(brId(x));renderBr();
+  try{
+    const repo=x.repo?"https://"+x.host+"/"+x.repo:(await api("/api/browse_resolve",{slug:x.ub_slug})).repo;
+    await api("/api/add",{repo,name:x.title,br_src:s.src,br_url:s.url});
+    toast(`${x.title} added to My apps, checking for its release…`);await refresh();
+  }catch(err){toast(err.message,true)}
+  brAdding.delete(brId(x));renderBr();
 };
 
 // ---- Discover: find a project on GitHub by the game's name

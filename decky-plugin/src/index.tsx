@@ -8,8 +8,9 @@ import {
   ModalRoot,
   PanelSection,
   PanelSectionRow,
-  ProgressBarWithInfo,
+  ProgressBar,
   TextField,
+  ToggleField,
   showContextMenu,
   showModal,
   staticClasses,
@@ -48,6 +49,9 @@ const call = callable<[path: string, body: Record<string, unknown>], any>("call"
 
 const fail = (e: unknown) =>
   toaster.toast({ title: "SedotDeck", body: e instanceof Error ? e.message : String(e) });
+
+// Tags, file names and errors can be one long word (a commit hash); let them break instead of widening the panel.
+const WRAP = { overflowWrap: "anywhere", wordBreak: "break-word" } as const;
 
 function statusOf(a: App, job?: Job): string {
   if (job?.state === "running") return job.label + "…";
@@ -200,7 +204,7 @@ function AppRows({ app, job, act, refresh }: {
       <PanelSectionRow>
         <Field
           label={app.name}
-          description={describe(app)}
+          description={<span style={WRAP}>{describe(app)}</span>}
           focusable
           highlightOnFocus
           onActivate={openMenu}
@@ -212,11 +216,14 @@ function AppRows({ app, job, act, refresh }: {
       </PanelSectionRow>
       {running && (
         <PanelSectionRow>
-          <ProgressBarWithInfo
-            indeterminate={job!.label !== "Downloading" || !job!.progress}
-            nProgress={Math.round(job!.progress * 100)}
-            sOperationText={job!.message || job!.label}
-          />
+          {/* ProgressBarWithInfo has a fixed minimum width and pushed the side panel wider than the screen. */}
+          <div style={{ width: "100%", minWidth: 0, overflow: "hidden" }}>
+            <ProgressBar
+              indeterminate={job!.label !== "Downloading" || !job!.progress}
+              nProgress={Math.round(job!.progress * 100)}
+            />
+            <div style={{ ...WRAP, fontSize: 12, opacity: 0.8, marginTop: 4 }}>{job!.message || job!.label}</div>
+          </div>
         </PanelSectionRow>
       )}
       {app.has_update && !running && app.latest?.asset && (
@@ -234,6 +241,7 @@ function Content() {
   const [state, setState] = useState<State | null>(null);
   const [url, setUrl] = useState("");
   const [adding, setAdding] = useState(false);
+  const [pre, setPre] = useState(false);
   const prevJobs = useRef<Record<string, Job>>({});
   const timer = useRef<number | undefined>(undefined);
 
@@ -280,8 +288,9 @@ function Content() {
     if (!url.trim()) return;
     setAdding(true);
     try {
-      await call("/api/add", { repo: url.trim() });
+      await call("/api/add", { repo: url.trim(), prerelease: pre });
       setUrl("");
+      setPre(false);
       toaster.toast({ title: "SedotDeck", body: "Added, checking for releases…" });
     } catch (e) {
       fail(e);
@@ -320,7 +329,11 @@ function Content() {
         <PanelSection title="Found in ~/Applications">
           <PanelSectionRow>
             <Field
-              description={`${found.map((f) => f.name).join(", ")}. SedotDeck can update these in place, so Steam shortcuts keep working.`}
+              description={
+                <span style={WRAP}>
+                  {`${found.map((f) => f.name).join(", ")}. SedotDeck can update these in place, so Steam shortcuts keep working.`}
+                </span>
+              }
               bottomSeparator="none"
             />
           </PanelSectionRow>
@@ -360,6 +373,9 @@ function Content() {
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label="Include pre-releases" checked={pre} onChange={setPre} />
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={adding || !url.trim()} onClick={add}>

@@ -559,6 +559,65 @@ try:
     dp.fetch_release(gsrc, False, skip_titles="nightly"); raise AssertionError("everything skipped")
 except RuntimeError as e:
     eq("after skipping" in str(e), True, "all releases skipped")
+h = "ec667e25f9ab82ea32a10e745ff48583f63cd1d4"
+pgo = [{"name": "eglantine-%s-linux-%s.AppImage" % (h, v)} for v in ("x86_64", "aarch64-pgo", "x86_64-pgo")]
+eq(dp.pick_asset(pgo)["name"], pgo[2]["name"], "PGO build wins a tie whatever the order")
+# a repo with git tags but no releases: the newest version tag's source archive
+TAGS = "https://api.github.com/repos/me/game/tags?per_page=100&page="
+ROUTES[GH + "?per_page=15"] = []
+ROUTES[TAGS + "1"] = [
+    {"name": "v1.10", "commit": {"sha": "a10"}}, {"name": "v2.0-beta.1", "commit": {"sha": "b2"}},
+    {"name": "v1.9", "commit": {"sha": "a9"}}, {"name": "snapshot", "commit": {"sha": "s1"}}]
+trel = dp.fetch_release(gsrc, False)
+eq((trel["tag_name"], trel["assets"][0]["browser_download_url"], trel["assets"][0]["id"]),
+   ("v1.10", "https://github.com/me/game/archive/refs/tags/v1.10.tar.gz", "a10"), "tags only: newest stable tag")
+eq(dp.fetch_release(gsrc, True)["tag_name"], "snapshot", "tags only: a rolling tag is the newest pre-release")
+eq(dp.pick_release_asset(trel)["name"], "game-v1.10.tar.gz", "tags only: source archive is the pick")
+eq(dp.pick_release_asset(trel, "linux"), None, "tags only: a pattern still has to match")
+# tags sorted by name: the newest version can be on the second page
+ROUTES[TAGS + "1"] = [{"name": "v1.%d" % n, "commit": {"sha": "p%d" % n}} for n in range(99, -1, -1)]
+ROUTES[TAGS + "2"] = [{"name": "v1.100", "commit": {"sha": "p100"}}]
+eq(dp.fetch_release(gsrc, False)["tag_name"], "v1.100", "tags only: more than one page read")
+del ROUTES[TAGS + "2"]
+# a build-name suffix isn't a pre-release; a real one is
+ROUTES[TAGS + "1"] = [{"name": "v2.0-rc1"}, {"name": "v1.5-linux"}, {"name": "nightly"}, {"name": "v0.1"}]
+eq((dp.fetch_release(gsrc, False)["tag_name"], dp.fetch_release(gsrc, True)["tag_name"]),
+   ("v1.5-linux", "nightly"), "tags only: -linux is stable, -rc1 and nightly are pre-releases")
+# check_app: no releases once means tags only for a day, one request per check
+calls = []
+def counting(url, token="", service=""):
+    calls.append(url)
+    return fake_json(url, token, service)
+dp.http_json = counting
+tapp = dp.new_app("me/game")
+dp.check_app(tapp)
+eq((tapp["error"], tapp["latest"]["tag"], dp.has_update(tapp), bool(tapp.get("tags_only_at"))),
+   ("", "v1.5-linux", True, True), "tags only: check finds an update and remembers")
+calls.clear()
+dp.check_app(tapp)
+eq(calls, [TAGS + "1"], "tags only: the next check reads only the tags")
+tapp["tags_only_at"] -= dp.TAGS_RECHECK + 1
+calls.clear()
+dp.check_app(tapp)
+eq(GH + "?per_page=15" in calls, True, "tags only: releases looked at again after a day")
+tapp["tags_only_at"] = "garbage"
+dp.check_app(tapp)
+eq(tapp["error"], "", "tags only: a broken timestamp is ignored")
+tapp["pattern"] = "x86_64"
+dp.check_app(tapp)
+eq("publishes no releases" in tapp["error"], True, "tags only: the error says there are no releases")
+ROUTES[GH + "?per_page=15"] = [dict(ghrel("v3.0"), assets=[{"id": 1, "name": "game-x86_64.AppImage", "browser_download_url": "https://x/g"}])]
+tapp["tags_only_at"] -= dp.TAGS_RECHECK + 1
+dp.check_app(tapp)
+eq((tapp["latest"]["tag"], "tags_only_at" in tapp), ("v3.0", False), "tags only: a real release ends it")
+dp.http_json = fake_json
+ROUTES[GH + "?per_page=15"] = []
+ROUTES[TAGS + "1"] = []
+try:
+    dp.fetch_release(gsrc, False); raise AssertionError("no releases, no tags")
+except RuntimeError as e:
+    eq("No releases or tags found" in str(e), True, "tags only: none at all")
+del ROUTES[GH + "?per_page=15"]
 # Gitea/Forgejo: Latest only uses /releases/latest, otherwise the newest in the list
 CB = "https://codeberg.org/api/v1/repos/me/game/releases"
 csrc = {"provider": "gitea", "host": "codeberg.org", "repo": "me/game"}
@@ -731,6 +790,198 @@ eq(qs, [("Old", 55), ("GL", 0)], "Quiver items carry the known stars, 0 when non
 eq("stars" in json.loads(dp.QV_CACHE.read_text())["items"][0], False, "stars not written to the Quiver cache")
 dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = real_rh, real_rl, real_qv
 
+# --- Browse catalog: four sources parsed from small fixtures, merged by repository
+BR_UB = {"games": [
+    {"slug": "mindustry", "title": "Mindustry", "platform": "PC", "native_build": True, "runs_on": ["Windows", "Linux"],
+     "url": "https://unbaked.games/games/mindustry/"},
+    {"slug": "zelda-majoras-mask", "title": "The Legend of Zelda: Majora's Mask", "platform": "PC", "native_build": True,
+     "runs_on": ["Linux"], "url": "https://unbaked.games/games/zelda-majoras-mask/"},
+    {"slug": "win-only", "title": "Win Only", "native_build": True, "runs_on": ["Windows"], "url": "https://unbaked.games/games/win-only/"},
+    {"slug": "not-native", "title": "Not Native", "native_build": False, "runs_on": ["Linux"], "url": "https://unbaked.games/games/not-native/"},
+    {"slug": "Bad Slug", "title": "Bad", "native_build": True, "runs_on": ["Linux"]}]}
+BR_DB = {"plans": {
+    "github:HarbourMasters/2ship2harkinian": {"targets": {"linux": {"games": [
+        {"game_title": "The Legend of Zelda: Majora's Mask", "console": "Nintendo 64", "build": {"method": "release"}}]}}},
+    "gitlab:sonicdcer/dnzhrecomp": {"targets": {"linux": {"games": [
+        {"game_title": "Donic Zelda", "console": "Dreamcast", "build": {"method": "release"}}]}}},
+    "github:a/source-only": {"targets": {"linux": {"games": [
+        {"game_title": "Source Only", "console": "PC", "build": {"method": "source"}}]}}},
+    "github:a/windows-release": {"targets": {"windows": {"games": [
+        {"game_title": "Win", "console": "PC", "build": {"method": "release"}}]}}},
+    "github:a/bad": "junk"}}
+BR_FG = """<table><thead><tr role="row"><th>Game</th></tr></thead><tbody>
+<tr role="row" data-cat="recomp|Nintendo 64|Zelda|run:deck|ai:none" data-text="zelda">
+<td role="cell" class="name"><a href="/games/zelda-64-recompiled.html">Zelda 64: Recompiled</a><span class="tag">recomp</span></td>
+<td role="cell" data-label="Status" data-v="1"><span class="st st-fully-playable"><svg viewBox="0 0 12 12"><path d="M6 1"/></svg>Fully playable</span></td>
+<td role="cell" data-label="Link" class="ext"><a href="https://github.com/Zelda64Recomp/Zelda64Recomp" rel="noopener">github.com</a></td>
+<td role="cell" data-label="Console" data-v="Nintendo 64">Nintendo 64</td></tr>
+<tr role="row" data-cat="fan|PC|Itchy|ai:none" data-text="itchy">
+<td role="cell" class="name"><a href="/games/itchy.html">Itchy</a></td>
+<td role="cell" data-label="Link" class="ext"><a href="https://itch.io/itchy">itch.io</a></td>
+<td role="cell" data-label="Console" data-v="PC">PC</td></tr>
+<tr role="row" data-cat="decomp|PC|Tool|ai:none" data-text="zed">
+<td role="cell" class="name"><a href="/games/zed.html">Zed &amp; Co</a></td>
+<td role="cell" data-label="Link" class="ext"><a href="https://archive.org/details/zed">archive</a><a href="https://gitlab.com/grp/zed/-/releases">gitlab</a></td>
+<td role="cell" data-label="Console" data-v="PC">PC</td></tr>
+</tbody></table>"""
+BR_GE = """<div class="game-card" data-favourite-id="zelda-recomp" data-title="Zelda &#x27;Recomp&#x27;" data-category-display="In The Works" data-platform="N64">
+<a class="game-card__link" href="https://github.com/Zelda64Recomp/Zelda64Recomp" target="_blank"><h3>x</h3></a></div>
+<div class="game-card" data-favourite-id="adv" data-title="Advance Wars" data-category-display="Rom Hacks" data-platform="">
+<a class="game-card__link" href="https://www.romhacking.net/hacks/6012/" target="_blank"></a></div>"""
+ub_items = dp.parse_unbaked(BR_UB)
+eq([x["id"] for x in ub_items], ["mindustry", "zelda-majoras-mask"], "unbaked: native Linux games with a valid slug")
+eq((ub_items[0]["repo"], ub_items[0]["key"], ub_items[0]["url"], ub_items[0]["console"]),
+   ("", "", "https://unbaked.games/games/mindustry/", "PC"), "unbaked entries have no repository")
+db_items = dp.parse_decompbuddy(BR_DB)
+eq([(x["id"], x["key"], x["provider"], x["title"], x["console"]) for x in db_items],
+   [("github:HarbourMasters/2ship2harkinian", "github.com/harbourmasters/2ship2harkinian", "github",
+     "The Legend of Zelda: Majora's Mask", "Nintendo 64"),
+    ("gitlab:sonicdcer/dnzhrecomp", "gitlab.com/sonicdcer/dnzhrecomp", "gitlab", "Donic Zelda", "Dreamcast")],
+   "decompbuddy: release on Linux only, gitlab keys")
+fg_items = dp.parse_fangamesdb(BR_FG)
+eq([(x["title"], x["key"], x["deck"], x["status"], x["console"], x["url"]) for x in fg_items],
+   [("Zelda 64: Recompiled", "github.com/zelda64recomp/zelda64recomp", True, "Fully playable", "Nintendo 64",
+     "https://fangamesdb.com/games/zelda-64-recompiled.html"),
+    ("Zed & Co", "gitlab.com/grp/zed", False, "", "PC", "https://fangamesdb.com/games/zed.html")],
+   "fangamesdb: repo links only, run:deck flag, entities")
+ge_items = dp.parse_emporium(BR_GE)
+eq([(x["title"], x["key"], x["console"], x["status"]) for x in ge_items],
+   [("Zelda 'Recomp'", "github.com/zelda64recomp/zelda64recomp", "N64", "In The Works")],
+   "emporium: repo links only, entities unescaped")
+real_rh, real_rl, real_qv, real_brc = dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE, dp.BR_CACHE
+real_br_json, real_br_html = dp.http_json, dp._br_html
+def set_br(fetch):
+    """Serve Browse's network reads from fetch(url) -> text; OSError becomes the RuntimeError http_json raises."""
+    def text(url, *a, **k):
+        try:
+            return fetch(url)
+        except OSError as e:
+            raise RuntimeError("Network error: %s" % e)
+    dp._br_html = text
+    dp.http_json = lambda url, *a, **k: json.loads(text(url))
+br_tmp = Path(tempfile.mkdtemp())
+dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = br_tmp / "rh.json", br_tmp / "rl.json", br_tmp / "qv.json"
+dp.RH_CACHE.write_text(json.dumps({"items": [{"key": "github.com/zelda64recomp/zelda64recomp", "stars": 7538}]}))
+dp.RL_CACHE.write_text(json.dumps({"items": [{"key": "github.com/harbourmasters/2ship2harkinian", "stars": 3}]}))
+dp.QV_CACHE.write_text(json.dumps({"items": [{"key": "github.com/zelda64recomp/zelda64recomp"}]}))
+merged = dp.merge_browse({"ub": ub_items, "db": db_items, "fg": fg_items, "ge": ge_items})
+eq([g["title"] for g in merged], ["Zelda 64: Recompiled", "The Legend of Zelda: Majora's Mask", "Donic Zelda", "Mindustry", "Zed & Co"],
+   "most sources, then stars, then name; fg title beats emporium's")
+zelda = merged[0]
+eq((zelda["key"], zelda["host"], zelda["repo"], zelda["provider"], zelda["stars"], zelda["also"], zelda["deck"]),
+   ("github.com/zelda64recomp/zelda64recomp", "github.com", "Zelda64Recomp/Zelda64Recomp", "github", 7538, ["rh", "qv"], True),
+   "merged by key, stars and catalogs it's in")
+eq([(s["src"], s["url"]) for s in zelda["sources"]],
+   [("fg", "https://fangamesdb.com/games/zelda-64-recompiled.html"), ("ge", "https://thegamingemporium.com/all/")],
+   "one card per repository, a source per site, best source first")
+majora = merged[1]
+eq((majora["key"], majora["also"], majora["stars"], [s["src"] for s in majora["sources"]]),
+   ("github.com/harbourmasters/2ship2harkinian", ["rl"], 3, ["db", "ub"]), "unbaked title merges into the repository's card")
+mind = merged[3]
+eq((mind["repo"], mind["key"], mind["ub_slug"], mind["stars"], mind["also"], mind["sources"][0]["id"]),
+   ("", "", "mindustry", 0, [], "mindustry"), "unbaked game without a repository stays standalone")
+eq(len([g for g in merged if g["key"] == zelda["key"]]), 1, "same repository in two sources is one entry")
+dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = real_rh, real_rl, real_qv
+
+# browse(): a saved list per source, refetched once a day; a failing site keeps its list and the others update
+FAKE = {dp.BR_SOURCES["ub"]["data"]: json.dumps(BR_UB), dp.BR_SOURCES["db"]["data"]: json.dumps(BR_DB),
+        dp.BR_SOURCES["fg"]["data"]: BR_FG, dp.BR_SOURCES["ge"]["data"]: BR_GE}
+br_calls = []
+def br_get(url):
+    br_calls.append(url)
+    if FAKE.get(url) is None:
+        raise OSError("offline")
+    return FAKE[url]
+set_br(br_get)
+dp.BR_CACHE = Path(tempfile.mkdtemp(), "browse.json")
+d = dp.browse()
+eq(({s: v["count"] for s, v in d["sources"].items()}, d["stale"], len(d["items"])),
+   ({"ub": 2, "db": 2, "fg": 2, "ge": 1}, False, 5), "every source read, merged")
+eq(d["sources"]["fg"]["name"], "FanGamesDB", "source names for the page")
+n = len(br_calls)
+eq((len(dp.browse()["items"]), len(br_calls)), (5, n), "served from the saved lists")
+FAKE[dp.BR_SOURCES["db"]["data"]] = None
+d = dp.browse(refresh=True)
+eq((d["sources"]["db"]["count"], "offline" in d["sources"]["db"]["error"], d["sources"]["ub"]["error"], d["stale"]),
+   (2, True, "", True), "a failing site keeps its saved list and reports the error")
+eq((len(d["items"]), dp.BR_SOURCES["ub"]["data"] in br_calls[n:]), (5, True), "the other sites still refreshed")
+dp.BR_CACHE = Path(tempfile.mkdtemp(), "none.json")
+for src in FAKE:
+    FAKE[src] = None
+try:
+    dp.browse(); raise AssertionError("nothing saved and every site down")
+except RuntimeError as e:
+    eq("offline" in str(e), True, "error when no site has anything")
+FAKE[dp.BR_SOURCES["ub"]["data"]] = json.dumps(BR_UB)
+eq(dp.browse()["sources"]["ub"]["count"], 2, "a site that comes back is used again")
+# a page that changed and parses to nothing is an error; the saved list stays
+FAKE[dp.BR_SOURCES["fg"]["data"]] = BR_FG
+eq(dp.browse(refresh=True)["sources"]["fg"]["count"], 2, "fangamesdb read")
+FAKE[dp.BR_SOURCES["fg"]["data"]] = "<html>new layout</html>"
+d = dp.browse(refresh=True)
+eq((d["sources"]["fg"]["count"], "no projects" in d["sources"]["fg"]["error"]), (2, True), "empty parse keeps the saved list")
+# a cache written by another version of the parsers is read again
+cache = json.loads(dp.BR_CACHE.read_text())
+eq(cache.get("format"), dp.BR_FORMAT, "cache records its format")
+dp.BR_CACHE.write_text(json.dumps(dict(cache, format=dp.BR_FORMAT - 1)))
+n = len(br_calls)
+dp.browse()
+eq(len(br_calls) > n, True, "old-format cache refetched")
+real_browse = dp._browse
+dp._browse = lambda refresh: dp._br_lock.locked()
+eq(dp.browse(), True, "browse runs one reader at a time")
+dp._browse = real_browse
+# two unbaked.games games with the same title stay two entries
+twins = [dp._br_item("ub", "doom", "Doom", url="https://unbaked.games/games/doom/"),
+         dp._br_item("ub", "doom-2016", "DOOM", url="https://unbaked.games/games/doom-2016/")]
+eq(sorted(g["ub_slug"] for g in dp.merge_browse({"ub": twins})), ["doom", "doom-2016"], "same-title games not collapsed")
+
+# browse_resolve(): the best Linux project on a known forge, never an archived or Windows-only one
+UB_GAME = {"slug": "mindustry", "projects": [
+    {"name": "Old", "url": "https://gitlab.com/a/old", "runs_on": ["Linux"], "stars": 900, "archived": True},
+    {"name": "Win", "url": "https://github.com/a/win", "runs_on": ["Windows"], "stars": 800, "archived": False},
+    {"name": "Mine", "url": "https://github.com/Owner/Proj", "runs_on": ["Linux"], "stars": 10, "archived": False},
+    {"name": "Codeberg", "url": "https://codeberg.org/a/b", "runs_on": ["Linux"], "stars": 20, "archived": False},
+    {"name": "Itch", "url": "https://itch.io/x", "runs_on": ["Linux"], "stars": 500, "archived": False}]}
+res_calls = []
+set_br(lambda url: res_calls.append(url) or json.dumps(UB_GAME))
+eq(dp.browse_resolve("mindustry"), "https://codeberg.org/a/b", "best Linux project wins")
+eq(res_calls, ["https://unbaked.games/api/games/mindustry.json"], "fetched the per-game record")
+for bad in ("../etc", "Mindustry", "a/b", ""):
+    try:
+        dp.browse_resolve(bad); raise AssertionError("bad slug accepted: %r" % bad)
+    except ValueError:
+        ok += 1
+set_br(lambda url: json.dumps({"projects": [UB_GAME["projects"][1]]}))
+try:
+    dp.browse_resolve("mindustry"); raise AssertionError("no Linux project")
+except RuntimeError as e:
+    eq("no Linux project" in str(e), True, "clear error without a Linux project")
+set_br(offline)
+try:
+    dp.browse_resolve("mindustry"); raise AssertionError("offline resolve")
+except RuntimeError:
+    ok += 1
+dp.RH_CACHE, dp.BR_CACHE, dp.http_json, dp._br_html = real_rh, real_brc, real_br_json, real_br_html
+
+# /api/add keeps the Browse source and link, and refuses a link off the source's site
+real_check = dp.check_app
+dp.check_app = lambda app, token="": None
+added = srv.handle("/api/add", {"repo": "https://github.com/a/brtest", "br_src": "fg",
+                                "br_url": "https://fangamesdb.com/games/zelda-64-recompiled.html"})
+stored = next(a for a in srv.handle("/api/state", {})["apps"] if a["id"] == added["id"])
+eq((stored["br_src"], stored["br_url"]), ("fg", "https://fangamesdb.com/games/zelda-64-recompiled.html"), "browse fields stored")
+for bad in ({"br_src": "fg", "br_url": "https://evil.example/x"}, {"br_src": "fg", "br_url": "http://fangamesdb.com/x"},
+            {"br_src": "zz", "br_url": "https://fangamesdb.com/x"}, {"br_src": "ub", "br_url": "https://fangamesdb.com/x"},
+            {"br_src": ["fg"], "br_url": "https://fangamesdb.com/x"}):
+    try:
+        srv.handle("/api/add", dict(bad, repo="https://github.com/a/off%s" % len(bad)))
+        raise AssertionError("browse link accepted: %r" % (bad,))
+    except ValueError:
+        ok += 1
+dp.check_app = real_check
+dp.BR_CACHE = real_brc
+
 # --- Flatpak bundles
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-linux.tar.gz", "Game.flatpakref"))["name"], "Game-x86_64.flatpak", "bundle beats a tarball")
 eq(dp.pick_asset(A("Game-x86_64.flatpak", "Game-x86_64.AppImage"))["name"], "Game-x86_64.AppImage", "AppImage still wins")
@@ -844,5 +1095,11 @@ if real_xdg is None:
     del os.environ["XDG_DATA_HOME"]
 else:
     os.environ["XDG_DATA_HOME"] = real_xdg
+
+# Browse: titles that name another target platform are left out
+eq([x["title"] for x in dp.parse_emporium('<div class="game-card" data-favourite-id="a" data-title="Game for Android"><a class="game-card__link" href="https://github.com/a/b">'
+    '<div class="game-card" data-favourite-id="c" data-title="Game Switch Port"><a class="game-card__link" href="https://github.com/c/d">'
+    '<div class="game-card" data-favourite-id="e" data-title="Switchblade Recomp"><a class="game-card__link" href="https://github.com/e/f">')],
+   ["Switchblade Recomp"], "browse skips Android and Switch ports")
 
 print("all %d checks passed" % ok)
