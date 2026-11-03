@@ -112,6 +112,7 @@ jobs:
     needs: [decky, appimage]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       # Only the two downloads; the CI screenshots artifact stays out of the release.
       - uses: actions/download-artifact@v4
         with:
@@ -121,12 +122,20 @@ jobs:
         with:
           name: decky
           path: dist
-      # The notes are the annotated tag's message. Every release, alpha included, is marked Latest.
+      # The notes are this version's section of CHANGELOG.md (the annotated tag's message if it has none),
+      # then the downloads. Every release, alpha included, is marked Latest.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
-          gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .message > notes.md || echo "SedotDeck $GITHUB_REF_NAME" > notes.md
+          version="${GITHUB_REF_NAME#v}"
+          awk -v h="## [$version]" 'index($0, h) == 1 {on = 1; next} on && /^## \[/ {exit} on && /^\[[^]]+\]: / {exit} on' CHANGELOG.md \
+            | sed -e '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq .object.sha)"
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .message > notes.md || echo "SedotDeck $GITHUB_REF_NAME" > notes.md
+          fi
+          printf '\n**Downloads**\n- `SedotDeck-x86_64.AppImage` for Desktop Mode\n- `SedotDeck-decky-%s.zip` for Game Mode (install it from Decky'"'"'s Developer settings)\n\nFull history: [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md)\n' \
+            "$version" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
           gh release create "$GITHUB_REF_NAME" dist/SedotDeck-x86_64.AppImage dist/SedotDeck-decky-*.zip \
             --repo "$GITHUB_REPOSITORY" --title "SedotDeck $GITHUB_REF_NAME" --notes-file notes.md --latest

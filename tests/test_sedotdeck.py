@@ -1102,4 +1102,9 @@ eq([x["title"] for x in dp.parse_emporium('<div class="game-card" data-favourite
     '<div class="game-card" data-favourite-id="e" data-title="Switchblade Recomp"><a class="game-card__link" href="https://github.com/e/f">')],
    ["Switchblade Recomp"], "browse skips Android and Switch ports")
 
+# --- every version has its CHANGELOG section; the release workflow publishes that section as the notes
+changelog = Path(os.path.dirname(os.path.abspath(sys.argv[1])), "CHANGELOG.md").read_text()
+eq("\n## [%s] - " % dp.VERSION in changelog, True, "CHANGELOG.md has a section for %s" % dp.VERSION)
+eq("\n## [Unreleased]\n" in changelog, True, "CHANGELOG.md keeps an Unreleased section for the next changes")
+
 print("all %d checks passed" % ok)

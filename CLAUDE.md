@@ -2,6 +2,12 @@
 
 AppImage/PC-port updater for Steam Deck. Core: `sedotdeck.py` (stdlib-only Python). Frontends: `decky-plugin/` (Decky Loader, TypeScript) and `desktop/` (Tauri). Tests: `python3 -I tests/test_sedotdeck.py sedotdeck.py`.
 
+## Changelog and releases
+
+- Every user-facing change gets a line in `CHANGELOG.md` under `## [Unreleased]`, in the same commit as the change. README-only and internal changes don't.
+- To release: rename `## [Unreleased]` to `## [x.y.z-alpha] - YYYY-MM-DD` with a one-line summary on top, add a fresh empty `## [Unreleased]` above it, update the link list at the bottom, and bump `VERSION` in `sedotdeck.py`, `decky-plugin/package.json`, `desktop/package.json`, `desktop/src-tauri/tauri.conf.json`, `desktop/src-tauri/Cargo.toml` and the bug form placeholder. The tests fail if `VERSION` has no CHANGELOG section.
+- Push only the new tag (`git push origin vX`), never `--tags`: an old local `v1.6.0` from DeckPort would outrank every release. The release workflow publishes that version's CHANGELOG section as the release notes.
+
 ## Agent orchestration
 
 The main session (Opus) plans, decides and reviews. Delegate the legwork to the agents in `.claude/agents/` without asking first. Haiku does the work first; Sonnet only takes over when Haiku reports `STUCK`.
