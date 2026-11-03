@@ -3759,7 +3759,7 @@ function card(a){
    <div><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a>
      ${notes.map(n=>`<div class="note">${n}</div>`).join("")}</div>
-   <div><div class="state">${STATE[st]}</div>${ver?`<div class="ver">${ver}</div>`:""}</div>
+   <div><div class="state">${st=="busy"&&S.jobs[a.id]&&S.jobs[a.id].label?esc(S.jobs[a.id].label)+"…":STATE[st]}</div>${ver?`<div class="ver">${ver}</div>`:""}</div>
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
      ${here?`<button data-a="${opens?"folder":"launch"}" data-id="${a.id}" ${running?"disabled":""}>${opens?"Open":"Launch"}</button>`:""}

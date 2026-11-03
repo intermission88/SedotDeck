@@ -13,7 +13,7 @@
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-<img src="docs/screenshots/demo.gif" alt="Demo: searching the Browse tab for Ocarina of Time, adding it, installing it, then Update all bringing PCSX2 up to date" width="760">
+<img src="docs/screenshots/demo.gif" alt="Demo: adding Eglantine with pre-releases on, SedotDeck picking its PGO AppImage, then installing Eglantine, Savage Wind and Tears of the Kingdom side by side" width="760">
 
 </div>
 
