@@ -13,7 +13,7 @@
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-<img src="docs/screenshots/demo.gif" alt="Demo: adding Zelda 64: Recompiled from the Recomp Haven tab, installing it, adding it to Steam, then Update all bringing PCSX2 up to date" width="760">
+<img src="docs/screenshots/demo.gif" alt="Demo: searching the Browse tab for Ocarina of Time, adding it, installing it, then Update all bringing PCSX2 up to date" width="760">
 
 </div>
 
@@ -22,8 +22,8 @@
 
 ## Features
 
-- **Update all in one click** for releases on GitHub, GitLab, Codeberg, Gitea and Forgejo. SedotDeck picks the Linux file itself.
-- **Browse and add** from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), a GitHub search, or the Browse tab, which merges [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/).
+- **Update all in one click** for releases on GitHub, GitLab, Codeberg, Gitea and Forgejo, pre-releases and nightlies too if you turn them on. SedotDeck picks the Linux file itself; a repo with only tags installs from the tag's source code.
+- **Browse and add** from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), a GitHub search, or **Browse**: one list from [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/), merged by repository.
 - **Steam shortcuts keep working**: paths never change on update. Works for AppImages, Flatpaks, zipped ports and Windows `.exe` through Proton.
 - **Safe**: SHA-256 checks, Rollback, saves untouched, running games left alone.
 - **Game Mode** plugin for Decky, with controller support.
@@ -44,6 +44,18 @@ Then press **Add app**, or **Add** in any catalog tab, and **Install**. **⋯ �
 <summary><b>Why not Quiver Launcher or Gear Lever?</b></summary>
 
 [Quiver Launcher](https://github.com/tgeorgiadis/quiver-launcher) is a launcher you open to play; SedotDeck puts games in your Steam library and stays out of the way. [Gear Lever](https://github.com/mijorus/gearlever) puts desktop AppImages in your app menu; SedotDeck handles games, including zipped ports, `.exe` builds and Game Mode.
+</details>
+
+<details>
+<summary><b>It picked the wrong file</b></summary>
+
+**⋯ → Edit** and set an **Asset pattern** (a regex), e.g. `x86_64\.AppImage$`. Without one, SedotDeck prefers an AppImage for Linux x86_64, and a PGO build when two files are otherwise equal.
+</details>
+
+<details>
+<summary><b>Why aren't recomphub.com and decomps.net in Browse?</b></summary>
+
+Their `robots.txt` asks programs to stay out of their API, which is the only way to read their lists. They'll be added if their owners agree.
 </details>
 
 <details>
