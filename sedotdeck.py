@@ -67,6 +67,7 @@ _lock = threading.RLock()
 
 
 THEMES = ("dark", "light", "system")
+SFX_MODES = ("pad", "always", "off")  # sound effects: with a controller (default), always, never
 
 
 def default_config():
@@ -76,6 +77,7 @@ def default_config():
             "github_token": "",
             "keep_backup": True,
             "theme": "dark",
+            "sfx": "pad",
             "auto_rename": False,
         },
         "apps": [],
@@ -3322,6 +3324,8 @@ class Server:
                     s["auto_rename"] = bool(body["auto_rename"])
                 if body.get("theme") in THEMES:
                     s["theme"] = body["theme"]
+                if body.get("sfx") in SFX_MODES:
+                    s["sfx"] = body["sfx"]
                 if body.get("clear_token"):
                     s["github_token"] = ""
                 elif body.get("github_token"):
@@ -3818,7 +3822,7 @@ a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
 header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
   padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
-.brand svg{width:30px;height:30px;flex:none}
+.brand svg{width:28px;height:28px;flex:none;transform:translateY(-3.5px)}  /* the heavy deck body sits on the text baseline, not below it */
 .brand h1{font-size:19px;margin:0;font-weight:800;letter-spacing:-.01em}
 .brand .ver-label{font-size:12px;font-weight:400;color:var(--faint);margin-left:8px}
 .brand .sub{font-size:12.5px;color:var(--dim)}
@@ -4334,6 +4338,9 @@ button.primary:hover:not(:disabled){background:linear-gradient(180deg,var(--btn-
   <label>Theme<select id="sTheme">
     <option value="dark">Dark</option><option value="light">Light</option><option value="system">Match system</option>
   </select></label>
+  <label>Sound effects<select id="sSfx">
+    <option value="pad">With a controller</option><option value="always">Always</option><option value="off">Off</option>
+  </select></label>
   <h3 class="set-h">Updates</h3>
   <label class="row"><input type="checkbox" id="sBak"> Keep previous version as <span class="mono">.old</span> (enables rollback)</label>
   <label class="row"><input type="checkbox" id="sAutoRen"> Auto rename: after each update, give the AppImage its own name without the version</label>
@@ -4426,7 +4433,41 @@ async function api(path,body={}){
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;
 }
-function toast(msg,bad){const t=$("#toast");t.textContent=msg;t.className="show"+(bad?" bad":"");clearTimeout(t._h);t._h=setTimeout(()=>t.className="",3500)}
+// ---- Sound effects: short tones made on the spot (no audio files), the way the Deck's own UI answers a press.
+// A tick per focus step and a dull knock at an edge, a rising pip for A, a falling one for B, a slide for LB/RB,
+// and a three-note chord when something is added, installed or backed up. Quiet, and over in a tenth of a second.
+let sfxCtx=null;
+const SFX={
+  move:[{f:1320,f2:1180,d:.03,type:"triangle",g:.035}],
+  edge:[{f:200,f2:150,d:.07,g:.07}],
+  select:[{f:660,d:.04,type:"triangle",g:.05},{f:990,t:.035,d:.07,type:"triangle",g:.05}],
+  back:[{f:640,f2:430,d:.08,type:"triangle",g:.05}],
+  tab:[{f:520,f2:780,d:.08,g:.05}],
+  open:[{f:440,f2:660,d:.06,g:.045}],
+  success:[{f:523.25,d:.09,type:"triangle",g:.05},{f:659.25,t:.07,d:.09,type:"triangle",g:.05},{f:783.99,t:.14,d:.2,type:"triangle",g:.055}],
+  error:[{f:300,d:.08,type:"square",g:.022},{f:220,t:.09,d:.13,type:"square",g:.022}],
+};
+function sfxOn(){const m=(S.settings||{}).sfx||"pad";return m=="always"||m=="pad"&&document.documentElement.classList.contains("pad")}
+function sfx(name,force){
+  if(!force&&!sfxOn())return;
+  try{
+    sfxCtx=sfxCtx||new AudioContext();
+    if(sfxCtx.state=="suspended")sfxCtx.resume();
+    const now=sfxCtx.currentTime+.005;
+    for(const n of SFX[name]){
+      const o=sfxCtx.createOscillator(),g=sfxCtx.createGain(),t=now+(n.t||0),d=n.d;
+      o.type=n.type||"sine";o.frequency.setValueAtTime(n.f,t);
+      if(n.f2&&n.f2!=n.f)o.frequency.exponentialRampToValueAtTime(n.f2,t+d);
+      // 4 ms attack and an exponential tail: no click at either end.
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(n.g,t+.004);g.gain.exponentialRampToValueAtTime(.0001,t+d);
+      o.connect(g).connect(sfxCtx.destination);o.start(t);o.stop(t+d+.02);
+    }
+  }catch(e){}
+}
+const cheer=msg=>{sfx("success");toast(msg)};
+// With "Always", a mouse click on a button gets the same pip as A on a controller.
+document.addEventListener("click",e=>{if(e.detail&&(S.settings||{}).sfx=="always"&&e.target.closest("button:not(:disabled)"))sfx("select")},true);
+function toast(msg,bad){if(bad)sfx("error");const t=$("#toast");t.textContent=msg;t.className="show"+(bad?" bad":"");clearTimeout(t._h);t._h=setTimeout(()=>t.className="",3500)}
 async function act(path,body,ok){try{const r=await api(path,body);if(ok)toast(typeof ok=="function"?ok(r):ok);refresh()}catch(e){toast(e.message,true)}}
 const mb=b=>b?(b/1e6).toFixed(1)+" MB":"";
 const ago=t=>{if(!t)return"never";const s=Date.now()/1000-t;if(s<60)return"just now";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago"};
@@ -4520,7 +4561,7 @@ function render(){
   for(const [id,p] of Object.entries(prevJobs)){
     const j=S.jobs[id];
     if(id=="__self__"){if(p.state=="running"&&j&&j.state!="running")selfEnd(j);continue}
-    if(p.state=="running"&&p.label!="Checking"&&j&&j.state=="done") doneAt[id]=Date.now();
+    if(p.state=="running"&&p.label!="Checking"&&j&&j.state=="done"){doneAt[id]=Date.now();sfx("success")}
   }
   prevJobs=S.jobs||{};
   const L=$("#list"), apps=[...S.apps].sort((x,y)=>ORDER[status(x)]-ORDER[status(y)]||x.name.localeCompare(y.name));
@@ -4779,7 +4820,7 @@ $("#svSugg").onclick=e=>{const d=e.target.closest("[data-p]");if(d)svSet(d.datas
 $("#svSugg").onkeydown=e=>{const d=e.target.closest("[data-p]");if(d&&(e.key=="Enter"||e.key==" ")){e.preventDefault();svSet(d.dataset.p)}};
 $("#svNow").onclick=async()=>{
   const b=$("#svNow");b.disabled=true;b.textContent="Backing up…";
-  try{await api("/api/saves_backup",{id:svApp.id});toast("Saves backed up")}catch(e){toast(e.message,true)}
+  try{await api("/api/saves_backup",{id:svApp.id});cheer("Saves backed up")}catch(e){toast(e.message,true)}
   b.textContent="Back up now";await svLoad(false);
 };
 $("#svList").onclick=async e=>{
@@ -4787,7 +4828,7 @@ $("#svList").onclick=async e=>{
   const when=b.closest("div").querySelector("b").textContent;
   if(!await ask({title:`Restore the saves from ${when}?`,ok:"Restore",danger:true,
     text:"The saves in the folder now are backed up first, then moved to the Trash, so this can be undone. Close the game before you go on."}))return;
-  try{await api("/api/saves_restore",{id:svApp.id,name:b.dataset.restore});toast("Saves restored")}catch(err){toast(err.message,true)}
+  try{await api("/api/saves_restore",{id:svApp.id,name:b.dataset.restore});cheer("Saves restored")}catch(err){toast(err.message,true)}
   await svLoad(false);
 };
 $("#svInfo").onclick=e=>{if(e.target.id=="svOpen"){e.preventDefault();api("/api/saves_open",{id:svApp.id}).catch(err=>toast(err.message,true))}};
@@ -4971,7 +5012,7 @@ $("#fAdd").onsubmit=async e=>{
   try{
     if(editId)await api("/api/edit",{id:editId,...body});
     else await api("/api/add",{repo:$("#aRepo").value,...body});
-    dAdd.close();foundKey="";toast(ADOPT?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
+    dAdd.close();foundKey="";if(!editId)sfx("success");toast(ADOPT?"Added, using your existing file":editId?"Saved":"Added, checking…");refresh();
   }catch(err){toast(err.message,true)}
 };
 
@@ -5130,7 +5171,7 @@ $("#rhList").onclick=async e=>{
   const b=e.target.closest("[data-rh]");if(!b)return;
   const x=RH.items.find(i=>i.id==b.dataset.rh);if(!x)return;
   rhAdding.add(x.id);renderRh();
-  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rh_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rh_id:x.id});cheer(`${x.title} added to My apps, checking for its release…`);await refresh()}
   catch(err){toast(err.message,true)}
   rhAdding.delete(x.id);renderRh();
 };
@@ -5202,7 +5243,7 @@ $("#qvList").onclick=async e=>{
   const x=QV.items.find(i=>i.id==b.dataset.qv);if(!x)return;
   qvAdding.add(x.id);renderQv();
   const host=x.provider=="gitlab"?"https://gitlab.com/":"https://github.com/";
-  try{await api("/api/add",{repo:host+x.repo,name:x.title,qv_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  try{await api("/api/add",{repo:host+x.repo,name:x.title,qv_id:x.id});cheer(`${x.title} added to My apps, checking for its release…`);await refresh()}
   catch(err){toast(err.message,true)}
   qvAdding.delete(x.id);renderQv();
 };
@@ -5265,7 +5306,7 @@ $("#rlList").onclick=async e=>{
   const b=e.target.closest("[data-rl]");if(!b)return;
   const x=RL.items.find(i=>i.id==b.dataset.rl);if(!x)return;
   rlAdding.add(x.id);renderRl();
-  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rl_id:x.id});toast(`${x.title} added to My apps, checking for its release…`);await refresh()}
+  try{await api("/api/add",{repo:"https://github.com/"+x.repo,name:x.title,rl_id:x.id});cheer(`${x.title} added to My apps, checking for its release…`);await refresh()}
   catch(err){toast(err.message,true)}
   rlAdding.delete(x.id);renderRl();
 };
@@ -5355,7 +5396,7 @@ async function brAdd(x){
   try{
     const repo=x.repo?"https://"+x.host+"/"+x.repo:(await api("/api/browse_resolve",{slug:x.ub_slug})).repo;
     await api("/api/add",{repo,name:x.title,...ids,...(s?{br_src:s.src,br_url:s.url}:{})});
-    toast(`${x.title} added to My apps, checking for its release…`);await refresh();
+    cheer(`${x.title} added to My apps, checking for its release…`);await refresh();
   }catch(err){toast(err.message,true)}
   brAdding.delete(brId(x));renderBr();
   if(TAB=="apps")discover();
@@ -5491,7 +5532,7 @@ $("#suPrimary").onclick=()=>{if(selfMode=="error")startSelf();else dSelf.close()
 $("#sSelf").onclick=()=>{dSet.close();checkSelf(true)};
 
 $("#btnSet").onclick=()=>{
-  $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTheme").value=S.settings.theme||"dark";
+  $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTheme").value=S.settings.theme||"dark";$("#sSfx").value=S.settings.sfx||"pad";
   $("#sAutoRen").checked=!!S.settings.auto_rename;
   const ren=S.apps.filter(a=>a.rename_to);$("#sRenRow").hidden=!ren.length;
   $("#sRenAll").textContent=`Rename ${ren.length} file${ren.length>1?"s":""} now`;
@@ -5512,13 +5553,14 @@ $("#sClean").onclick=async()=>{
 };
 $("#sUnhide").onclick=()=>{foundKey="";foundLater=false;act("/api/scan_ignore",{clear:true},"Hidden files are shown again");dSet.close()};
 $("#sTheme").onchange=()=>applyTheme($("#sTheme").value);
+$("#sSfx").onchange=()=>{if($("#sSfx").value!="off")sfx("select",true)};  // a sample of what it sounds like
 $("#sRenAll").onclick=()=>{dSet.close();act("/api/rename_all",{},r=>{
   const n=r.renamed.length,f=r.failed;
   return (n?`Renamed ${n} file${n>1?"s":""}`:"Nothing renamed")+(f.length?`. ${f[0].name}: ${f[0].error}`+(f.length>1?` (and ${f.length-1} more)`:""):"")})};
 dSet.addEventListener("close",()=>{if(dSet.returnValue!="saved")applyTheme(S.settings.theme||"dark")});
 $("#fSet").onsubmit=e=>{e.preventDefault();const theme=$("#sTheme").value;
-  act("/api/settings",{install_dir:$("#sDir").value,keep_backup:$("#sBak").checked,auto_rename:$("#sAutoRen").checked,theme,github_token:$("#sTok").value},"Settings saved");
-  S.settings.theme=theme;dSet.close("saved")};
+  act("/api/settings",{install_dir:$("#sDir").value,keep_backup:$("#sBak").checked,auto_rename:$("#sAutoRen").checked,theme,sfx:$("#sSfx").value,github_token:$("#sTok").value},"Settings saved");
+  S.settings.theme=theme;S.settings.sfx=$("#sSfx").value;dSet.close("saved")};
 $("#sOpen").onclick=()=>act("/api/open",{});
 $("#sExport").onclick=async()=>{
   try{
@@ -5582,8 +5624,9 @@ function navMove(dir){
     const b1=h?q.top:q.left,b2=h?q.bottom:q.right,v=Math.max(0,ahead)+2*Math.max(0,b1-a2,a1-b2);
     if(v<score){score=v;best=el}
   }
-  if(best)focusEl(best);
+  if(best){focusEl(best);sfx("move")}
   else if(navScope()===document&&!h)scrollBy(0,s*innerHeight*0.6);
+  else sfx("edge");
 }
 const ARROWS={ArrowUp:"up",ArrowDown:"down",ArrowLeft:"left",ArrowRight:"right"};
 const isText=el=>!!el&&(el.tagName=="TEXTAREA"||el.tagName=="INPUT"&&/^(text|search|url|number|password|email)$/.test(el.type));
@@ -5626,11 +5669,13 @@ function padButton(i){
   const el=document.activeElement;
   if(i==0){  // A: press the focused control
     if(!navList().includes(el)){navStart(navList());return}
+    sfx("select");
     if(el.tagName=="SELECT"){try{el.showPicker()}catch(e){}}
     else if(!isText(el))el.click();
   }
   else if(i==1){  // B: back, one level at a time
     const d=topDialog();
+    if(!menu.hidden||d||SEL||el&&el.closest("main section"))sfx("back");
     if(!menu.hidden)closeMenu();
     // Same path as Escape, so ask() sees the close and resolves as cancelled.
     else if(d){if(d.requestClose)d.requestClose();else if(d.dispatchEvent(new Event("cancel",{cancelable:true})))d.close()}
@@ -5639,7 +5684,7 @@ function padButton(i){
   }
   else if(i==2){  // X: the row menu of the focused app (not while selecting)
     const card=el&&el.closest("[data-card]"),more=card&&!SEL&&card.querySelector("[data-a=menu]");
-    if(more)more.click();
+    if(more){sfx("open");more.click()}
   }
   else if(i==3){  // Y: search on the current tab
     const q={gh:"#ghQ",rh:"#rhQ",qv:"#qvQ",rl:"#rlQ"}[TAB];
@@ -5649,9 +5694,9 @@ function padButton(i){
     if(topDialog())return;
     const tabs=[...$("#tabs").querySelectorAll("[data-tab]")],at=tabs.findIndex(b=>b.dataset.tab==TAB);
     const t=tabs[(at+(i==5?1:-1)+tabs.length)%tabs.length];
-    setTab(t.dataset.tab);focusEl(t);
+    sfx("tab");setTab(t.dataset.tab);focusEl(t);
   }
-  else if(i==9){if(!topDialog())$("#btnSet").click()}  // Start: Settings
+  else if(i==9){if(!topDialog()){sfx("open");$("#btnSet").click()}}  // Start: Settings
 }
 function padScroll(dy){const d=topDialog();if(d)d.scrollTop+=dy;else scrollBy(0,dy)}
 // The hint strip shows while a pad is in use, and not while Select mode has its own bar.
