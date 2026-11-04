@@ -4,6 +4,8 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [Unreleased]
 
+- The AppImage carries update information and each release has a `.zsync` file, so AppImageUpdate and similar tools can update SedotDeck
+
 ## [0.0.4-alpha] - 2026-11-03
 
 SedotDeck 0.0.4-alpha adds a Browse tab that merges four catalogs, support for repos without releases, and safer removes.
