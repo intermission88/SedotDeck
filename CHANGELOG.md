@@ -5,10 +5,11 @@ What changed in each SedotDeck release, newest first. The section for a version 
 ## [Unreleased]
 
 - Fewer tabs: My apps, Browse and Search GitHub. Browse shows the seven catalogs one at a time, each picked from a row of buttons and drawn in its own site's colors, typefaces and card shape (light or dark where the site has both); Recomp Haven, Quiver and Recomp Launcher keep their own tiers and filters
-- My apps shows each app's box art when a catalog lists its repository. With fewer than eight apps, the most starred Steam Deck-tested projects and a way into each catalog sit under the list; an empty My apps starts with a box to paste a release link
+- My apps shows each app's box art when a catalog lists its repository. With fewer than eight apps, Steam Deck-tested projects (the most starred among the latest releases, one per series) and a way into each catalog sit under the list; an empty My apps starts with a box to paste a release link
 - Save backups: Saves… in the app menu (and `sedotdeck.py saves`) sets where a game keeps its saves, with suggestions named after the game. The folder is zipped before every update and on Back up now, the newest 10 kept in `~/Applications/Save backups`. Restore backs up the current saves first and moves them to the Trash, so it can be undone. If the backup fails, the update doesn't run
+- A new typeface, Bricolage Grotesque, with bolder headings; without a connection SedotDeck falls back to the system font. Main buttons, the start panels and apps with an update get a soft blue gradient
 - Short animations: a tab or catalog rises in when it opens, newly loaded cards come in one after another, dialogs and the app menu grow in, toasts rise from the bottom, and poster cards lift under the pointer or d-pad. "Reduce motion" in the system settings turns them off
-- Search GitHub starts with your recent searches and the names of Deck-tested games from the catalogs, one click to search each; results show the owner's avatar and the repo's topics
+- Search GitHub starts with your recent searches and the names of Deck-tested games from the catalogs (picked the same way), one click to search each; results show the owner's avatar and the repo's topics
 - The app menu is shorter and grouped: Category moved into Edit, the two rename items are one, per-app Check for updates is gone (the header button and the hourly check cover it), and catalog pages are a single "View on …"
 - Settings are grouped into General, Updates and Advanced (GitHub token, app list, storage); the Add dialog's options are grouped by which release and which file
 - When adopting a file you already have, "Rename to" shows the real new name (the AppImage's own name without the version)

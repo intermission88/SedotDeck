@@ -1284,6 +1284,16 @@ ths = [_th.Thread(target=read_rh) for _ in range(4)]
 eq((rh_fetches.count(dp.RH_DATA_URL), rh_errs), (1, []), "concurrent catalog reads: one fetch, no errors")
 dp.RH_CACHE, dp._rh_get, dp.parse_recomphaven = real_rhc, real_get, real_parse
 
+# --- release dates: Quiver's seconds and the others' YYYY-MM-DD, the newest one kept when catalogs merge
+eq((dp._released_ts(1793766094.0), dp._released_ts("") , dp._released_ts("2026-10-18") > dp._released_ts("2025-08-27")),
+   (1793766094.0, 0.0, True), "release dates read from both formats")
+real_known = dp._known_stars
+dp._known_stars = lambda: {}
+rel_item = lambda src, t: dict(dp._br_item(src, "x", "Game", host="github.com", repo="a/game"), released=t)
+eq(dp.merge_browse({"rh": [rel_item("rh", 100.0)], "qv": [rel_item("qv", 300.0)]})[0]["released"], 300.0,
+   "a merged entry keeps the newest release date")
+dp._known_stars = real_known
+
 # --- save backups: suggestions, backup before an update, pruning, restore that can be undone
 sv_root = tempfile.mkdtemp()
 real_env = {k: os.environ.get(k) for k in ("XDG_DATA_HOME", "XDG_CONFIG_HOME")}

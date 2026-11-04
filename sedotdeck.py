@@ -2152,6 +2152,16 @@ BR_CATALOGS = {
 _RH_STAGES = {"released": "Released", "beta": "Beta", "development": "In development", "abandoned": "Abandoned"}
 
 
+def _released_ts(v):
+    """A catalog's release date as epoch seconds: Quiver gives seconds, the others YYYY-MM-DD. 0 when unknown."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return time.mktime(time.strptime(str(v)[:10], "%Y-%m-%d"))
+    except ValueError:
+        return 0.0
+
+
 def _catalog_fetch(src, refresh):
     """A catalog's entries in Browse's item shape, with its cover and summary for the merged card."""
     data = {"rh": recomphaven, "qv": quiver, "rl": recomplauncher}[src](refresh)
@@ -2168,7 +2178,8 @@ def _catalog_fetch(src, refresh):
                     "deck": bool(x.get("deck")), "status": _RH_STAGES.get(x.get("stage") or "", ""),
                     "id": x.get("id") or "",
                     "url": BR_CATALOGS[src]["site"] + ("#" + urllib.parse.quote(x["id"]) if src == "rh" and x.get("id") else ""),
-                    "cover": x.get("cover") or "", "summary": x.get("summary") or ""})
+                    "cover": x.get("cover") or "", "summary": x.get("summary") or "",
+                    "released": _released_ts(x.get("released"))})
     return out, data.get("stale") or ""
 BR_CACHE = CONFIG_DIR / "browse.json"
 BR_FORMAT = 2  # bump when a parser or the item shape changes, so saved lists from older versions are read again
@@ -2310,7 +2321,7 @@ def merge_browse(per_source):
             if g is None:
                 g = {"key": it["key"], "host": it["host"], "provider": it["provider"], "repo": it["repo"],
                      "title": it["title"], "console": it["console"], "deck": False, "status": "", "sources": [],
-                     "stars": 0, "cover": "", "summary": "", "ub_slug": "" if it["key"] else it["id"]}
+                     "stars": 0, "cover": "", "summary": "", "released": 0.0, "ub_slug": "" if it["key"] else it["id"]}
                 groups.append(g)
                 if it["key"]:
                     by_key[it["key"]] = g
@@ -2323,6 +2334,7 @@ def merge_browse(per_source):
             g["console"] = g["console"] or it["console"]
             g["cover"] = g["cover"] or it.get("cover") or ""
             g["summary"] = g["summary"] or it.get("summary") or ""
+            g["released"] = max(g["released"], it.get("released") or 0.0)  # the newest release any catalog has seen
     for g in groups:
         g["stars"] = known.get(g["key"], 0) if g["key"] else 0
     groups.sort(key=lambda g: (-len(g["sources"]), -g["stars"], g["title"].casefold()))
@@ -3767,6 +3779,9 @@ applyTheme(document.documentElement.dataset.themePref);
 themeMedia.addEventListener("change",()=>applyTheme(document.documentElement.dataset.themePref));
 </script>
 <title>SedotDeck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- SedotDeck's typeface; without a connection the system fonts below take over and nothing else changes. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 256 256%22%3E%3Ctitle%3ESedotDeck%3C/title%3E%3Crect width=%22256%22 height=%22256%22 rx=%2248%22 fill=%22%231a1d23%22/%3E%3Cg transform=%22translate%2815.36 9.36%29 scale%280.88%29%22%3E%3Cpath fill=%22%23e6e8eb%22 fill-rule=%22evenodd%22 d=%22M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z%22/%3E%3Cpath fill=%22%231a9fff%22 d=%22M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z%22/%3E%3C/g%3E%3C/svg%3E">
 <style>
 /* Close to SteamOS: neutral greys, flat panels, one blue accent, big focus rings for the trackpad and d-pad. */
@@ -3795,7 +3810,7 @@ themeMedia.addEventListener("change",()=>applyTheme(document.documentElement.dat
 *{box-sizing:border-box}
 html{background:var(--bg)}
 body{margin:0;min-height:100vh;color:var(--text);background:var(--bg);
-  font:15px/1.45 "Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  font:15px/1.45 "Bricolage Grotesque","Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
 .mono{font-family:ui-monospace,"Noto Sans Mono","JetBrains Mono",Menlo,monospace;font-size:13px;word-break:break-all}
 [hidden]{display:none!important}
@@ -3804,7 +3819,7 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;f
   padding:10px 20px;background:var(--bg);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
 .brand svg{width:30px;height:30px;flex:none}
-.brand h1{font-size:18px;margin:0;font-weight:700}
+.brand h1{font-size:19px;margin:0;font-weight:800;letter-spacing:-.01em}
 .brand .ver-label{font-size:12px;font-weight:400;color:var(--faint);margin-left:8px}
 .brand .sub{font-size:12.5px;color:var(--dim)}
 
@@ -3837,7 +3852,7 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .start .group{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 10px}
 .start .group span{font-weight:400;font-size:13px;color:var(--faint)}
 .start-hero{padding:28px 28px 22px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
-.start-hero h2{margin:0 0 6px;font-size:22px;line-height:1.25}
+.start-hero h2{margin:0 0 6px;font-size:24px;line-height:1.2;font-weight:800;letter-spacing:-.015em}
 .start-hero p{margin:0 0 18px;color:var(--dim);max-width:62ch}
 .start-hero .search{max-width:640px;margin-bottom:10px}
 .start-picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:12px}
@@ -3873,7 +3888,7 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 
 /* ---- My apps: one row per app */
 .list{display:flex;flex-direction:column;gap:2px}
-.group{margin:18px 2px 6px;font-size:14px;font-weight:600;color:var(--dim)}
+.group{margin:18px 2px 6px;font-size:14.5px;font-weight:700;color:var(--dim)}
 .group:first-child{margin-top:0}
 .group span{color:var(--faint);font-weight:400;margin-left:6px}
 .app{position:relative;display:grid;grid-template-columns:48px minmax(0,1.3fr) minmax(0,1fr) auto;gap:6px 16px;align-items:center;
@@ -3947,7 +3962,7 @@ dialog{color:var(--text);padding:0;width:min(580px,94vw);max-height:calc(100vh -
   border-radius:8px;border:1px solid var(--line-hi);background:var(--panel);box-shadow:0 16px 48px var(--shadow)}
 dialog::backdrop{background:var(--backdrop)}
 .dlg{padding:20px;display:flex;flex-direction:column;gap:12px}
-.dlg h2{margin:0;font-size:18px;font-weight:600}
+.dlg h2{margin:0;font-size:19px;font-weight:700;letter-spacing:-.01em}
 .dlg p{margin:0;color:var(--dim)}
 label{font-size:13.5px;color:var(--dim);display:flex;flex-direction:column;gap:6px}
 label.row{flex-direction:row;align-items:center;gap:10px;color:var(--text)}
@@ -4163,6 +4178,21 @@ button:active:not(:disabled){transform:scale(.96);transition-duration:.04s}
 .br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-card,.start-pick{transition:transform .18s var(--out),border-color .12s}
 .br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-card:is(:hover,:focus-within),.start-pick:is(:hover,:focus-within){transform:translateY(-3px)}
 .bar i{transition:transform .25s var(--out)}
+/* ---- Gradients: one hue (the SteamOS blue), and only where they say something.
+   The primary button is lit from the top, so the one action that matters on a card or dialog reads as pressable
+   (both ends keep white text at AA: 4.6:1 at the top, 6.6:1 at the bottom). The start panels of My apps and Search
+   GitHub carry a faint blue corner, marking where the page begins. An app with an update gets a blue wash from
+   its left edge, so what needs doing stands out in a long list. A download's bar brightens toward its head.
+   The Browse skins keep their sites' own flat buttons. */
+:root{--btn-top:#1878c9;--btn-bot:#105fa1;--btn-top-hi:#1470bd;--btn-bot-hi:#0f5a9a;--tint:rgba(26,159,255,.15)}
+:root[data-theme="light"]{--tint:rgba(10,99,173,.09)}
+button.primary{background:linear-gradient(180deg,var(--btn-top),var(--btn-bot));border-color:var(--btn-bot)}
+button.primary:hover:not(:disabled){background:linear-gradient(180deg,var(--btn-top-hi),var(--btn-bot-hi));border-color:var(--btn-bot-hi)}
+.br-skin button.primary{background:var(--accent-btn);border-color:var(--accent-btn)}
+.br-skin button.primary:hover:not(:disabled){background:var(--accent-btn-hi);border-color:var(--accent-btn-hi)}
+.start-hero{background:radial-gradient(120% 160% at 0 0,var(--tint),transparent 55%),var(--panel)}
+.app.st-update{background:linear-gradient(90deg,var(--tint),transparent 45%),var(--panel)}
+.bar.dl i{background:linear-gradient(90deg,var(--accent-btn),var(--accent))}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -4544,8 +4574,25 @@ const START_CATS=[["rh","Recomp Haven","Recomps rated in quality tiers, S to D"]
   ["rl","Recomp Launcher","Recompiled console games, most starred first"],["db","DecompBuddy","Decomps and PC ports of console classics"],
   ["fg","FanGamesDB","Native ports, fan remakes and fan games"],["ge","The Gaming Emporium","A hand-kept list of game and port links"],
   ["ub","unbaked.games","Decompiled, recompiled and open-source games"]];
-const DISCOVER_MAX=8;  // from here on the list fills the page by itself
+const DISCOVER_MAX=8;
 let BR_COVER=new Map(),startTried=false;
+// Deck-tested projects ranked by stars weighed by how recent their last release is: the weight halves every two weeks,
+// so a popular project that just shipped beats an even more popular one that hasn't in months.
+const FRESH_HALF_LIFE=14*86400;
+function freshPicks(n,skip=new Set()){
+  const now=Date.now()/1000;
+  const score=x=>x.stars*Math.pow(.5,Math.max(0,now-x.released)/FRESH_HALF_LIFE);
+  const pool=BR.items.filter(x=>x.deck&&x.cover&&x.released&&!(x.key&&skip.has(x.key))).sort((a,b)=>score(b)-score(a));
+  // One per series ("The Legend of Zelda: …"), so a run of releases from one franchise doesn't fill the row.
+  const series=new Set(),out=[];
+  for(const x of pool){
+    const s=x.title.split(/\s*[:–—]\s*|\s+-\s+/)[0].toLowerCase();
+    if(series.has(s))continue;
+    series.add(s);out.push(x);
+    if(out.length==n)break;
+  }
+  return out;
+}
 function discoverHtml(empty){
   return `<div class="start">
     ${empty?`<div class="start-hero">
@@ -4578,8 +4625,8 @@ function discover(){
     const i=b.querySelector("img");if(m.icon&&i){i.src=m.icon;i.hidden=false;i.onerror=()=>i.remove()}
     b.querySelector("i").textContent=BR_CATS.includes(s)?m.count:BR.items.filter(x=>x.sources.some(c=>c.src==s)).length}
   const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
-  const picks=BR.items.filter(x=>x.deck&&x.cover&&!(x.key&&tracked.has(x.key))).sort((a,b)=>b.stars-a.stars).slice(0,n?4:8);
-  $("#startNote").textContent=picks.length?"The most starred projects the catalogs mark as tested":"";
+  const picks=freshPicks(n?4:8,tracked);
+  $("#startNote").textContent=picks.length?"Most starred among the latest releases":"";
   const fresh=!$("#startPicks").children.length;
   $("#startPicks").innerHTML=picks.map(x=>{const busy=brAdding.has(brId(x));
     return `<div class="start-pick"><div class="rh-cover">${esc(initials(x.title))}<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()"></div>
@@ -4979,7 +5026,7 @@ let brFonts=false;
 function loadBrFonts(){
   if(brFonts)return;brFonts=true;
   const l=document.createElement("link");l.rel="stylesheet";
-  l.href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Big+Shoulders+Display:wght@800&family=Bricolage+Grotesque:wght@400;600;800&family=Figtree:wght@400;600;700&family=Inter:wght@400;600;700&family=Michroma&display=swap";
+  l.href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Big+Shoulders+Display:wght@800&family=Figtree:wght@400;600;700&family=Inter:wght@400;600;700&family=Michroma&display=swap";
   document.head.append(l);
 }
 // Replays an entrance: "view-in" on a tab that opens, "enter" on a list that just filled (its first 16 cards staggered).
@@ -5336,8 +5383,8 @@ function renderGhStart(){
   const box=$("#ghStart");
   if(GH.items){box.innerHTML="";return}
   if(!BR.items&&!brLoading)loadBr(false);
-  // Titles of the Deck-tested projects in the catalogs, most starred first.
-  const games=BR.items?[...new Set(BR.items.filter(x=>x.deck).sort((a,b)=>b.stars-a.stars).map(x=>x.title))].slice(0,12):[];
+  // Titles of the Deck-tested projects in the catalogs, picked the same way as My apps' picks.
+  const games=BR.items?[...new Set(freshPicks(12).map(x=>x.title))]:[];
   const chips=list=>list.map(q=>`<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
   box.innerHTML=`<div class="start-hero">
       <h2>Find a port by the game's name</h2>
