@@ -962,6 +962,16 @@ def install_app(app, settings, progress=None, phase=None):
         # Overwriting a folder port under a running game can crash it or leave it half updated.
         # A running AppImage is fine: the new file replaces the old one by rename.
         ensure_not_running(app)
+    if inst and app.get("save_dir"):
+        # A new version can convert or break saves: keep a copy from before it, and don't update without one.
+        if phase:
+            phase("Backing up saves")
+        try:
+            backup_saves(app, settings, "before " + str(latest.get("tag") or "update"))
+        except (OSError, zipfile.BadZipFile) as e:
+            raise RuntimeError("Couldn't back up the saves (%s), so %s wasn't updated" % (e, app["name"]))
+        if phase:
+            phase("Downloading")
 
     install_dir = Path(os.path.expanduser(settings["install_dir"]))
     install_dir.mkdir(parents=True, exist_ok=True)
@@ -1250,6 +1260,180 @@ def uninstall_app(app):
     app.pop("installed", None)
     for k in ("notice", "skip"):
         app.pop(k, None)
+
+
+# --------------------------------------------------------------------------- save backups
+# A game's saves live wherever its port puts them, so the user picks the folder (SedotDeck suggests some).
+# Each backup is one zip, made by hand or before every update, and the newest SAVE_KEEP per app are kept.
+
+SAVE_KEEP = 10
+SAVE_MAX_BYTES = 4 * 1024 ** 3  # a "save folder" bigger than this is almost surely the wrong folder
+_SAVE_WORDS = ("save", "saves", "savedata", "saved", "userdata", "user", "profiles")
+
+
+def save_backup_dir(app, settings):
+    """Where an app's backups go: pinned at the first backup, so renaming the app doesn't lose them."""
+    if app.get("save_backups"):
+        return app["save_backups"]
+    root = settings.get("save_backup_dir") or os.path.join(os.path.expanduser(settings["install_dir"]), "Save backups")
+    return os.path.join(root, safe_name(app["name"]))
+
+
+def _norm_word(s):
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def save_candidates(app):
+    """Folders that look like this game's saves: named after the app, its repo or its file, under the usual
+    data folders, inside a folder port, or in a Flatpak's ~/.var/app folder. Newest first."""
+    inst = app.get("installed") or {}
+    names = {_norm_word(app.get("name", "")), _norm_word(app.get("repo", "").split("/")[-1]),
+             stem_of(inst.get("appimage_name") or os.path.basename(inst.get("path") or ""))}
+    names = {n for n in names if len(n) >= 4}
+    home = str(Path.home())
+    roots = [os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share"),
+             os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), home]
+    found = []
+
+    def add(p):
+        p = os.path.realpath(p)
+        if os.path.isdir(p) and p not in found and p != home:
+            found.append(p)
+
+    for root in roots:
+        try:
+            entries = os.listdir(root)
+        except OSError:
+            continue
+        for e in entries:
+            n = _norm_word(e)
+            if root == home and not e.startswith("."):
+                continue  # games hide their folders in home (~/.game); visible ones are the user's own
+            if len(n) >= 4 and any(n in w or w in n for w in names) and e.lower() != "sedotdeck":
+                add(os.path.join(root, e))
+    p = inst.get("path") or ""
+    if os.path.isdir(p) and not is_flatpak(app):
+        for r, dirs, _files in os.walk(p):
+            for d in dirs:
+                if d.lower() in _SAVE_WORDS:
+                    add(os.path.join(r, d))
+            if r.count(os.sep) - p.count(os.sep) >= 2:
+                dirs[:] = []
+    if inst.get("flatpak_id"):
+        add(os.path.join(home, ".var", "app", inst["flatpak_id"]))
+
+    def mtime(d):
+        newest = os.path.getmtime(d)
+        for r, _dirs, files in os.walk(d):
+            for f in files:
+                try:
+                    newest = max(newest, os.lstat(os.path.join(r, f)).st_mtime)
+                except OSError:
+                    pass
+        return newest
+    out = [{"path": d, "short": short_home(d), "size": disk_size(d), "mtime": mtime(d)} for d in found[:12]]
+    return sorted(out, key=lambda c: -c["mtime"])[:6]
+
+
+def validate_save_dir(path):
+    path = os.path.realpath(os.path.expanduser(path.strip()))
+    home = os.path.realpath(str(Path.home()))
+    if not os.path.isdir(path):
+        raise ValueError("%s isn't a folder" % short_home(path))
+    data = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
+    whole = {home, os.path.dirname(home), os.sep, os.path.realpath(str(CONFIG_DIR.parent)), os.path.realpath(data),
+             os.path.join(home, ".local"), os.path.join(home, ".var"), os.path.join(home, ".var", "app")}
+    if path in whole:
+        raise ValueError("Pick the game's own save folder, not all of %s" % short_home(path))
+    if _inside(str(CONFIG_DIR), path):
+        raise ValueError("That's SedotDeck's own folder")
+    if disk_size(path) > SAVE_MAX_BYTES:
+        raise ValueError("%s holds more than 4 GB, so it's probably not just saves" % short_home(path))
+    return path
+
+
+def list_save_backups(app, settings):
+    d = save_backup_dir(app, settings)
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".zip")]
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        p = os.path.join(d, n)
+        m = re.match(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-\d+)?(?: (.*))?\.zip$", n)
+        out.append({"name": n, "size": os.path.getsize(p), "date": os.path.getmtime(p),
+                    "label": (m.group(5) or "") if m else ""})
+    return sorted(out, key=lambda b: -b["date"])
+
+
+def backup_saves(app, settings, label=""):
+    """Zip the save folder into the app's backup folder and drop the oldest past SAVE_KEEP.
+    None when there's nothing to back up yet (the game hasn't made its folder)."""
+    src = app.get("save_dir") or ""
+    if not src:
+        raise RuntimeError("Pick %s's save folder first" % app["name"])
+    if not os.path.isdir(src):
+        return None
+    dest = save_backup_dir(app, settings)
+    os.makedirs(dest, exist_ok=True)
+    app["save_backups"] = dest
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    tail = (" " + re.sub(r"[^\w .+-]+", "-", label).strip()) if label else ""
+    name, n = stamp + tail + ".zip", 1
+    while os.path.exists(os.path.join(dest, name)):
+        n += 1
+        name = "%s-%d%s.zip" % (stamp, n, tail)
+    final = os.path.join(dest, name)
+    tmp = final + ".part"
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for r, dirs, files in os.walk(src):
+                dirs.sort()
+                for f in sorted(files):
+                    p = os.path.join(r, f)
+                    if not os.path.islink(p):
+                        z.write(p, os.path.relpath(p, src))
+        os.replace(tmp, final)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    for old in list_save_backups(app, settings)[SAVE_KEEP:]:
+        os.remove(os.path.join(dest, old["name"]))
+    return name
+
+
+def restore_saves(app, settings, name):
+    """Put a backup back. What's in the save folder now is backed up first, so a restore can be undone."""
+    src = app.get("save_dir") or ""
+    if not src:
+        raise RuntimeError("Pick %s's save folder first" % app["name"])
+    zpath = os.path.join(save_backup_dir(app, settings), os.path.basename(name))
+    if not name.endswith(".zip") or not os.path.isfile(zpath):
+        raise RuntimeError("No backup named %s" % name)
+    ensure_not_running(app)
+    parent = os.path.dirname(src.rstrip(os.sep))
+    os.makedirs(parent, exist_ok=True)
+    # Unpacked next to the save folder first, so a bad zip changes nothing and the swap is one rename.
+    staging = tempfile.mkdtemp(prefix=".sedotdeck-restore-", dir=parent)
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            bad = z.testzip()
+            if bad:
+                raise RuntimeError("The backup is damaged (%s), so nothing was changed" % bad)
+            for m in z.namelist():
+                if not _inside(staging, os.path.join(staging, m)):
+                    raise RuntimeError("The backup has a file outside the save folder (%s), so nothing was changed" % m)
+            z.extractall(staging)
+        os.chmod(staging, stat.S_IMODE(os.stat(src).st_mode) if os.path.isdir(src) else 0o755)  # mkdtemp made it 0700
+        undo =backup_saves(app, settings, "before restore") if os.path.isdir(src) and os.listdir(src) else None
+        if os.path.isdir(src):
+            move_to_trash(src)
+        os.replace(staging, src)
+    finally:
+        if os.path.isdir(staging):
+            shutil.rmtree(staging, ignore_errors=True)
+    return undo
 
 
 def _device(path):
@@ -1546,7 +1730,10 @@ def github_search(query, token="", tracked=(), sort="best"):
         repo = str(r.get("full_name") or "")
         if not valid_repo(repo):
             continue
+        avatar = str((r.get("owner") or {}).get("avatar_url") or "")
         out.append({
+            "avatar": avatar + ("&" if "?" in avatar else "?") + "s=64" if avatar.startswith("https://avatars.githubusercontent.com/") else "",
+            "topics": [str(t) for t in (r.get("topics") or [])[:5]],
             "repo": repo, "name": str(r.get("name") or repo), "description": str(r.get("description") or "")[:300],
             "stars": int(r.get("stargazers_count") or 0), "language": str(r.get("language") or ""),
             "pushed_at": str(r.get("pushed_at") or ""), "archived": bool(r.get("archived")),
@@ -2917,6 +3104,47 @@ class Server:
                         removed += 1
             return {"ok": True, "removed": removed, "freed": freed}
 
+        if path == "/api/saves":
+            app = self._app(body)
+            st = cfg["settings"]
+            return {"save_dir": app.get("save_dir") or "", "save_short": short_home(app.get("save_dir") or ""),
+                    "exists": bool(app.get("save_dir") and os.path.isdir(app["save_dir"])),
+                    "folder": short_home(save_backup_dir(app, st)), "keep": SAVE_KEEP,
+                    "backups": list_save_backups(app, st),
+                    "suggestions": [] if body.get("no_suggest") else save_candidates(app)}
+
+        if path == "/api/saves_set":
+            app = self._app(body)
+            p = validate_save_dir(body["path"]) if (body.get("path") or "").strip() else ""
+            with _lock:
+                if p:
+                    app["save_dir"] = p
+                else:
+                    app.pop("save_dir", None)
+                self.save()
+            return {"ok": True, "save_dir": p}
+
+        if path in ("/api/saves_backup", "/api/saves_restore"):
+            app = self._app(body)
+            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+                raise ValueError("Wait for %s to finish first" % app["name"])
+            with _lock:
+                if path == "/api/saves_backup":
+                    name = backup_saves(app, cfg["settings"])
+                    if not name:
+                        raise ValueError("The save folder doesn't exist yet. Play once, then back up")
+                    self.save()
+                    return {"ok": True, "name": name}
+                undo = restore_saves(app, cfg["settings"], body.get("name") or "")
+                self.save()
+            return {"ok": True, "undo": undo}
+
+        if path == "/api/saves_open":
+            d = save_backup_dir(self._app(body), cfg["settings"])
+            os.makedirs(d, exist_ok=True)
+            open_path(d)
+            return {"ok": True}
+
         if path == "/api/rollback":
             app = self._app(body)
             if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
@@ -3356,6 +3584,40 @@ def cmd_uninstall(args):
     print("Uninstalled %s. It stays in the list; run: sedotdeck.py update \"%s\" to install it again" % (a["name"], a["name"]))
 
 
+def cmd_saves(args):
+    cfg = load_config()
+    a = find_app(cfg, args.name)
+    if not a:
+        sys.exit("Unknown app: %s" % args.name)
+    st = cfg["settings"]
+    try:
+        if args.action == "folder":
+            if not args.arg:
+                for c in save_candidates(a):
+                    print("%s  (%s)" % (c["short"], "%.1f MB" % (c["size"] / 1e6)))
+                return print("Current: %s" % short_home(a.get("save_dir") or "none"))
+            a["save_dir"] = validate_save_dir(args.arg)
+            save_config(cfg)
+            return print("Saves of %s: %s" % (a["name"], short_home(a["save_dir"])))
+        if args.action == "backup":
+            name = backup_saves(a, st)
+            if not name:
+                sys.exit("The save folder doesn't exist yet")
+            save_config(cfg)
+            return print("Backed up to %s" % short_home(os.path.join(save_backup_dir(a, st), name)))
+        if args.action == "restore":
+            backups = list_save_backups(a, st)
+            if not backups:
+                sys.exit("No backups of %s yet" % a["name"])
+            undo = restore_saves(a, st, args.arg or backups[0]["name"])
+            save_config(cfg)
+            return print("Restored %s%s" % (args.arg or backups[0]["name"], "; what it replaced was backed up as " + undo if undo else ""))
+        for b in list_save_backups(a, st):
+            print("%s  %.1f MB" % (b["name"], b["size"] / 1e6))
+    except (RuntimeError, ValueError, OSError) as e:
+        sys.exit(str(e))
+
+
 def cmd_rename(args):
     cfg = load_config()
     a = find_app(cfg, args.name)
@@ -3462,6 +3724,12 @@ def main():
     s.add_argument("name")
     s.set_defaults(fn=cmd_uninstall)
 
+    s = sub.add_parser("saves", help="back up and restore a game's saves: list, folder [path], backup, restore [backup]")
+    s.add_argument("action", choices=("list", "folder", "backup", "restore"))
+    s.add_argument("name")
+    s.add_argument("arg", nargs="?", default="", help="the save folder (folder) or a backup's file name (restore, default newest)")
+    s.set_defaults(fn=cmd_saves)
+
     s = sub.add_parser("rename", help="rename an app's AppImage, by default to its own name without the version "
                                       "(updates follow it, and so does its Steam shortcut)")
     s.add_argument("name")
@@ -3546,7 +3814,7 @@ button:hover:not(:disabled){background:var(--btn-hover);border-color:var(--btn-h
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
   outline:3px solid var(--accent);outline-offset:2px}
 button:disabled{opacity:.45;cursor:default}
-button.primary{color:#fff;border-color:var(--accent-btn);background:var(--accent-btn)}
+button.primary{color:var(--on-accent,#fff);border-color:var(--accent-btn);background:var(--accent-btn)}
 button.primary:hover:not(:disabled){background:var(--accent-btn-hi);border-color:var(--accent-btn-hi)}
 button.ghost{background:transparent;border-color:transparent}
 button.ghost:hover:not(:disabled){background:var(--panel-hi);border-color:var(--line)}
@@ -3562,6 +3830,30 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .dim{color:var(--faint)} .ok{color:var(--good)} .err{color:var(--bad);font-size:13px}
 .empty{text-align:center;color:var(--dim);padding:48px 24px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
 .empty b{display:block;color:var(--text);font-size:17px;margin:0 0 6px}
+
+/* ---- My apps with only a few apps: picks and catalogs under the list */
+.start{display:flex;flex-direction:column;gap:28px}
+.list:not(:empty)+#discover .start{margin-top:32px}
+.start .group{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 10px}
+.start .group span{font-weight:400;font-size:13px;color:var(--faint)}
+.start-hero{padding:28px 28px 22px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.start-hero h2{margin:0 0 6px;font-size:22px;line-height:1.25}
+.start-hero p{margin:0 0 18px;color:var(--dim);max-width:62ch}
+.start-hero .search{max-width:640px;margin-bottom:10px}
+.start-picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:12px}
+.start-picks:empty{display:none}
+.start-pick{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px;background:var(--panel);border:1px solid transparent;border-radius:var(--r)}
+.start-pick:hover,.start-pick:focus-within{border-color:var(--line-hi)}
+.start-pick .rh-cover{width:100%;height:auto;aspect-ratio:3/4}
+.start-pick .rh-title{font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.start-pick button{margin-top:auto;min-height:36px;padding:6px 12px;font-size:13.5px}
+.start-cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
+.start-cats button{display:flex;gap:10px;align-items:flex-start;text-align:left;padding:12px 14px;background:var(--panel);border-color:var(--line)}
+.start-cats button>span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.start-cats b{font-weight:600}
+.start-cats b i{font-style:normal;font-weight:400;color:var(--faint);margin-left:8px}
+.start-cats button>span>span{font-size:13px;color:var(--dim);font-weight:400}
+.start-cats img.br-ico{width:20px;height:20px;margin-top:1px}
 
 /* ---- tabs */
 .tabs{display:flex;align-items:center;gap:4px;margin:0 0 16px;border-bottom:1px solid var(--line)}
@@ -3584,10 +3876,14 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .group{margin:18px 2px 6px;font-size:14px;font-weight:600;color:var(--dim)}
 .group:first-child{margin-top:0}
 .group span{color:var(--faint);font-weight:400;margin-left:6px}
-.app{position:relative;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;gap:6px 16px;align-items:center;
+.app{position:relative;display:grid;grid-template-columns:48px minmax(0,1.3fr) minmax(0,1fr) auto;gap:6px 16px;align-items:center;
   padding:12px 14px;background:var(--panel);border:1px solid transparent;border-radius:var(--r)}
 .app:hover{border-color:var(--line)}
 .app:focus-within{border-color:var(--line-hi)}
+/* Box art from a catalog that lists the repo; the initials stand in when none does */
+.app .thumb{position:relative;width:48px;height:64px;border-radius:4px;overflow:hidden;display:grid;place-items:center;
+  background:var(--panel-hi);color:var(--dim);font-weight:700;font-size:15px}
+.app .thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .app .name{font-weight:600;font-size:16px;word-break:break-word;line-height:1.3}
 .app .repo{color:var(--dim);font-size:13px}
 .app .note{color:var(--faint);font-size:12.5px;margin-top:2px}
@@ -3676,6 +3972,17 @@ details.adv{border-radius:var(--r);border:1px solid var(--line)}
 details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim)}
 details.adv[open]>summary{border-bottom:1px solid var(--line)}
 details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+/* ---- Saves dialog */
+.sv-row{display:flex;gap:8px} .sv-row input{flex:1;min-width:0}
+.sv-sugg div{flex-wrap:wrap}
+.sv-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);max-height:240px;overflow:auto}
+.sv-list>div{display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.sv-list>div:last-child{border-bottom:0}
+.sv-list>div>span{display:flex;flex-direction:column;flex:1;min-width:0;font-size:13.5px}
+.sv-list b{font-weight:600}
+.sv-list small{color:var(--faint);font-size:12.5px}
+.sv-list button{min-height:34px;padding:4px 12px;font-size:13px}
+.sv-list>.hint{padding:12px}
 .using{padding:10px 12px;border-radius:var(--r);border:1px solid var(--info-line);background:var(--info-bg);font-size:13.5px}
 .notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;padding:12px 14px;border-radius:var(--r);max-height:340px;overflow:auto;
   background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}
@@ -3696,7 +4003,17 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .search{display:flex;gap:8px;margin:0 0 8px}
 .search input{flex:1;min-width:0}
 #vGh>.hint{margin:0 0 12px}
-.repo-row{grid-template-columns:minmax(0,1fr) auto}
+.repo-row{grid-template-columns:40px minmax(0,1fr) auto;align-items:start}
+.repo-row .actions{align-self:center}
+.app .gh-av{width:40px;height:40px;border-radius:8px;font-size:13px}
+.gh-topics{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.gh-start{display:flex;flex-direction:column;gap:22px;margin-top:14px}
+.gh-start:empty{display:none}
+.gh-start .group{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
+.gh-start .group span{font-weight:400;font-size:13px;color:var(--faint);margin:0}
+.gh-start .group a{margin-left:auto;font-size:13px;font-weight:400}
+.gh-chips{display:flex;flex-wrap:wrap;gap:6px}
+.gh-chips button{min-height:36px;padding:4px 12px;font-size:13.5px;background:var(--panel);border-color:var(--line)}
 .repo-row .desc{color:var(--dim);font-size:13.5px;margin-top:2px}
 .meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--faint);margin-top:4px}
 .meta .stars{color:var(--text);font-weight:600}
@@ -3706,8 +4023,12 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .set-h{font-size:13px;font-weight:700;color:var(--dim);margin:10px 0 -2px;letter-spacing:0}
 .adv-h{font-size:12.5px;font-weight:600;color:var(--dim);margin:6px 0 -4px}
 .br-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
-.br-bar>label{display:flex;flex-direction:row;gap:8px;align-items:center;margin:0}
-.br-bar select{min-width:240px}
+.br-src{display:flex;gap:6px;flex-wrap:wrap}
+.br-src button{min-height:36px;padding:4px 12px;font-size:13.5px;color:var(--dim);background:var(--panel);border-color:var(--line)}
+.br-src button b{color:var(--faint);font-weight:500;margin-left:6px}
+.br-src button b:empty{display:none}
+.br-src button.on{color:var(--text);background:var(--panel-hi);border-color:var(--accent)}
+.br-src button.on b{color:var(--text)}
 .br-about{flex:1;min-width:220px;font-size:13px}
 .br-about summary{cursor:pointer;color:var(--dim);width:max-content}
 .br-about .hint{margin-top:6px}
@@ -3740,6 +4061,67 @@ img.br-ico{width:14px;height:14px;border-radius:3px;flex:none;vertical-align:-2p
 .qv-rep{font-size:12.5px;color:var(--faint)}
 .qv-rep b{color:var(--text);font-weight:600}
 
+/* ---- Browse skins: each catalog in its own site's colors, type and card shape (read from the sites' CSS, Nov 2026).
+   Sites with a light and a dark theme follow SedotDeck's; Recomp Launcher, DecompBuddy and the Emporium are dark only. */
+.br-skin{padding:16px;border-radius:var(--r);background:var(--skin,transparent);color:var(--text);font-family:var(--body,inherit)}
+.br-skin .rh-title,.br-skin .group{font-family:var(--head,inherit);font-weight:var(--head-w,600)}
+.br-skin .rh-title{font-size:var(--title-size,15px)}
+.br-skin .rh-card{border-color:var(--card-line,transparent)}
+.br-skin .rh-cover{border-radius:var(--cover-r,4px)}
+.br-skin button{border-radius:var(--btn-r,var(--r))}
+/* Poster cards, cover on top, for the catalogs that show box art that way */
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-grid{grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;align-items:stretch}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-card{flex-direction:column;gap:8px;min-width:0}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .tag{white-space:normal}
+/* Same-height cards in a row: a long name stays on its own clipped line and Add sits on the bottom edge */
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-meta{overflow-wrap:anywhere;line-height:1.35}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-act{padding-top:4px}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-cover{width:100%;height:auto;aspect-ratio:3/4}
+.br-skin[data-src=rh]{--skin:#0e1017;--bg:#0e1017;--panel:#161924;--panel-hi:#1e2230;--line:#2a2f40;--line-hi:#3a4158;--card-line:#2a2f40;
+  --text:#e8eaf2;--dim:#979db3;--faint:#979db3;--accent:#8f9aff;--accent-btn:#8f9aff;--accent-btn-hi:#a9b2ff;--on-accent:#0e1017;
+  --good:#4cc47f;--good-line:#2b6b47;--btn-hover:#252b3d;--btn-hover-line:#4a5270;--r:10px;
+  --body:Archivo,"Noto Sans",system-ui,sans-serif;--head:"Big Shoulders Display","Arial Narrow","Roboto Condensed",sans-serif;--head-w:800;--title-size:20px}
+:root[data-theme="light"] .br-skin[data-src=rh]{--skin:#f2f3f7;--bg:#fff;--panel:#fff;--panel-hi:#e8eaf1;--line:#d3d7e2;--line-hi:#b9bfcf;--card-line:#d3d7e2;
+  --text:#141622;--dim:#586074;--faint:#586074;--accent:#3d4ad0;--accent-btn:#3d4ad0;--accent-btn-hi:#323db0;--on-accent:#fff;
+  --good:#1e8549;--good-line:#9cc7ad;--btn-hover:#e2e5ff;--btn-hover-line:#9ea6e8}
+.br-skin[data-src=qv]{--skin:#090f17;--bg:#090f17;--panel:#151c25;--panel-hi:#1f262f;--line:#262d36;--line-hi:#373d46;--card-line:#262d36;
+  --text:#e8eaee;--dim:#8f959d;--faint:#8f959d;--accent:#38bdf8;--accent-btn:#38bdf8;--accent-btn-hi:#7dd3fc;--on-accent:#082f49;
+  --btn-hover:#242a34;--btn-hover-line:#40474f;--r:8px;--cover-r:6px;--body:Inter,"Noto Sans",system-ui,sans-serif;--head-w:650}
+:root[data-theme="light"] .br-skin[data-src=qv]{--skin:#f4f5f7;--bg:#fff;--panel:#fff;--panel-hi:#ebecf2;--line:#dcdee2;--line-hi:#c2c6cd;--card-line:#dcdee2;
+  --text:#121821;--dim:#5b616b;--faint:#5b616b;--accent:#066895;--accent-btn:#066895;--accent-btn-hi:#05577d;--on-accent:#fafdff;
+  --good:#266f2a;--good-line:#9cc79a;--btn-hover:#e5e8ec;--btn-hover-line:#9fa8b3}
+.br-skin[data-src=rl]{--skin:#0b1220;--bg:#0b1220;--panel:#0f1829;--panel-hi:#141f33;--line:#1f2a3c;--line-hi:#33405a;--card-line:#1c2638;
+  --text:#f4f8fc;--dim:#a7b3c4;--faint:#a7b3c4;--accent:#34f2e8;--accent-btn:#34f2e8;--accent-btn-hi:#7af6ef;--on-accent:#0b1220;
+  --btn-hover:#1a2740;--btn-hover-line:#3d4c68;--r:16px;--btn-r:999px;--cover-r:12px;
+  --body:Figtree,"Noto Sans",system-ui,sans-serif;--head:Archivo,"Noto Sans",sans-serif;--head-w:800;color-scheme:dark}
+.br-skin[data-src=db]{--skin:#26262b;--bg:#1d2140;--panel:#34343b;--panel-hi:#1d2140;--line:#55555f;--line-hi:#8a8577;--card-line:#f3ead6;
+  --text:#f3ead6;--dim:#d4cbb5;--faint:#d4cbb5;--accent:#e0a53a;--accent-btn:#e0a53a;--accent-btn-hi:#ebb655;--on-accent:#1d2140;
+  --good:#8bd17c;--btn-hover:#3f3f47;--btn-hover-line:#f3ead6;--r:10px;--cover-r:8px;
+  --body:"Bricolage Grotesque","Noto Sans",system-ui,sans-serif;--head-w:800;--title-size:16px;
+  border:6px solid #4f6bff;color-scheme:dark}
+.br-skin[data-src=db] .rh-card{border-width:1.6px}
+.br-skin[data-src=fg]{--skin:#141416;--bg:#0b0b0c;--panel:#1e1e22;--panel-hi:#2c2c32;--line:#2c2c32;--line-hi:#4a4a52;--card-line:#2c2c32;
+  --text:#ecebe7;--dim:#a9a7a1;--faint:#a9a7a1;--accent:#9db4ff;--accent-btn:#0b0b0c;--accent-btn-hi:#000;--on-accent:#ecebe7;
+  --btn-hover:#2c2c32;--btn-hover-line:#5a5a63;--r:2px;--cover-r:2px;
+  --body:Archivo,"Noto Sans",system-ui,sans-serif;--head:Michroma,Eurostile,"Noto Sans",sans-serif;--head-w:400;--title-size:13px}
+:root[data-theme="light"] .br-skin[data-src=fg]{--skin:#d3d0c9;--bg:#eceae4;--panel:#eceae4;--panel-hi:#e2dfd8;--line:#c4c0b8;--line-hi:#6f6b64;--card-line:#c4c0b8;
+  --text:#1c1b19;--dim:#4a4741;--faint:#4a4741;--accent:#2a4fb0;--accent-btn:#262523;--accent-btn-hi:#3a3936;--on-accent:#ece9e2;
+  --good:#155c40;--good-line:#8fb3a0;--btn-hover:#e2dfd8;--btn-hover-line:#6f6b64}
+.br-skin[data-src=fg] button{text-transform:uppercase;letter-spacing:.04em;font-weight:650}
+.br-skin[data-src=fg] button.primary{border-color:var(--line-hi)}
+.br-skin[data-src=ge]{--skin:#0b0b0f;--bg:#000;--panel:#141419;--panel-hi:#1f1f26;--line:#2a2a31;--line-hi:#3d3d46;--card-line:#2a2a31;
+  --text:#ededee;--dim:#b3b3b7;--faint:#b3b3b7;--accent:#f5c400;--accent-btn:#f5c400;--accent-btn-hi:#ffd52e;--on-accent:#111;
+  --btn-hover:#24242b;--btn-hover-line:#55555f;--r:18px;--btn-r:999px;--cover-r:12px;--body:system-ui,"Segoe UI",Roboto,sans-serif;--head-w:700;color-scheme:dark}
+.br-skin[data-src=ge] button.primary{font-weight:800}
+.br-skin[data-src=ub]{--skin:#13110e;--bg:#0e0d0b;--panel:#1d1a16;--panel-hi:#27231e;--line:#2e2a25;--line-hi:#4a453e;--card-line:#2e2a25;
+  --text:#f3efe6;--dim:#a8a49c;--faint:#a8a49c;--accent:#4ed38a;--accent-btn:#f3efe6;--accent-btn-hi:#fff;--on-accent:#13110e;
+  --good:#4ed38a;--good-line:#2d6b48;--btn-hover:#27231e;--btn-hover-line:#6a655c;--r:0;--cover-r:0;
+  --body:"Funktional Grotesk","Noto Sans",system-ui,sans-serif;--head-w:400;--title-size:17px}
+:root[data-theme="light"] .br-skin[data-src=ub]{--skin:#f2efe7;--bg:#f8f6f0;--panel:#f8f6f0;--panel-hi:#e8e4d9;--line:#ddd8cc;--line-hi:#a9a397;--card-line:#ddd8cc;
+  --text:#16140f;--dim:#5f5b53;--faint:#5f5b53;--accent:#13795a;--accent-btn:#16140f;--accent-btn-hi:#2c2a24;--on-accent:#f2efe7;
+  --good:#13795a;--good-line:#9cc4b2;--btn-hover:#e8e4d9;--btn-hover-line:#8f897d}
+
 /* ---- controller and D-pad: keep the focused control clear of the sticky header and the hint strip */
 main :is(a,button,input,select,textarea,summary,[tabindex]){scroll-margin-top:84px;scroll-margin-bottom:24px}
 .pad :focus{outline:3px solid var(--accent);outline-offset:2px}
@@ -3749,10 +4131,38 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
 
 @media (max-width:760px){
   header{padding:10px 12px} main{padding:12px} .brand .sub:not(:has(#selfProg)){display:none}
-  .app,.repo-row{grid-template-columns:minmax(0,1fr)} .actions{justify-content:flex-start}
+  .repo-row{grid-template-columns:40px minmax(0,1fr)} .repo-row .actions{grid-column:1/-1} .actions{justify-content:flex-start}
+  .app{grid-template-columns:48px minmax(0,1fr)} .app .stcol,.app .actions{grid-column:1/-1}
   .rh-grid{grid-template-columns:1fr}
+  .br-skin{padding:10px}
+  .start-hero{padding:20px 16px 16px} .start-picks{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
   .tabs{overflow-x:auto;scrollbar-width:none} .tabs>button{flex:none}
 }
+/* ---- Motion: short, transform and opacity only (smooth on the Deck), never on a loop.
+   Every move starts fast and settles (expo-out), so it reads as a response, not a wait; things that pop open
+   (dialogs, the ⋯ menu) overshoot by a hair, like a spring. A tab or catalog that opens rises in, so the swap
+   reads as a new page. Cards that just loaded come in with a short stagger, only on a load or a switch and never
+   while you type a search. A toast rises from the bottom edge, a poster card lifts under the pointer or the
+   d-pad to show the whole card is the target, and a pressed button dips so the press is felt before the result. */
+:root{--out:cubic-bezier(.16,1,.3,1);--spring:cubic-bezier(.34,1.4,.64,1)}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}}
+@keyframes pop{from{opacity:0;transform:scale(.95)}}
+@keyframes fade{from{opacity:0}}
+.view-in{animation:rise .18s var(--out)}
+.enter>:is(.rh-card,.start-pick,.group){animation:rise .32s var(--out) backwards}
+dialog[open]{animation:pop .2s var(--spring)}
+dialog[open]::backdrop{animation:fade .14s ease-out}
+.menu:not([hidden]){animation:pop .16s var(--spring);transform-origin:top right}
+#toast{transform:translate(-50%,12px) scale(.98);transition:opacity .14s var(--out),transform .24s var(--spring)}
+#toast.show{transform:translate(-50%,0)}
+button{transition:background .1s,border-color .1s,color .1s,transform .12s var(--out)}
+button:active:not(:disabled){transform:scale(.96);transition-duration:.04s}
+.tabs>button:active:not(:disabled),.menu button:active:not(:disabled){transform:none}
+.tabs>button{transition:color .1s,border-color .14s var(--out)}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-card,.start-pick{transition:transform .18s var(--out),border-color .12s}
+.br-skin:is([data-src=qv],[data-src=rl],[data-src=ge]) .rh-card:is(:hover,:focus-within),.start-pick:is(:hover,:focus-within){transform:translateY(-3px)}
+.bar i{transition:transform .25s var(--out)}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -3781,18 +4191,22 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <button type="button" role="tab" data-tab="gh">Search GitHub</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
-<section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
+<section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div><div id="discover"></div></section>
 <section id="vGh" hidden>
   <form class="search" id="ghForm"><input type="search" id="ghQ" placeholder="Search GitHub, e.g. god of war 3 or bloodborne" autocomplete="off" spellcheck="false" aria-label="Search GitHub">
     <select id="ghSort" aria-label="Sort results"><option value="best">Best match</option><option value="stars">Most stars</option><option value="updated">Recently updated</option></select>
     <button class="primary" type="submit">Search</button></form>
   <div class="hint" id="ghInfo">Finds GitHub projects by name or description. Add looks at the latest release before anything downloads.</div>
+  <div id="ghStart" class="gh-start"></div>
   <div id="ghList" class="list"></div>
 </section>
-<div id="brBar" class="br-bar" hidden>
-  <label>Source<select id="brSrc" aria-label="Which list to browse"><option value="">All sources</option>
-    <option value="rh">Recomp Haven</option><option value="qv">Quiver</option><option value="rl">Recomp Launcher</option>
-    <option value="db">DecompBuddy</option><option value="fg">FanGamesDB</option><option value="ge">The Gaming Emporium</option><option value="ub">unbaked.games</option></select></label>
+<div id="brWrap" hidden>
+<div class="br-bar">
+  <div class="br-src" id="brSrc" role="tablist" aria-label="Catalog">
+    <button type="button" role="tab" data-src="rh">Recomp Haven<b></b></button><button type="button" role="tab" data-src="qv">Quiver<b></b></button>
+    <button type="button" role="tab" data-src="rl">Recomp Launcher<b></b></button><button type="button" role="tab" data-src="db">DecompBuddy<b></b></button>
+    <button type="button" role="tab" data-src="fg">FanGamesDB<b></b></button><button type="button" role="tab" data-src="ge">The Gaming Emporium<b></b></button>
+    <button type="button" role="tab" data-src="ub">unbaked.games<b></b></button></div>
   <details class="br-about"><summary>About these lists</summary><div class="hint">
     Lists from <a href="https://recomphaven.com/" target="_blank" rel="noopener">Recomp Haven</a> (by rikuwru),
     <a href="https://quiverlauncher.com/" target="_blank" rel="noopener">Quiver</a>,
@@ -3804,6 +4218,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
     SedotDeck isn't part of any of them. Box art belongs to each game's publisher, and every project needs your own copy of the game.
   </div></details>
 </div>
+<div class="br-skin" id="brSkin">
 <section id="vRh" hidden>
   <div class="rh-tools"><input type="text" id="rhQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search Recomp Haven">
     <label>System<select id="rhCon"><option value="">All systems</option></select></label>
@@ -3842,6 +4257,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div class="hint" id="brInfo"></div>
   <div id="brList" class="rh-grid"></div>
 </section>
+</div></div>
 </main>
 <div id="selbar" class="selbar" hidden>
   <span id="selN">0 selected</span>
@@ -3923,6 +4339,18 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div class="btns"><button type="button" class="ghost" onclick="dLaunch.close()">Cancel</button><button type="button" class="primary" id="lOk">Use this</button></div>
 </form></dialog>
 
+<dialog id="dSaves"><form class="dlg" method="dialog" id="fSaves">
+  <h2 id="svTitle">Saves</h2>
+  <p>SedotDeck zips this folder before every update and whenever you press Back up now.</p>
+  <label>Save folder<span class="sv-row"><input type="text" id="svDir" placeholder="e.g. ~/.config/Zelda64Recompiled/saves" autocomplete="off" spellcheck="false">
+    <button type="button" id="svUse">Use</button></span></label>
+  <div class="hint" id="svHint"></div>
+  <div class="assets sv-sugg" id="svSugg" hidden></div>
+  <h3 class="adv-h">Backups</h3>
+  <div class="sv-list" id="svList"></div>
+  <div class="hint" id="svInfo"></div>
+  <div class="btns"><button type="button" class="ghost" onclick="dSaves.close()">Close</button><button type="button" class="primary" id="svNow">Back up now</button></div>
+</form></dialog>
 <dialog id="dRen"><form class="dlg" method="dialog" id="fRen">
   <h2 id="rTitle">Rename file</h2>
   <p>Updates keep writing to this name, and a Steam shortcut to the file is moved with it.</p>
@@ -4041,11 +4469,13 @@ function card(a){
   if(a.notice&&!a.error&&!job)notes.push(esc(a.notice));
   if(a.moved_to&&!job)notes.push(`Repo moved to <span class="mono">${esc(a.moved_to)}</span> · <a href="#" data-a="move" data-id="${a.id}">Use new link</a>`);
   const opens=inst&&inst.kind=="archive"&&!a.has_launcher;
+  const cover=BR_COVER.get((a.host+"/"+a.repo).toLowerCase());
   return `<div class="app st-${st} ${SEL&&SEL.has(a.id)?"sel":""}" data-card="${a.id}"><span class="pickbox"></span>
+   <div class="thumb" aria-hidden="true">${esc(initials(a.name))}${cover?`<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
    <div><div class="name">${esc(a.name)}</div>
      <a class="repo" href="${esc(a.web_url)}" target="_blank" rel="noopener">${esc(a.display_repo)}</a>
      ${notes.map(n=>`<div class="note">${n}</div>`).join("")}</div>
-   <div><div class="state">${st=="busy"&&S.jobs[a.id]&&S.jobs[a.id].label?esc(S.jobs[a.id].label)+"…":STATE[st]}</div>${ver?`<div class="ver">${ver}</div>`:""}</div>
+   <div class="stcol"><div class="state">${st=="busy"&&S.jobs[a.id]&&S.jobs[a.id].label?esc(S.jobs[a.id].label)+"…":STATE[st]}</div>${ver?`<div class="ver">${ver}</div>`:""}</div>
    <div class="actions">
      ${mainBtn=="Edit"?`<button class="primary" data-a="edit" data-id="${a.id}">Edit</button>`:mainBtn?`<button class="primary" data-a="update" data-id="${a.id}" ${running||!L.asset?"disabled":""}>${ICON(mainBtn=="Update"?"i-up":"i-get")} ${mainBtn}</button>`:""}
      ${here?`<button data-a="${opens?"folder":"launch"}" data-id="${a.id}" ${running?"disabled":""}>${opens?"Open":"Launch"}</button>`:""}
@@ -4074,13 +4504,14 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or <a href="#" data-tab="br">browse</a> ports and recomps from seven catalogs.</div>'}
+  else if(!S.apps.length){L.innerHTML=""}  // the start panel below takes over
   else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
     L.innerHTML=cats.some(c=>c)?cats.map(c=>{const g=shown.filter(a=>(a.category||"")==c);
       return `<h3 class="group">${c?esc(c):"Other"}<span>${g.length}</span></h3>`+g.map(card).join("")}).join(""):shown.map(card).join("");
   }
+  discover();
   const n=count("update");
   const b=$("#btnUpdAll");b.hidden=!n;b.textContent=`Update all (${n})`;
   const checking=Object.values(S.jobs||{}).some(j=>j.state=="running"&&j.label=="Checking");
@@ -4107,6 +4538,67 @@ function render(){
     :checking?"Checking for updates…":S.apps.length?`Checked ${ago(last)}`:"Keeps your AppImages, Flatpaks and PC ports up to date";
 }
 $("#sub").addEventListener("click",e=>{if(e.target.closest("#selfProg"))openSelf()});
+
+// ---- My apps with fewer than eight apps: a link box when it's empty, Deck-tested picks from Browse, and the catalogs
+const START_CATS=[["rh","Recomp Haven","Recomps rated in quality tiers, S to D"],["qv","Quiver","Ports and recomps with player reports"],
+  ["rl","Recomp Launcher","Recompiled console games, most starred first"],["db","DecompBuddy","Decomps and PC ports of console classics"],
+  ["fg","FanGamesDB","Native ports, fan remakes and fan games"],["ge","The Gaming Emporium","A hand-kept list of game and port links"],
+  ["ub","unbaked.games","Decompiled, recompiled and open-source games"]];
+const DISCOVER_MAX=8;  // from here on the list fills the page by itself
+let BR_COVER=new Map(),startTried=false;
+function discoverHtml(empty){
+  return `<div class="start">
+    ${empty?`<div class="start-hero">
+      <h2>Add your first app</h2>
+      <p>Paste a link to a release page. SedotDeck downloads the Linux build, can add it to Steam, and keeps it up to date.</p>
+      <form class="search" id="startForm"><input type="text" id="startQ" placeholder="owner/repo, or https://github.com/owner/repo" autocomplete="off" spellcheck="false" aria-label="Release link">
+        <button class="primary" type="submit">Add</button></form>
+      <div class="hint">No link? <a href="#" data-tab="gh">Search GitHub</a> by the game's name.</div>
+    </div>`:""}
+    <section><h3 class="group">${empty?"Tested on Steam Deck":"More tested on Steam Deck"}<span id="startNote">Loading the catalogs…</span></h3><div class="start-picks" id="startPicks"></div></section>
+    <section><h3 class="group">Browse a catalog</h3><div class="start-cats">${START_CATS.map(([k,n,d])=>
+      `<button type="button" data-start-src="${k}"><img class="br-ico" src="" alt="" hidden><span><b>${esc(n)}<i></i></b><span>${esc(d)}</span></span></button>`).join("")}</div></section>
+  </div>`;
+}
+function discover(){
+  const D=$("#discover"),n=S.apps.length;
+  const found=!n&&!foundLater&&(S.found||[]).some(f=>f.src);  // the found banner is the next step
+  const mode=found||n>=DISCOVER_MAX?"":n?"few":"empty";
+  // Rebuilt only when the mode changes, so typing in the link box survives the refresh.
+  if(D.dataset.mode!=mode){D.dataset.mode=mode;D.innerHTML=mode?discoverHtml(mode=="empty"):"";D.dataset.key=""}
+  if(!mode)return;
+  if(!BR.items){
+    if(!brLoading&&!startTried){startTried=true;loadBr(false)}
+    else if(!brLoading)$("#startNote").textContent="Couldn't load the catalogs. Browse can try again.";
+    return;
+  }
+  const key=S.apps.map(a=>a.host+"/"+a.repo).join()+"|"+[...brAdding].join();
+  if(D.dataset.key==key)return;D.dataset.key=key;
+  for(const b of D.querySelectorAll("[data-start-src]")){const s=b.dataset.startSrc,m=BR.sources[s];if(!m)continue;
+    const i=b.querySelector("img");if(m.icon&&i){i.src=m.icon;i.hidden=false;i.onerror=()=>i.remove()}
+    b.querySelector("i").textContent=BR_CATS.includes(s)?m.count:BR.items.filter(x=>x.sources.some(c=>c.src==s)).length}
+  const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
+  const picks=BR.items.filter(x=>x.deck&&x.cover&&!(x.key&&tracked.has(x.key))).sort((a,b)=>b.stars-a.stars).slice(0,n?4:8);
+  $("#startNote").textContent=picks.length?"The most starred projects the catalogs mark as tested":"";
+  const fresh=!$("#startPicks").children.length;
+  $("#startPicks").innerHTML=picks.map(x=>{const busy=brAdding.has(brId(x));
+    return `<div class="start-pick"><div class="rh-cover">${esc(initials(x.title))}<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()"></div>
+      <div class="rh-title">${esc(x.title)}</div>
+      <div class="rh-meta"><span class="tag">${esc(brCon(x.console))}</span>${x.stars>0?`<span class="rh-stars">★ ${stars(x.stars)}</span>`:""}</div>
+      <button class="primary" data-start="${esc(brId(x))}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button></div>`}).join("");
+  if(fresh)enter($("#startPicks"));
+}
+$("#discover").addEventListener("submit",e=>{
+  if(e.target.id!="startForm")return;e.preventDefault();
+  const v=$("#startQ").value.trim();if(!v)return $("#startQ").focus();
+  openAdd(null);$("#aRepo").value=v;preview();
+});
+$("#discover").addEventListener("click",e=>{
+  const c=e.target.closest("[data-start-src]");
+  if(c){BRSRC=c.dataset.startSrc;try{localStorage.setItem("sedotdeck.brsrc",BRSRC)}catch(err){}setTab("br");return}
+  const b=e.target.closest("[data-start]");if(!b)return;
+  const x=BR.items&&BR.items.find(i=>brId(i)==b.dataset.start);if(x)brAdd(x);
+});
 $("#summary").addEventListener("click",e=>{
   const c=e.target.closest("button[data-f]");if(!c)return;
   FILTER=c.dataset.f;try{localStorage.setItem("sedotdeck.filter",FILTER)}catch(err){}
@@ -4135,6 +4627,7 @@ async function doAction(k,a,el){
   else if(k=="check")act("/api/check",{id});
   else if(k=="launch")act("/api/launch",{id},"Launching "+a.name);
   else if(k=="menu")openMenu(el,a);
+  else if(k=="saves")openSaves(a);
   else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
   else if(k=="uninstall"){
     const flat=a.installed.kind=="flatpak";
@@ -4205,6 +4698,53 @@ $("#list").addEventListener("click",e=>{
   const a=S.apps.find(x=>x.id==b.dataset.id);if(a)doAction(b.dataset.a,a,b);
 });
 
+// ---- Saves: pick the game's save folder, back it up, put a backup back
+let svApp=null,svSuggest=[];
+async function openSaves(a){
+  svApp=a;svSuggest=[];$("#svTitle").textContent=`Saves of ${a.name}`;
+  $("#svHint").textContent="Looking for its save folder…";$("#svSugg").hidden=true;$("#svList").innerHTML="";$("#svInfo").textContent="";
+  dSaves.showModal();
+  await svLoad(true);
+}
+async function svLoad(suggest){
+  let r;try{r=await api("/api/saves",{id:svApp.id,no_suggest:!suggest})}catch(e){$("#svHint").textContent=e.message;return}
+  if(suggest)svSuggest=r.suggestions;
+  $("#svDir").value=r.save_short;
+  // Suggestions are folders named after the game; the user still decides which one holds the saves.
+  const sug=svSuggest.filter(c=>c.path!=r.save_dir);
+  $("#svHint").textContent=r.save_dir?(r.exists?"":"This folder doesn't exist yet. The game makes it when it first saves.")
+    :sug.length?"Not set yet. These folders are named after the game; pick the one with its saves, or type a path.":"Not set yet. Type the folder where the game keeps its saves; its README or wiki usually says.";
+  $("#svSugg").hidden=!sug.length;
+  $("#svSugg").innerHTML=sug.map(c=>`<div data-p="${esc(c.path)}" role="button" tabindex="0"><span class="mono">${esc(c.short)}</span><small>${mb(c.size)||"empty"} · changed ${ago(c.mtime)}</small></div>`).join("");
+  $("#svList").innerHTML=r.backups.length?r.backups.map(b=>`<div><span><b>${new Date(b.date*1000).toLocaleString()}</b>${b.label?`<small>${esc(b.label)}</small>`:""}</span>
+      <small>${b.size<1e5?"under 0.1 MB":mb(b.size)}</small><button type="button" data-restore="${esc(b.name)}" ${r.save_dir?"":"disabled"}>Restore</button></div>`).join("")
+    :`<div class="hint">${r.save_dir?"No backups yet.":"Backups show up here once the save folder is set."}</div>`;
+  $("#svInfo").innerHTML=`The newest ${r.keep} are kept in <a href="#" id="svOpen">${esc(r.folder)}</a>.`;
+  $("#svNow").disabled=!r.exists;
+}
+async function svSet(p){
+  try{await api("/api/saves_set",{id:svApp.id,path:p});await refresh();await svLoad(false);toast(p?"Save folder set":"Save folder cleared")}
+  catch(e){toast(e.message,true)}
+}
+$("#svUse").onclick=()=>svSet($("#svDir").value);
+$("#svDir").onkeydown=e=>{if(e.key=="Enter"){e.preventDefault();svSet($("#svDir").value)}};
+$("#svSugg").onclick=e=>{const d=e.target.closest("[data-p]");if(d)svSet(d.dataset.p)};
+$("#svSugg").onkeydown=e=>{const d=e.target.closest("[data-p]");if(d&&(e.key=="Enter"||e.key==" ")){e.preventDefault();svSet(d.dataset.p)}};
+$("#svNow").onclick=async()=>{
+  const b=$("#svNow");b.disabled=true;b.textContent="Backing up…";
+  try{await api("/api/saves_backup",{id:svApp.id});toast("Saves backed up")}catch(e){toast(e.message,true)}
+  b.textContent="Back up now";await svLoad(false);
+};
+$("#svList").onclick=async e=>{
+  const b=e.target.closest("[data-restore]");if(!b)return;
+  const when=b.closest("div").querySelector("b").textContent;
+  if(!await ask({title:`Restore the saves from ${when}?`,ok:"Restore",danger:true,
+    text:"The saves in the folder now are backed up first, then moved to the Trash, so this can be undone. Close the game before you go on."}))return;
+  try{await api("/api/saves_restore",{id:svApp.id,name:b.dataset.restore});toast("Saves restored")}catch(err){toast(err.message,true)}
+  await svLoad(false);
+};
+$("#svInfo").onclick=e=>{if(e.target.id=="svOpen"){e.preventDefault();api("/api/saves_open",{id:svApp.id}).catch(err=>toast(err.message,true))}};
+
 // The ⋯ menu: everything a card needs now and then, so the card itself shows only what matters.
 const menu=$("#menu");let menuFor=null;
 function closeMenu(){if(!menu.hidden){menu.hidden=true;if(menuFor)menuFor.focus();menuFor=null}}
@@ -4225,6 +4765,7 @@ function openMenu(btn,a){
     file.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):a.has_launcher?"Automatic":"Not chosen yet"}));
     file.push(it("folder","Open folder"));
   }
+  file.push(it("saves","Saves…",{off:running,hint:a.save_dir?"Backed up before each update":"Back up and restore"}));
   if(a.can_rename){const lock=a.in_steam&&S.steam_running;
     file.push(it("renameto","Rename file…",{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":esc(a.file_name)}))}
   links.push(it("release","Open release page"));
@@ -4429,26 +4970,48 @@ $("#fCat").onsubmit=e=>{e.preventDefault();saveCat($("#cName").value.trim())};
 $("#cClear").onclick=()=>saveCat("");
 
 // ---- tabs
-let TAB="apps",BRSRC="";
-const BR_CATS=["rh","qv","rl"];
-try{BRSRC=localStorage.getItem("sedotdeck.brsrc")||""}catch(e){}
-if($("#brSrc").querySelector(`option[value="${CSS.escape(BRSRC)}"]`))$("#brSrc").value=BRSRC;else BRSRC="";
+let TAB="apps",BRSRC="rh";
+const BR_CATS=["rh","qv","rl"],BR_SRCS=["rh","qv","rl","db","fg","ge","ub"];
+try{BRSRC=localStorage.getItem("sedotdeck.brsrc")||"rh"}catch(e){}
+if(!BR_SRCS.includes(BRSRC))BRSRC="rh";
+// The catalogs' own typefaces, fetched the first time Browse opens; offline, the fallbacks in the skins keep the layout.
+let brFonts=false;
+function loadBrFonts(){
+  if(brFonts)return;brFonts=true;
+  const l=document.createElement("link");l.rel="stylesheet";
+  l.href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&family=Big+Shoulders+Display:wght@800&family=Bricolage+Grotesque:wght@400;600;800&family=Figtree:wght@400;600;700&family=Inter:wght@400;600;700&family=Michroma&display=swap";
+  document.head.append(l);
+}
+// Replays an entrance: "view-in" on a tab that opens, "enter" on a list that just filled (its first 16 cards staggered).
+function enter(el,cls="enter"){
+  if(!el)return;
+  el.classList.remove(cls);void el.offsetWidth;el.classList.add(cls);
+  if(cls=="enter")[...el.children].slice(0,16).forEach((c,i)=>c.style.animationDelay=i*16+"ms");
+  clearTimeout(el._enter);el._enter=setTimeout(()=>el.classList.remove(cls),cls=="enter"?700:250);
+}
 function setTab(t){
+  const prev=TAB,prevSrc=$("#brSkin").dataset.src;
   TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  // Recomp Haven, Quiver and Recomp Launcher keep their own detailed view, picked from Browse's Source list.
+  // One catalog at a time, each dressed like its own site. Recomp Haven, Quiver and Recomp Launcher keep their detailed view.
   const cat=t=="br"&&BR_CATS.includes(BRSRC)?BRSRC:"";
-  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#brBar").hidden=t!="br";$("#vBr").hidden=t!="br"||!!cat;
+  $("#brSrc").querySelectorAll("[data-src]").forEach(b=>{b.classList.toggle("on",b.dataset.src==BRSRC);b.setAttribute("aria-selected",b.dataset.src==BRSRC)});
+  $("#brSkin").dataset.src=BRSRC;
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#brWrap").hidden=t!="br";$("#vBr").hidden=!!cat;
   $("#vRh").hidden=cat!="rh";$("#vQv").hidden=cat!="qv";$("#vRl").hidden=cat!="rl";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
-  if(t=="br")loadBr(false);
+  if(t=="br"){loadBrFonts();loadBr(false)}
   if(cat=="rh")loadRh(false);
   if(cat=="qv")loadQv(false);
   if(cat=="rl")loadRl(false);
-  if(t=="gh")$("#ghQ").focus();
+  if(t=="gh"){$("#ghQ").focus();renderGh()}
+  if(prev!=t)enter(t=="apps"?$("#vApps"):t=="gh"?$("#vGh"):$("#brWrap"),"view-in");
+  // After the caller's own redraw (picking a catalog redraws its list right after this), so the new cards are the ones that move.
+  if(t=="br"&&(prev!=t||prevSrc!=BRSRC))requestAnimationFrame(()=>enter($(cat?"#"+cat+"List":"#brList")));
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
 
+const initials=t=>t.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase();
 const stars=n=>n>=1e3?(n/1e3).toFixed(n>=1e4?0:1).replace(/\.0$/,"")+"k":String(n);
 
 // ---- Recomp Haven
@@ -4460,7 +5023,7 @@ async function loadRh(refresh){
   if(rhLoading||(RH.items&&!refresh))return renderRh();
   rhLoading=true;$("#rhInfo").textContent="Loading the list from Recomp Haven…";
   try{RH=await api("/api/recomphaven",{refresh})}catch(e){$("#rhInfo").textContent=e.message}
-  rhLoading=false;renderRh();
+  rhLoading=false;renderRh();enter($("#rhList"));
 }
 const rhCon=k=>RH.consoles[k]||{label:k||"Other",short:(k||"?").toUpperCase(),color:""};
 const tierRank=x=>x.tier?"SABCD".indexOf(x.tier):9;
@@ -4533,7 +5096,7 @@ async function loadQv(refresh){
   if(qvLoading||(QV.items&&!refresh))return renderQv();
   qvLoading=true;$("#qvInfo").textContent="Loading the catalog from quiverlauncher.com…";
   try{QV=await api("/api/quiver",{refresh})}catch(e){$("#qvInfo").textContent=e.message}
-  qvLoading=false;renderQv();
+  qvLoading=false;renderQv();enter($("#qvList"));
 }
 const qvCon=k=>QV.consoles[k]||k||"Other";
 const QV_SORT={
@@ -4604,7 +5167,7 @@ async function loadRl(refresh){
   if(rlLoading||(RL.items&&!refresh))return renderRl();
   rlLoading=true;$("#rlInfo").textContent="Loading the catalog from recomplauncher.com…";
   try{RL=await api("/api/recomplauncher",{refresh})}catch(e){$("#rlInfo").textContent=e.message}
-  rlLoading=false;renderRl();
+  rlLoading=false;renderRl();enter($("#rlList"));
 }
 const rlCon=k=>RL.consoles[k]||k||"Other";
 const RL_SORT={
@@ -4669,7 +5232,10 @@ async function loadBr(refresh){
   if(brLoading||(BR.items&&!refresh))return renderBr();
   brLoading=true;$("#brInfo").textContent="Loading the catalogs…";
   try{BR=await api("/api/browse",{refresh})}catch(e){$("#brInfo").textContent=e.message}
-  brLoading=false;renderBr();
+  brLoading=false;renderBr();enter($("#brList"));
+  BR_COVER=new Map((BR.items||[]).filter(x=>x.key&&x.cover).map(x=>[x.key,x.cover]));
+  if(TAB=="apps")render();  // covers for My apps, and the picks under it
+  if(TAB=="gh")renderGh();
 }
 const brCon=k=>k||"Other";
 const brId=x=>x.key||"ub:"+x.ub_slug;
@@ -4699,21 +5265,23 @@ function renderBr(){
   if(!BR.items)return;
   brKey=S.apps.map(a=>a.host+"/"+a.repo).join();
   const tracked=new Set(S.apps.flatMap(a=>[(a.host+"/"+a.repo).toLowerCase(),a.br_url].filter(Boolean)));
-  const src=$("#brSrc");
-  // The options are in the markup, so switching sources still works when Browse itself failed to load; counts come later.
-  for(const o of src.options)if(o.value&&BR.sources[o.value])o.textContent=`${BR.sources[o.value].name} (${BR.sources[o.value].count})`;
+  // The buttons are in the markup, so switching catalogs still works when Browse itself failed to load; counts come later.
+  // The merged lists count projects after merging, so the number on the button matches the list under it.
+  for(const b of $("#brSrc").querySelectorAll("[data-src]")){const s=b.dataset.src;if(!BR.sources[s])continue;
+    b.querySelector("b").textContent=BR_CATS.includes(s)?BR.sources[s].count:BR.items.filter(x=>x.sources.some(c=>c.src==s)).length}
+  const sel=BR_CATS.includes(BRSRC)?"":BRSRC,mine=sel?BR.items.filter(x=>x.sources.some(s=>s.src==sel)):BR.items;
   const con=$("#brCon"),ccur=con.value,per={};
-  BR.items.forEach(x=>per[brCon(x.console)]=(per[brCon(x.console)]||0)+1);
+  mine.forEach(x=>per[brCon(x.console)]=(per[brCon(x.console)]||0)+1);
   con.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>a.localeCompare(b))
     .map(k=>`<option value="${esc(k)}">${esc(k)} (${per[k]})</option>`).join("");
   con.value=per[ccur]?ccur:"";
-  const q=$("#brQ").value.trim().toLowerCase(),sel=BR_CATS.includes(src.value)?"":src.value,system=con.value,deck=$("#brDeck").checked,sort=$("#brSort").value;
-  const list=BR.items.filter(x=>(!system||brCon(x.console)==system)&&(!sel||x.sources.some(s=>s.src==sel))&&(!deck||x.deck)
+  const q=$("#brQ").value.trim().toLowerCase(),system=con.value,deck=$("#brDeck").checked,sort=$("#brSort").value;
+  const list=mine.filter(x=>(!system||brCon(x.console)==system)&&(!deck||x.deck)
     &&(!q||[x.title,x.console,x.repo].join(" ").toLowerCase().includes(q))).sort(BR_SORT[sort]||BR_SORT.sources);
   const when=BR.fetched_at?`Updated ${ago(BR.fetched_at)}`:"";
   const errors=Object.values(BR.sources).filter(s=>s.error).map(s=>esc(s.error));
-  $("#brInfo").innerHTML=[`${list.length} of ${BR.items.length} projects`,when,'<a href="#" id="brRefresh">Refresh</a>',...errors].filter(Boolean).join(" · ");
-  if(!list.length){$("#brList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No projects match these filters. Clear the search or pick All sources.</div>';return}
+  $("#brInfo").innerHTML=[`${list.length} of ${mine.length} projects`,when,'<a href="#" id="brRefresh">Refresh</a>',...errors].filter(Boolean).join(" · ");
+  if(!list.length){$("#brList").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Nothing here</b>No projects match these filters. Clear the search or pick All systems.</div>';return}
   const shown=list.slice(0,brShow);
   const more=list.length>shown.length?`<div class="empty" style="grid-column:1/-1"><button type="button" id="brMore">Show ${Math.min(BR_PAGE,list.length-shown.length)} more</button> ${shown.length} of ${list.length} shown</div>`:"";
   if(sort=="system"&&!system){
@@ -4724,43 +5292,78 @@ function renderBr(){
 }
 const brFilter=()=>{brShow=BR_PAGE;renderBr()};
 $("#brQ").oninput=brFilter;
-$("#brSrc").onchange=()=>{BRSRC=$("#brSrc").value;try{localStorage.setItem("sedotdeck.brsrc",BRSRC)}catch(e){}setTab("br");brFilter()};$("#brCon").onchange=brFilter;$("#brDeck").onchange=brFilter;
+$("#brSrc").onclick=e=>{const b=e.target.closest("[data-src]");if(!b)return;BRSRC=b.dataset.src;try{localStorage.setItem("sedotdeck.brsrc",BRSRC)}catch(e){}setTab("br");brFilter()};$("#brCon").onchange=brFilter;$("#brDeck").onchange=brFilter;
 $("#brSort").onchange=()=>{try{localStorage.setItem("sedotdeck.brsort",$("#brSort").value)}catch(e){}brFilter()};
 $("#brInfo").onclick=e=>{if(e.target.id=="brRefresh"){e.preventDefault();BR.items=null;loadBr(true)}};
 $("#brList").onclick=async e=>{
   if(e.target.id=="brMore"){brShow+=BR_PAGE;renderBr();return}
   const b=e.target.closest("[data-br]");if(!b)return;
-  const x=BR.items.find(i=>brId(i)==b.dataset.br);if(!x)return;
+  const x=BR.items.find(i=>brId(i)==b.dataset.br);if(x)brAdd(x);
+};
+async function brAdd(x){
   // "View on …" should open the entry's own page when a source has one (FanGamesDB, unbaked.games).
   const s=x.sources.find(s=>s.src=="fg"||s.src=="ub")||x.sources.find(s=>!BR_CATS.includes(s.src));
   const ids={};for(const c of x.sources)if(BR_CATS.includes(c.src)&&c.id)ids[c.src+"_id"]=c.id;
-  brAdding.add(brId(x));renderBr();
+  brAdding.add(brId(x));renderBr();if(TAB=="apps")discover();
   try{
     const repo=x.repo?"https://"+x.host+"/"+x.repo:(await api("/api/browse_resolve",{slug:x.ub_slug})).repo;
     await api("/api/add",{repo,name:x.title,...ids,...(s?{br_src:s.src,br_url:s.url}:{})});
     toast(`${x.title} added to My apps, checking for its release…`);await refresh();
   }catch(err){toast(err.message,true)}
   brAdding.delete(brId(x));renderBr();
-};
+  if(TAB=="apps")discover();
+}
 
 // ---- Discover: find a project on GitHub by the game's name
 let GH={items:null,q:"",total:0},ghBusy=false,ghKey="";
 $("#ghSort").onchange=()=>{if(GH.items)$("#ghForm").requestSubmit()};
 $("#ghForm").onsubmit=async e=>{
   e.preventDefault();const q=$("#ghQ").value.trim();if(!q||ghBusy)return;
-  ghBusy=true;$("#ghInfo").textContent=`Searching GitHub for “${q}”…`;
-  try{GH=await api("/api/github_search",{q,sort:$("#ghSort").value});GH.q=q;renderGh()}
+  const btn=$("#ghForm button[type=submit]");
+  ghBusy=true;btn.disabled=true;btn.textContent="Searching…";$("#ghInfo").textContent=`Searching GitHub for “${q}”…`;
+  try{GH=await api("/api/github_search",{q,sort:$("#ghSort").value});GH.q=q;ghRemember(q);renderGh();enter($("#ghList"))}
   catch(err){$("#ghInfo").textContent=err.message}
-  ghBusy=false;
+  ghBusy=false;btn.disabled=false;btn.textContent="Search";
 };
+// Before the first search: your recent searches, and game names from the catalogs to start from.
+let ghRecent=[];
+try{ghRecent=JSON.parse(localStorage.getItem("sedotdeck.ghrecent")||"[]").filter(x=>typeof x=="string").slice(0,8)}catch(e){}
+function ghRemember(q){
+  ghRecent=[q,...ghRecent.filter(x=>x.toLowerCase()!=q.toLowerCase())].slice(0,8);
+  try{localStorage.setItem("sedotdeck.ghrecent",JSON.stringify(ghRecent))}catch(e){}
+}
+function renderGhStart(){
+  const box=$("#ghStart");
+  if(GH.items){box.innerHTML="";return}
+  if(!BR.items&&!brLoading)loadBr(false);
+  // Titles of the Deck-tested projects in the catalogs, most starred first.
+  const games=BR.items?[...new Set(BR.items.filter(x=>x.deck).sort((a,b)=>b.stars-a.stars).map(x=>x.title))].slice(0,12):[];
+  const chips=list=>list.map(q=>`<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+  box.innerHTML=`<div class="start-hero">
+      <h2>Find a port by the game's name</h2>
+      <p>Search for the game, then Add the project that ships a Linux build. Adding a word like <b>recomp</b>, <b>decomp</b> or <b>port</b> skips most mods and fan art.</p>
+    </div>
+    ${ghRecent.length?`<section><h3 class="group">Recent searches<a href="#" id="ghClear">Clear</a></h3><div class="gh-chips">${chips(ghRecent)}</div></section>`:""}
+    ${games.length?`<section><h3 class="group">Tested on Steam Deck<span>names from the catalogs</span></h3><div class="gh-chips">${chips(games)}</div></section>`:""}`;
+}
+$("#ghStart").onclick=e=>{
+  if(e.target.id=="ghClear"){e.preventDefault();ghRecent=[];try{localStorage.removeItem("sedotdeck.ghrecent")}catch(err){}renderGhStart();return}
+  const b=e.target.closest("[data-q]");if(!b)return;
+  $("#ghQ").value=b.dataset.q;$("#ghForm").requestSubmit();
+};
+$("#ghQ").addEventListener("input",()=>{if(!$("#ghQ").value&&GH.items){GH.items=null;$("#ghList").innerHTML="";
+  $("#ghInfo").textContent="Finds GitHub projects by name or description. Add looks at the latest release before anything downloads.";renderGhStart()}});
 function renderGh(){
-  if(!GH.items)return;
+  if(!GH.items)return renderGhStart();
+  $("#ghStart").innerHTML="";
   ghKey=S.apps.map(a=>a.host+"/"+a.repo).join();
   const tracked=new Set(S.apps.filter(a=>a.host=="github.com").map(a=>a.repo.toLowerCase()));
   $("#ghInfo").textContent=GH.items.length?`${GH.total.toLocaleString()} projects match “${GH.q}”`+(GH.total>GH.items.length?`, showing the first ${GH.items.length}.`:"."):`Nothing on GitHub matches “${GH.q}”.`;
   $("#ghList").innerHTML=GH.items.map(r=>{const added=tracked.has(r.repo.toLowerCase());
-    return `<div class="app repo-row"><div><div class="name">${esc(r.name)}</div><a class="repo" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>
+    return `<div class="app repo-row"><div class="thumb gh-av" aria-hidden="true">${esc(initials(r.repo.split("/")[0]))}${r.avatar?`<img src="${esc(r.avatar)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
+      <div><div class="name">${esc(r.name)}</div><a class="repo" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.repo)}</a>
       ${r.description?`<div class="desc">${esc(r.description)}</div>`:""}
+      ${r.topics.length?`<div class="gh-topics">${r.topics.map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</div>`:""}
       <div class="meta"><span class="stars" title="${r.stars.toLocaleString()} stars">★ ${stars(r.stars)}</span>${r.language?`<span>${esc(r.language)}</span>`:""}${r.pushed_at?`<span>updated ${ago(Date.parse(r.pushed_at)/1000)}</span>`:""}${r.archived?'<span class="tag">archived</span>':""}</div></div>
       <div class="actions">${added?'<span class="added">In My apps</span>':`<button class="primary" data-gh="${esc(r.repo)}">Add</button>`}</div></div>`}).join("");
 }

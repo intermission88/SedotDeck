@@ -1119,11 +1119,16 @@ def fake_search(url, token="", service=""):
     assert "in%3Aname%2Cdescription" in url and "sort=" not in url, url
     return {"total_count": 2, "items": [
         {"full_name": "a/bloodborne-port", "name": "bloodborne-port", "description": "d", "stargazers_count": 1500,
-         "html_url": "https://github.com/a/bloodborne-port"},
+         "html_url": "https://github.com/a/bloodborne-port", "topics": ["ps4", "port"],
+         "owner": {"avatar_url": "https://avatars.githubusercontent.com/u/1?v=4"}},
+        {"full_name": "b/other", "name": "other", "owner": {"avatar_url": "https://evil.example/a.png"}},
         {"full_name": "../evil", "name": "x"}]}
 dp.http_json = fake_search
 r = dp.github_search("  bloodborne ", tracked=["A/Bloodborne-Port"])
-eq([(i["repo"], i["stars"], i["tracked"]) for i in r["items"]], [("a/bloodborne-port", 1500, True)], "search results, tracked marked")
+eq([(i["repo"], i["stars"], i["tracked"]) for i in r["items"]], [("a/bloodborne-port", 1500, True), ("b/other", 0, False)],
+   "search results, tracked marked")
+eq([(i["avatar"], i["topics"]) for i in r["items"]], [("https://avatars.githubusercontent.com/u/1?v=4&s=64", ["ps4", "port"]), ("", [])],
+   "owner avatars only from GitHub's avatar host, small")
 try:
     dp.github_search("x"); raise AssertionError("one letter searched")
 except ValueError:
@@ -1278,6 +1283,57 @@ ths = [_th.Thread(target=read_rh) for _ in range(4)]
 [t_.start() for t_ in ths]; [t_.join() for t_ in ths]
 eq((rh_fetches.count(dp.RH_DATA_URL), rh_errs), (1, []), "concurrent catalog reads: one fetch, no errors")
 dp.RH_CACHE, dp._rh_get, dp.parse_recomphaven = real_rhc, real_get, real_parse
+
+# --- save backups: suggestions, backup before an update, pruning, restore that can be undone
+sv_root = tempfile.mkdtemp()
+real_env = {k: os.environ.get(k) for k in ("XDG_DATA_HOME", "XDG_CONFIG_HOME")}
+os.environ["XDG_DATA_HOME"], os.environ["XDG_CONFIG_HOME"] = os.path.join(sv_root, "share"), os.path.join(sv_root, "config")
+sv_saves = os.path.join(sv_root, "share", "Zelda64Recompiled", "saves")
+os.makedirs(sv_saves)
+os.makedirs(os.path.join(sv_root, "share", "OtherGame"))
+Path(sv_saves, "slot1.sav").write_bytes(b"one")
+sv_app = {"id": "sv", "name": "Zelda 64: Recompiled", "repo": "Zelda64Recomp/Zelda64Recomp", "installed": {"path": ""}}
+sv_set = {"install_dir": os.path.join(sv_root, "apps")}
+sugg = [c["path"] for c in dp.save_candidates(sv_app)]
+eq((os.path.realpath(os.path.join(sv_root, "share", "Zelda64Recompiled")) in sugg,
+    any("OtherGame" in p for p in sugg)), (True, False), "save folder suggestions follow the game's name")
+for bad in (str(Path.home()), os.path.join(sv_root, "nope")):
+    try:
+        dp.validate_save_dir(bad); raise AssertionError("save folder should be refused: " + bad)
+    except ValueError:
+        ok += 1
+sv_app["save_dir"] = dp.validate_save_dir(sv_saves)
+try:
+    dp.backup_saves(dict(sv_app, save_dir=""), sv_set); raise AssertionError("backup without a folder should refuse")
+except RuntimeError:
+    ok += 1
+first = dp.backup_saves(sv_app, sv_set, "before v1.1")
+eq(first.endswith(" before v1.1.zip"), True, "a backup's name says why it was made")
+eq(dp.backup_saves(dict(sv_app, save_dir=os.path.join(sv_root, "later")), sv_set), None, "no folder yet: nothing to back up")
+for _ in range(dp.SAVE_KEEP + 2):
+    dp.backup_saves(sv_app, sv_set)
+eq(len(dp.list_save_backups(sv_app, sv_set)), dp.SAVE_KEEP, "only the newest backups are kept")
+keep = dp.list_save_backups(sv_app, sv_set)[0]["name"]
+Path(sv_saves, "slot1.sav").write_bytes(b"broken")
+Path(sv_saves, "new.sav").write_bytes(b"x")
+undo = dp.restore_saves(sv_app, sv_set, keep)
+eq((Path(sv_saves, "slot1.sav").read_bytes(), os.path.exists(os.path.join(sv_saves, "new.sav"))), (b"one", False), "restore puts the backup back")
+eq(undo.endswith(" before restore.zip") and undo in [b["name"] for b in dp.list_save_backups(sv_app, sv_set)], True,
+   "the saves a restore replaced are backed up first")
+evil = os.path.join(dp.save_backup_dir(sv_app, sv_set), "2026-01-01_00-00-00 evil.zip")
+with zipfile.ZipFile(evil, "w") as z:
+    z.writestr("../outside.sav", b"x")
+try:
+    dp.restore_saves(sv_app, sv_set, os.path.basename(evil)); raise AssertionError("a zip escaping the folder should refuse")
+except RuntimeError:
+    ok += 1
+eq((os.path.exists(os.path.join(sv_root, "share", "Zelda64Recompiled", "outside.sav")), Path(sv_saves, "slot1.sav").read_bytes()),
+   (False, b"one"), "a refused restore changes nothing")
+for k, v in real_env.items():
+    if v is None:
+        os.environ.pop(k, None)
+    else:
+        os.environ[k] = v
 
 # --- every version has its CHANGELOG section; the release workflow publishes that section as the notes
 changelog = Path(os.path.dirname(os.path.abspath(sys.argv[1])), "CHANGELOG.md").read_text()
