@@ -3369,7 +3369,8 @@ def make_handler(srv, httpd_ref):
             if urllib.parse.urlsplit(self.path).path in ("/", "/index.html"):
                 theme = srv.cfg["settings"].get("theme")
                 html = (INDEX_HTML.replace("__TOKEN__", srv.token).replace("__VERSION__", VERSION)
-                        .replace("__THEME__", theme if theme in THEMES else "dark"))
+                        .replace("__THEME__", theme if theme in THEMES else "dark")
+                        .replace("__BR_ICONS__", json.dumps({k: m["icon"] for k, m in {**BR_CATALOGS, **BR_SOURCES}.items()})))
                 self._send(200, html.encode(), "text/html; charset=utf-8")
             else:
                 self._send(404, {"error": "not found"})
@@ -4043,8 +4044,9 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .adv-h{font-size:12.5px;font-weight:600;color:var(--dim);margin:6px 0 -4px}
 .br-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
 .br-src{display:flex;gap:6px;flex-wrap:wrap}
-.br-src button{min-height:36px;padding:4px 12px;font-size:13.5px;color:var(--dim);background:var(--panel);border-color:var(--line)}
-.br-src button b{color:var(--faint);font-weight:500;margin-left:6px}
+.br-src button{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:4px 12px 4px 10px;font-size:13.5px;color:var(--dim);background:var(--panel);border-color:var(--line)}
+.br-src button img.br-ico{width:18px;height:18px;border-radius:4px;object-fit:contain}
+.br-src button b{color:var(--faint);font-weight:500;margin-left:-2px}
 .br-src button b:empty{display:none}
 .br-src button.on{color:var(--text);background:var(--panel-hi);border-color:var(--accent)}
 .br-src button.on b{color:var(--text)}
@@ -4645,7 +4647,7 @@ function discoverHtml(empty){
     </div>`:""}
     <section><h3 class="group">${empty?"Tested on Steam Deck":"More tested on Steam Deck"}<span id="startNote">Loading the catalogs…</span></h3><div class="start-picks" id="startPicks"></div></section>
     <section><h3 class="group">Browse a catalog</h3><div class="start-cats">${START_CATS.map(([k,n,d])=>
-      `<button type="button" data-start-src="${k}"><img class="br-ico" src="" alt="" hidden><span><b>${esc(n)}<i></i></b><span>${esc(d)}</span></span></button>`).join("")}</div></section>
+      `<button type="button" data-start-src="${k}"><img class="br-ico" src="${esc(BR_ICONS[k]||"")}" alt="" onerror="this.remove()"><span><b>${esc(n)}<i></i></b><span>${esc(d)}</span></span></button>`).join("")}</div></section>
   </div>`;
 }
 function discover(){
@@ -4663,7 +4665,6 @@ function discover(){
   const key=S.apps.map(a=>a.host+"/"+a.repo).join()+"|"+[...brAdding].join();
   if(D.dataset.key==key)return;D.dataset.key=key;
   for(const b of D.querySelectorAll("[data-start-src]")){const s=b.dataset.startSrc,m=BR.sources[s];if(!m)continue;
-    const i=b.querySelector("img");if(m.icon&&i){i.src=m.icon;i.hidden=false;i.onerror=()=>i.remove()}
     b.querySelector("i").textContent=BR_CATS.includes(s)?m.count:BR.items.filter(x=>x.sources.some(c=>c.src==s)).length}
   const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
   const picks=freshPicks(n?4:8,tracked);
@@ -5060,6 +5061,10 @@ $("#cClear").onclick=()=>saveCat("");
 // ---- tabs
 let TAB="apps",BRSRC="rh";
 const BR_CATS=["rh","qv","rl"],BR_SRCS=["rh","qv","rl","db","fg","ge","ub"];
+// Each catalog's own icon (hotlinked, never stored), on its button from the first paint.
+const BR_ICONS=__BR_ICONS__;
+$("#brSrc").querySelectorAll("[data-src]").forEach(b=>{const u=BR_ICONS[b.dataset.src];
+  if(u)b.insertAdjacentHTML("afterbegin",`<img class="br-ico" src="${esc(u)}" alt="" onerror="this.remove()">`)});
 try{BRSRC=localStorage.getItem("sedotdeck.brsrc")||"rh"}catch(e){}
 if(!BR_SRCS.includes(BRSRC))BRSRC="rh";
 // The catalogs' own typefaces, fetched the first time Browse opens; offline, the fallbacks in the skins keep the layout.

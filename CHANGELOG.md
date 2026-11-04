@@ -4,7 +4,7 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [Unreleased]
 
-- Fewer tabs: My apps, Browse and Search GitHub. Browse shows the seven catalogs one at a time, each picked from a row of buttons and drawn in its own site's colors, typefaces and card shape (light or dark where the site has both); Recomp Haven, Quiver and Recomp Launcher keep their own tiers and filters
+- Fewer tabs: My apps, Browse and Search GitHub. Browse shows the seven catalogs one at a time, each picked from a row of buttons with the site's own icon and drawn in its own site's colors, typefaces and card shape (light or dark where the site has both); Recomp Haven, Quiver and Recomp Launcher keep their own tiers and filters
 - My apps shows each app's box art when a catalog lists its repository. With fewer than eight apps, Steam Deck-tested projects (the most starred among the latest releases, one per series) and a way into each catalog sit under the list; an empty My apps starts with a box to paste a release link
 - Save backups: Saves… in the app menu (and `sedotdeck.py saves`) sets where a game keeps its saves, with suggestions named after the game. The folder is zipped before every update and on Back up now, the newest 10 kept in `~/Applications/Save backups`. Restore backs up the current saves first and moves them to the Trash, so it can be undone. If the backup fails, the update doesn't run
 - A new typeface, Bricolage Grotesque, with bolder headings; without a connection SedotDeck falls back to the system font. Main buttons, the start panels and apps with an update get a soft blue gradient
