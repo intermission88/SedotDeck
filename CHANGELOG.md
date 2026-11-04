@@ -4,7 +4,21 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [Unreleased]
 
+- Fewer tabs: My apps, Browse and Search GitHub. Browse now merges all seven catalogs, with covers and summaries; pick Recomp Haven, Quiver or Recomp Launcher as the source for its own tiers and filters
+- The app menu is shorter and grouped: Category moved into Edit, the two rename items are one, per-app Check for updates is gone (the header button and the hourly check cover it), and catalog pages are a single "View on …"
+- Settings are grouped into General, Updates and Advanced (GitHub token, app list, storage); the Add dialog's options are grouped by which release and which file
+- When adopting a file you already have, "Rename to" shows the real new name (the AppImage's own name without the version)
+- Decky: one button that reads Update all (N) or Check for updates, and "What's new" moved into the app menu
 - The AppImage carries update information and each release has a `.zsync` file, so AppImageUpdate and similar tools can update SedotDeck
+- Settings has a Theme option: Dark (the default), Light, or Match system
+- A new AppImage keeps the name its project gives it, minus what changes between releases: the version, a date, a build number or a commit hash (`Savage_Wind-0.4.1-alpha.4-x86_64.AppImage` becomes `Savage_Wind-x86_64.AppImage`), instead of being named after the app. Apps you already have keep their file
+- Rename file… in the app menu sets any file name; updates and the Steam shortcut follow it. The one-click rename now suggests the AppImage's own name without the version
+- Settings: Auto rename (off by default) gives an AppImage its own name without the version after each update, and "Rename N files now" does it for every app at once
+- Decky: "What's new" shows an update's release notes before you install it, and the app menu shows the notes of the current release
+- Uninstall (app menu, desktop, Decky and `sedotdeck.py uninstall`) moves an app's files to the Trash but keeps it in My apps; Install puts it back under the same file name, so its Steam shortcut works again
+- Downloads can be cancelled: Cancel on the app card, Cancel download in the Decky panel, and in the SedotDeck update dialog. The installed version stays as it was and the partial file is deleted
+- Download folders left behind by a crash or power-off are cleaned up on the next install
+- SedotDeck's self-update installs only a download whose SHA-256 matches the one the release published; script installs now download `sedotdeck.py` from the release instead of the repository
 
 ## [0.0.4-alpha] - 2026-11-03
 

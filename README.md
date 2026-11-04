@@ -23,7 +23,7 @@
 ## Features
 
 - **Update all in one click** for releases on GitHub, GitLab, Codeberg, Gitea and Forgejo, pre-releases and nightlies too if you turn them on. SedotDeck picks the Linux file itself; a repo with only tags installs from the tag's source code.
-- **Browse and add** from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), a GitHub search, or **Browse**: one list from [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/), merged by repository.
+- **Browse and add** from one list that merges [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/) by repository, or search GitHub. Pick Recomp Haven, Quiver or Recomp Launcher as the source for its tiers and filters.
 - **Steam shortcuts keep working**: paths never change on update. Works for AppImages, Flatpaks, zipped ports and Windows `.exe` through Proton.
 - **Safe**: SHA-256 checks, Rollback, saves untouched, running games left alone.
 - **Game Mode** plugin for Decky, with controller support.
@@ -36,7 +36,7 @@ Get it from [Releases](https://github.com/intermission88/SedotDeck/releases):
 - **AppImage** (Desktop Mode): mark `SedotDeck-x86_64.AppImage` as executable (right-click → Properties → Permissions), then open it.
 - **Decky plugin** (Game Mode): in [Decky](https://decky.xyz) settings, turn on Developer mode and use **Install Plugin from ZIP File**.
 
-Then press **Add app**, or **Add** in any catalog tab, and **Install**. **⋯ → Add to Steam** once, and **Update all** from then on.
+Then press **Add app**, or **Add** in Browse, and **Install**. **⋯ → Add to Steam** once, and **Update all** from then on.
 
 ## FAQ
 

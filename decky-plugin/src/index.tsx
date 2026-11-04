@@ -3,6 +3,7 @@ import {
   ConfirmModal,
   DialogButton,
   Field,
+  Focusable,
   Menu,
   MenuItem,
   ModalRoot,
@@ -18,7 +19,7 @@ import {
 import { addEventListener, callable, definePlugin, removeEventListener, toaster } from "@decky/api";
 import { useEffect, useRef, useState } from "react";
 
-type Job = { state: "running" | "done" | "error"; label: string; progress: number; message: string };
+type Job = { state: "running" | "done" | "error" | "cancelled"; label: string; progress: number; message: string; cancel?: boolean };
 type Asset = { name: string; size: number };
 type App = {
   id: string;
@@ -32,7 +33,7 @@ type App = {
   steam_dir: string;
   steam_args?: string;
   proton: boolean;
-  latest: { tag: string; asset: Asset | null } | null;
+  latest: { tag: string; published: string; notes: string; asset: Asset | null } | null;
   error: string;
   has_update: boolean;
   has_backup: boolean;
@@ -60,6 +61,30 @@ function statusOf(a: App, job?: Job): string {
   if (a.has_update) return "Update available";
   if (a.skipped) return "Skipped " + (a.latest?.tag ?? "");
   return a.latest?.tag ? "Up to date" : "…";
+}
+
+// Release notes as plain text, with the same cleanup as the desktop app's md().
+function plainNotes(t: string): string {
+  return t
+    .replace(/\r/g, "")
+    .replace(/<[^>]+>/g, "")
+    .split("\n")
+    .map((l) => {
+      l = l
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/\*\*(.+?)\*\*/g, "$1")
+        .replace(/__(.+?)__/g, "$1")
+        .replace(/\*([^\s*][^*]*?)\*/g, "$1")
+        .replace(/(^|[^\w])_([^\s_][^_]*?)_(?!\w)/g, "$1$2")
+        .replace(/`/g, "");
+      const h = l.match(/^\s{0,3}#{1,6}\s+(.*)/);
+      if (h) return h[1];
+      return l.replace(/^(\s*)[*+]\s+/, "$1- ");
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function describe(a: App): string {
@@ -138,16 +163,49 @@ function ChooseProgram({ app, thenSteam, done, closeModal }: {
   );
 }
 
+// Shows an app's release notes; `update` is set only when the panel would offer its Update button.
+function ReleaseNotes({ app, update, closeModal }: {
+  app: App; update?: () => void; closeModal?: () => void;
+}) {
+  const L = app.latest!;
+  return (
+    <ModalRoot closeModal={closeModal}>
+      <div className={staticClasses.Title} style={{ marginBottom: 4 }}>{`${app.name} ${L.tag}`}</div>
+      {!!L.published && (
+        <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>Released {L.published.slice(0, 10)}</div>
+      )}
+      <Focusable style={{ maxHeight: "60vh", overflowY: "auto", fontSize: 16, lineHeight: 1.5, whiteSpace: "pre-wrap", ...WRAP }}>
+        {plainNotes(L.notes)}
+      </Focusable>
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        {update && (
+          <DialogButton onClick={() => { closeModal?.(); update(); }}>Update now</DialogButton>
+        )}
+        <DialogButton onClick={() => closeModal?.()}>Close</DialogButton>
+      </div>
+    </ModalRoot>
+  );
+}
+
 function AppRows({ app, job, act, refresh }: {
   app: App; job?: Job; act: (path: string, body: object, ok?: string) => void; refresh: () => void;
 }) {
   const running = job?.state === "running";
   const installed = !!app.installed && app.exists;
 
+  const canUpdate = app.has_update && !running && !!app.latest?.asset;
+  const openNotes = () =>
+    showModal(<ReleaseNotes app={app} update={canUpdate ? () => act("/api/update", { id: app.id }) : undefined} />);
+
   const openMenu = (e: CustomEvent | MouseEvent) =>
     showContextMenu(
       <Menu label={app.name}>
         <MenuItem onSelected={() => act("/api/check", { id: app.id })}>Check for updates</MenuItem>
+        {!!app.latest?.notes && (
+          <MenuItem onSelected={openNotes}>
+            {app.has_update ? `What's new in ${app.latest.tag}` : `Release notes ${app.latest.tag}`}
+          </MenuItem>
+        )}
         {app.latest?.asset && (!installed || app.has_update) && (
           <MenuItem onSelected={() => act("/api/update", { id: app.id })}>
             {installed ? `Update to ${app.latest.tag}` : "Install"}
@@ -178,6 +236,29 @@ function AppRows({ app, job, act, refresh }: {
         {app.has_backup && (
           <MenuItem onSelected={() => act("/api/rollback", { id: app.id }, `${app.name} rolled back`)}>
             Roll back to previous version
+          </MenuItem>
+        )}
+        {!!app.installed && !running && (
+          <MenuItem
+            tone="destructive"
+            onSelected={() =>
+              showModal(
+                <ConfirmModal
+                  strTitle={`Uninstall ${app.name}?`}
+                  strDescription={
+                    (app.installed!.kind === "flatpak"
+                      ? "The Flatpak is uninstalled; its settings and saves stay. "
+                      : "Its files go to the Trash, so you can restore them. ") +
+                    "It stays in SedotDeck: Install puts it back" +
+                    (app.in_steam ? ", and its Steam shortcut works again." : ".")
+                  }
+                  strOKButtonText="Uninstall"
+                  onOK={() => act("/api/uninstall", { id: app.id }, `${app.name} uninstalled`)}
+                />,
+              )
+            }
+          >
+            Uninstall
           </MenuItem>
         )}
         <MenuItem
@@ -226,6 +307,13 @@ function AppRows({ app, job, act, refresh }: {
           </div>
         </PanelSectionRow>
       )}
+      {running && job!.label === "Downloading" && (
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={!!job!.cancel} onClick={() => act("/api/cancel", { id: app.id })}>
+            {job!.cancel ? "Cancelling…" : "Cancel download"}
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
       {app.has_update && !running && app.latest?.asset && (
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => act("/api/update", { id: app.id })}>
@@ -256,7 +344,7 @@ function Content() {
           const app = s.apps.find((a) => a.id === id);
           toaster.toast({
             title: "SedotDeck",
-            body: now.state === "error" ? `${app?.name}: ${now.message}` : `${app?.name} updated to ${app?.installed?.tag}`,
+            body: now.state === "done" ? `${app?.name} updated to ${app?.installed?.tag}` : `${app?.name}: ${now.message}`,
           });
         }
       }
@@ -308,19 +396,19 @@ function Content() {
   }
 
   const updatable = state.apps.filter((a) => a.has_update && state.jobs[a.id]?.state !== "running");
+  const checking = Object.values(state.jobs).some((j) => j.state === "running" && j.label === "Checking");
   const found = (state.found ?? []).filter((f) => f.src);
 
   return (
     <>
       <PanelSection>
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={!updatable.length} onClick={() => act("/api/update", {})}>
-            {updatable.length ? `Update all (${updatable.length})` : "Everything is up to date"}
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => act("/api/check", {})}>
-            Check for updates
+          <ButtonItem
+            layout="below"
+            disabled={checking}
+            onClick={() => (updatable.length ? act("/api/update", {}) : act("/api/check", {}))}
+          >
+            {checking ? "Checking…" : updatable.length ? `Update all (${updatable.length})` : "Check for updates"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

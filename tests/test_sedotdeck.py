@@ -86,7 +86,7 @@ def mkapp(sha="", checksum_url=None):
 # correct checksum via sums file; zip label without extension still becomes an AppImage
 app = mkapp(checksum_url="https://x/sums")
 path = dp.install_app(app, settings)
-eq(path, os.path.join(tmp, "My-Game.AppImage"), "installed path")
+eq(path, os.path.join(tmp, "game.AppImage"), "installed path: the AppImage's own name")
 eq(app["installed"]["verified"], True, "verified via sums")
 eq(os.access(path, os.X_OK), True, "executable")
 
@@ -100,8 +100,38 @@ except RuntimeError as e:
 eq(Path(path).read_bytes(), before, "old file untouched")
 eq([f for f in os.listdir(tmp) if f.startswith(".sedotdeck-")], [], "temp cleaned up")
 
+# cancel mid-download: the old file stays, nothing is left behind
+app = mkapp()
+app["target_path"] = path
+def cancel_now(done, total):
+    raise dp.Cancelled()
+try:
+    dp.install_app(app, settings, cancel_now); raise AssertionError("cancel should stop the install")
+except dp.Cancelled:
+    ok += 1
+eq(Path(path).read_bytes(), before, "cancelled: old file untouched")
+eq([f for f in os.listdir(tmp) if f.startswith(".sedotdeck-")], [], "cancelled: download folder removed")
+
+# a job that is cancelled ends as "cancelled", not as an error
+jobs = dp.Jobs()
+def slow(job):
+    for _ in range(200):
+        if job["cancel"]:
+            raise dp.Cancelled()
+        time.sleep(0.01)
+jobs.start("c", "Downloading", slow)
+eq(jobs.cancel("c"), True, "cancel accepted while running")
+for _ in range(200):
+    if jobs.snapshot()["c"]["state"] != "running":
+        break
+    time.sleep(0.01)
+eq((jobs.snapshot()["c"]["state"], jobs.snapshot()["c"]["message"]), ("cancelled", "Download cancelled"), "job ends cancelled")
+eq(jobs.cancel("c"), False, "nothing to cancel once it ended")
+eq(jobs.cancel("nope"), False, "unknown job")
+
 # no checksum anywhere: installs, flagged unverified
 app = mkapp()
+app["target_path"] = path  # the same app updating
 dp.install_app(app, settings)
 eq(app["installed"]["verified"], False, "unverified")
 eq(os.path.exists(path + ".old"), True, "backup kept")
@@ -275,7 +305,7 @@ eq(dp.add_to_steam(wapp, sv2), True, "exe added to steam")
 ent = dict((k_, v) for _t, k_, v in dp.vdf_load(sv2.read_bytes())[0][2][0][2])
 eq((ent["Exe"], ent["StartDir"]), ('"%s"' % os.path.join(wdir, "Game2.exe"), '"%s"' % wdir), "steam shortcut to the exe")
 
-# --- rename_app_file: clean name, .old, Steam shortcut
+# --- rename_app_file: the AppImage's own name without its version, .old, Steam shortcut
 rdir = tempfile.mkdtemp()
 rf = os.path.join(rdir, "Eden-Linux-v0.0.3-amd64.AppImage")
 Path(rf).write_bytes(appimage); Path(rf + ".old").write_bytes(b"old")
@@ -285,7 +315,7 @@ rsv.write_bytes(dp.vdf_dump([(0, "shortcuts", [
     (0, "0", [(2, "appid", -77), (1, "AppName", "Eden Emu"), (1, "Exe", '"%s"' % rf), (1, "StartDir", '"%s"' % rdir), (2, "LastPlayTime", 5)]),
     (0, "1", [(2, "appid", -78), (1, "AppName", "Other"), (1, "Exe", '"/x/other"'), (1, "StartDir", '"/x"')])])]))
 rnew = dp.rename_app_file(rapp, rsv)
-eq(rnew, os.path.join(rdir, "Eden.AppImage"), "clean name")
+eq(rnew, os.path.join(rdir, "Eden-Linux-amd64.AppImage"), "file name without the version")
 eq((os.path.exists(rf), os.path.exists(rf + ".old"), os.path.exists(rnew), os.path.exists(rnew + ".old")), (False, False, True, True), "file and .old renamed")
 eq((rapp["target_path"], rapp["installed"]["path"]), (rnew, rnew), "paths updated")
 sc = dp.vdf_load(rsv.read_bytes())[0][2]
@@ -301,9 +331,55 @@ other = os.path.join(rdir, "Taken.AppImage"); Path(other).write_bytes(appimage)
 Path(rdir, "Eden Beta.AppImage").write_bytes(appimage)
 tapp = {"name": "Taken", "installed": {"path": os.path.join(rdir, "Eden Beta.AppImage"), "kind": "appimage"}}
 try:
-    dp.rename_app_file(tapp, rsv); raise AssertionError("target exists")
+    dp.rename_app_file(tapp, rsv, name="Taken"); raise AssertionError("target exists")
 except RuntimeError as e:
     eq("already exists" in str(e) and os.path.exists(os.path.join(rdir, "Eden Beta.AppImage")), True, "refused when target exists")
+
+# custom name: .AppImage added, Steam shortcut follows, and the next update writes to it
+cnew = dp.rename_app_file(rapp, rsv, name="  Eden ")
+eq(cnew, os.path.join(rdir, "Eden.AppImage"), "custom name gets .AppImage")
+eq(dict((k_, v) for _t, k_, v in dp.vdf_load(rsv.read_bytes())[0][2][0][2])["Exe"], '"%s"' % cnew, "shortcut follows custom name")
+eq(dp.pinned_path(rapp), cnew, "updates write to the custom name")
+for bad in ("../x", "a/b", ".hidden", "", "   .AppImage"):
+    try:
+        dp.clean_file_name(bad); raise AssertionError("bad name accepted: %r" % bad)
+    except RuntimeError:
+        ok += 1
+
+# auto rename after an update: only when switched on, never over another file
+adir2 = tempfile.mkdtemp()
+def ai(fn, asset):
+    p_ = os.path.join(adir2, fn); Path(p_).write_bytes(appimage)
+    return {"name": fn, "target_path": p_, "installed": {"path": p_, "kind": "appimage", "asset": asset}}
+sw = ai("Zelda.AppImage", "Savage_Wind-0.4.1-alpha.4-x86_64.AppImage")
+eq(dp.auto_rename(sw, {"auto_rename": False}), "", "auto rename off: name kept")
+eq(dp.auto_rename(sw, {"auto_rename": True}), os.path.join(adir2, "Savage_Wind-x86_64.AppImage"), "auto rename on")
+eq(dp.auto_rename(sw, {"auto_rename": True}), "", "already named: nothing to do")
+blocker = ai("Old-Name.AppImage", "Savage_Wind-0.5-x86_64.AppImage")
+eq(dp.auto_rename(blocker, {"auto_rename": True}), "", "name taken: no rename, no error")
+
+# rename all: renames what it can, reports the rest
+gow = ai("God-of-War-III.AppImage", "spartanport-x86_64.AppImage")
+done_, failed_ = dp.rename_all([sw, blocker, gow], rsv)
+eq(done_, ["spartanport-x86_64.AppImage"], "rename all renamed the free one")
+eq([n for n, _e in failed_], ["Old-Name.AppImage"], "rename all reports the taken one")
+
+# --- version numbers come out of AppImage names; arch tags and names with digits stay
+for src, want in (("Savage_Wind-0.4.1-alpha.4-x86_64.AppImage", "Savage_Wind-x86_64.AppImage"),
+                  ("spartanport-x86_64.AppImage", "spartanport-x86_64.AppImage"),
+                  ("Eden-Linux-v0.0.3-amd64.AppImage", "Eden-Linux-amd64.AppImage"),
+                  ("Zelda64Recompiled-v1.2.2-Linux-X64.AppImage", "Zelda64Recompiled-Linux-X64.AppImage"),
+                  ("pcsx2-v2.6.0-linux-appimage-x64-Qt.AppImage", "pcsx2-linux-appimage-x64-Qt.AppImage"),
+                  ("Game_v5_x86_64.AppImage", "Game_x86_64.AppImage"),
+                  ("Nightly-2026-01-02-x86_64.AppImage", "Nightly-x86_64.AppImage"),
+                  ("Ship2Harkinian.AppImage", "Ship2Harkinian.AppImage"),
+                  ("rpcs3-v0.0.34-17345-6f3e1bba_linux64.AppImage", "rpcs3_linux64.AppImage"),
+                  ("SpartanPort-nightly-a1b2c3d-x86_64.AppImage", "SpartanPort-nightly-x86_64.AppImage"),
+                  ("Dolphin-2412-x86_64.AppImage", "Dolphin-x86_64.AppImage"),
+                  ("Mario-64-x86_64.AppImage", "Mario-64-x86_64.AppImage"),
+                  ("Cafe-deadbeef-x86_64.AppImage", "Cafe-deadbeef-x86_64.AppImage"),
+                  ("1.2.3.AppImage", "")):
+    eq(dp.unversioned_name(src), want, "unversioned " + src)
 
 # --- export / import
 cfg = {"settings": {"github_token": "SECRET"}, "apps": []}
@@ -849,7 +925,8 @@ eq([(x["title"], x["key"], x["console"], x["status"]) for x in ge_items],
    [("Zelda 'Recomp'", "github.com/zelda64recomp/zelda64recomp", "N64", "In The Works")],
    "emporium: repo links only, entities unescaped")
 real_rh, real_rl, real_qv, real_brc = dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE, dp.BR_CACHE
-real_br_json, real_br_html = dp.http_json, dp._br_html
+real_br_json, real_br_html, real_cat_fetch = dp.http_json, dp._br_html, dp._catalog_fetch
+dp._catalog_fetch = lambda src, refresh: ([], "")  # the three catalogs have their own tests; keep these offline
 def set_br(fetch):
     """Serve Browse's network reads from fetch(url) -> text; OSError becomes the RuntimeError http_json raises."""
     def text(url, *a, **k):
@@ -868,18 +945,26 @@ merged = dp.merge_browse({"ub": ub_items, "db": db_items, "fg": fg_items, "ge": 
 eq([g["title"] for g in merged], ["Zelda 64: Recompiled", "The Legend of Zelda: Majora's Mask", "Donic Zelda", "Mindustry", "Zed & Co"],
    "most sources, then stars, then name; fg title beats emporium's")
 zelda = merged[0]
-eq((zelda["key"], zelda["host"], zelda["repo"], zelda["provider"], zelda["stars"], zelda["also"], zelda["deck"]),
-   ("github.com/zelda64recomp/zelda64recomp", "github.com", "Zelda64Recomp/Zelda64Recomp", "github", 7538, ["rh", "qv"], True),
-   "merged by key, stars and catalogs it's in")
+eq((zelda["key"], zelda["host"], zelda["repo"], zelda["provider"], zelda["stars"], zelda["deck"]),
+   ("github.com/zelda64recomp/zelda64recomp", "github.com", "Zelda64Recomp/Zelda64Recomp", "github", 7538, True),
+   "merged by key, with stars")
 eq([(s["src"], s["url"]) for s in zelda["sources"]],
    [("fg", "https://fangamesdb.com/games/zelda-64-recompiled.html"), ("ge", "https://thegamingemporium.com/all/")],
    "one card per repository, a source per site, best source first")
 majora = merged[1]
-eq((majora["key"], majora["also"], majora["stars"], [s["src"] for s in majora["sources"]]),
-   ("github.com/harbourmasters/2ship2harkinian", ["rl"], 3, ["db", "ub"]), "unbaked title merges into the repository's card")
+eq((majora["key"], majora["stars"], [s["src"] for s in majora["sources"]]),
+   ("github.com/harbourmasters/2ship2harkinian", 3, ["db", "ub"]), "unbaked title merges into the repository's card")
 mind = merged[3]
-eq((mind["repo"], mind["key"], mind["ub_slug"], mind["stars"], mind["also"], mind["sources"][0]["id"]),
-   ("", "", "mindustry", 0, [], "mindustry"), "unbaked game without a repository stays standalone")
+eq((mind["repo"], mind["key"], mind["ub_slug"], mind["stars"], mind["sources"][0]["id"]),
+   ("", "", "mindustry", 0, "mindustry"), "unbaked game without a repository stays standalone")
+rh_item = {"key": "github.com/zelda64recomp/zelda64recomp", "host": "github.com", "repo": "Zelda64Recomp/Zelda64Recomp",
+           "provider": "github", "title": "The Legend of Zelda: Majora's Mask", "console": "Nintendo 64", "deck": True,
+           "status": "Released", "id": "mm", "url": "https://recomphaven.com/#mm", "cover": "https://x/c.webp", "summary": "Recomp"}
+merged2 = dp.merge_browse({"rh": [rh_item], "fg": fg_items, "ge": ge_items})
+z2 = next(g for g in merged2 if g["key"] == rh_item["key"])
+eq(([s_["src"] for s_ in z2["sources"]], z2["title"], z2["cover"], z2["summary"]),
+   (["rh", "fg", "ge"], "The Legend of Zelda: Majora's Mask", "https://x/c.webp", "Recomp"),
+   "a catalog is a Browse source: its title, cover and summary win")
 eq(len([g for g in merged if g["key"] == zelda["key"]]), 1, "same repository in two sources is one entry")
 dp.RH_CACHE, dp.RL_CACHE, dp.QV_CACHE = real_rh, real_rl, real_qv
 
@@ -895,7 +980,7 @@ def br_get(url):
 set_br(br_get)
 dp.BR_CACHE = Path(tempfile.mkdtemp(), "browse.json")
 d = dp.browse()
-eq(({s: v["count"] for s, v in d["sources"].items()}, d["stale"], len(d["items"])),
+eq(({s: v["count"] for s, v in d["sources"].items() if s in dp.BR_SOURCES}, d["stale"], len(d["items"])),
    ({"ub": 2, "db": 2, "fg": 2, "ge": 1}, False, 5), "every source read, merged")
 eq(d["sources"]["fg"]["name"], "FanGamesDB", "source names for the page")
 n = len(br_calls)
@@ -963,6 +1048,7 @@ try:
 except RuntimeError:
     ok += 1
 dp.RH_CACHE, dp.BR_CACHE, dp.http_json, dp._br_html = real_rh, real_brc, real_br_json, real_br_html
+dp._catalog_fetch = real_cat_fetch
 
 # /api/add keeps the Browse source and link, and refuses a link off the source's site
 real_check = dp.check_app
@@ -1101,6 +1187,97 @@ eq([x["title"] for x in dp.parse_emporium('<div class="game-card" data-favourite
     '<div class="game-card" data-favourite-id="c" data-title="Game Switch Port"><a class="game-card__link" href="https://github.com/c/d">'
     '<div class="game-card" data-favourite-id="e" data-title="Switchblade Recomp"><a class="game-card__link" href="https://github.com/e/f">')],
    ["Switchblade Recomp"], "browse skips Android and Switch ports")
+
+# --- leftover download folders: old ones are swept, a fresh one (a job in the other UI) is kept
+wd = tempfile.mkdtemp()
+for name, age in ((".sedotdeck-old", 2 * dp.WORK_DIR_MAX_AGE), (".sedotdeck-new", 60), ("keep-old", 2 * dp.WORK_DIR_MAX_AGE)):
+    os.makedirs(os.path.join(wd, name, "inner"))
+    then = time.time() - age
+    os.utime(os.path.join(wd, name), (then, then))
+eq(dp.sweep_work_dirs(wd), 1, "one stale work dir swept")
+eq(sorted(os.listdir(wd)), [".sedotdeck-new", "keep-old"], "fresh work dir and other folders kept")
+eq(dp.sweep_work_dirs(os.path.join(wd, "missing")), 0, "missing folder is fine")
+
+# --- self-update installs only a file whose SHA-256 the release published
+real = (dp.SELF_CACHE, dp.self_install_method, dp.download, dp.__file__)
+sdir = tempfile.mkdtemp()
+dp.SELF_CACHE = Path(sdir, "self.json")
+script = os.path.join(sdir, "sedotdeck.py")
+Path(script).write_text("old")
+dp.__file__ = script
+dp.self_install_method = lambda: "script"
+good = b"#!/usr/bin/env python3\nprint('new')\n"
+def fake_dl(url, dest, progress=None):
+    Path(dest).write_bytes(good)
+    return hashlib.sha256(good).hexdigest()
+dp.download = fake_dl
+def self_cache(assets):
+    dp.SELF_CACHE.write_text(json.dumps({"fetched_at": time.time(), "release": {"tag_name": "v99.0.0", "assets": assets}}))
+for assets, why in (([], "no asset"), ([{"name": "sedotdeck.py", "browser_download_url": "https://x/s", "sha256": ""}], "no digest"),
+                    ([{"name": "sedotdeck.py", "browser_download_url": "https://x/s", "sha256": "0" * 64}], "wrong digest")):
+    self_cache(assets)
+    try:
+        dp.self_update(); raise AssertionError("self-update should refuse: " + why)
+    except RuntimeError:
+        eq(Path(script).read_text(), "old", "self-update refused, script untouched: " + why)
+self_cache([{"name": "sedotdeck.py", "browser_download_url": "https://x/s", "sha256": hashlib.sha256(good).hexdigest()}])
+eq(dp.self_update(), "v99.0.0", "self-update with matching digest")
+eq(Path(script).read_bytes(), good, "script replaced")
+dp.SELF_CACHE, dp.self_install_method, dp.download, dp.__file__ = real
+
+# --- theme setting: dark unless chosen, only known values stored
+eq(srv.handle("/api/state", {})["settings"]["theme"], "dark", "theme defaults to dark")
+srv.handle("/api/settings", {"theme": "light"})
+eq(srv.handle("/api/state", {})["settings"]["theme"], "light", "theme saved")
+srv.handle("/api/settings", {"theme": "neon"})
+eq(srv.handle("/api/state", {})["settings"]["theme"], "light", "unknown theme ignored")
+eq('data-theme-pref="__THEME__"' in dp.INDEX_HTML, True, "page carries the theme placeholder the server fills in")
+
+# --- uninstall: files to the Trash, the app stays, Install puts it back under the same name
+udir, utrash = tempfile.mkdtemp(), tempfile.mkdtemp()
+real_xdg_u = os.environ.get("XDG_DATA_HOME")
+os.environ["XDG_DATA_HOME"] = utrash
+uapp = mkapp()
+upath = dp.install_app(uapp, dict(settings, install_dir=udir))
+dp.rename_app_file(uapp, Path(tempfile.mkdtemp(), "none.vdf"), name="Mine")
+upath = uapp["installed"]["path"]
+dp.uninstall_app(uapp)
+eq((os.path.exists(upath), uapp.get("installed"), uapp["target_path"]), (False, None, upath), "uninstalled, path still pinned")
+eq(len(os.listdir(os.path.join(utrash, "Trash", "files"))) >= 1, True, "file went to the Trash")
+try:
+    dp.uninstall_app(uapp); raise AssertionError("second uninstall should refuse")
+except RuntimeError:
+    ok += 1
+eq(dp.install_app(uapp, dict(settings, install_dir=udir)), upath, "reinstall lands at the same file name")
+# a folder port comes back to the same folder even if the app was renamed in between
+uf = mkfolder("https://x/fold1", "v1")
+ufdir = dp.install_app(uf, dict(settings, install_dir=udir))
+dp.uninstall_app(uf)
+uf["name"] = "Renamed Fold"
+eq((os.path.exists(ufdir), dp.install_app(uf, dict(settings, install_dir=udir)), uf.get("folder_path")), (False, ufdir, None),
+   "folder port reinstalls into its old folder")
+if real_xdg_u is None:
+    os.environ.pop("XDG_DATA_HOME", None)
+else:
+    os.environ["XDG_DATA_HOME"] = real_xdg_u
+
+# --- two readers of a catalog at once (Browse and its own view): one fetch, no clash over the .tmp file
+import threading as _th
+real_rhc, real_get, real_parse = dp.RH_CACHE, dp._rh_get, dp.parse_recomphaven
+dp.RH_CACHE = Path(tempfile.mkdtemp(), "rh.json")
+rh_fetches, rh_errs = [], []
+def slow_get(url):
+    rh_fetches.append(url); time.sleep(0.05); return "[]"
+dp._rh_get, dp.parse_recomphaven = slow_get, lambda text: [{"id": "a", "key": "github.com/a/b"}]
+def read_rh():
+    try:
+        dp.recomphaven(False)
+    except Exception as e:
+        rh_errs.append(repr(e))
+ths = [_th.Thread(target=read_rh) for _ in range(4)]
+[t_.start() for t_ in ths]; [t_.join() for t_ in ths]
+eq((rh_fetches.count(dp.RH_DATA_URL), rh_errs), (1, []), "concurrent catalog reads: one fetch, no errors")
+dp.RH_CACHE, dp._rh_get, dp.parse_recomphaven = real_rhc, real_get, real_parse
 
 # --- every version has its CHANGELOG section; the release workflow publishes that section as the notes
 changelog = Path(os.path.dirname(os.path.abspath(sys.argv[1])), "CHANGELOG.md").read_text()

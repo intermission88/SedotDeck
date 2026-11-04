@@ -19,7 +19,7 @@ import sedotdeck  # noqa: E402  (bundled copy of sedotdeck.py)
 # What the Game Mode panel may do. Launching apps, settings (token) and quitting stay in the desktop UI.
 # Adding to Steam goes through SteamClient in the frontend: Steam is running in Game Mode.
 ALLOWED = {"/api/state", "/api/check", "/api/update", "/api/add", "/api/remove", "/api/rollback",
-           "/api/track_found", "/api/skip", "/api/launch_choices", "/api/set_launch"}
+           "/api/track_found", "/api/skip", "/api/launch_choices", "/api/set_launch", "/api/cancel", "/api/uninstall"}
 CHECK_EVERY = 6 * 3600
 
 

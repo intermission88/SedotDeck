@@ -13,10 +13,12 @@ Usage:
   sedotdeck.py check
   sedotdeck.py update [name ...]     # update given apps, or everything with an update
   sedotdeck.py remove <name>
+  sedotdeck.py uninstall <name>       # files to the Trash, app stays in the list
 """
 
 import argparse
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -64,12 +66,17 @@ NOT_FOR_DECK = re.compile(
 _lock = threading.RLock()
 
 
+THEMES = ("dark", "light", "system")
+
+
 def default_config():
     return {
         "settings": {
             "install_dir": str(Path.home() / "Applications"),
             "github_token": "",
             "keep_backup": True,
+            "theme": "dark",
+            "auto_rename": False,
         },
         "apps": [],
     }
@@ -461,6 +468,27 @@ def find_checksum_asset(assets, name):
 NOTES_MAX = 6000  # release notes kept per app, enough for a "What's new" dialog
 
 
+WORK_DIR_MAX_AGE = 24 * 3600  # far longer than any install, so a job running in the other UI is never touched
+
+
+def sweep_work_dirs(folder):
+    """Delete .sedotdeck-* download folders that a crash or power-off left behind. Returns how many."""
+    removed = 0
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return 0
+    for e in entries:
+        try:
+            if (e.name.startswith(".sedotdeck-") and e.is_dir(follow_symlinks=False)
+                    and time.time() - e.stat(follow_symlinks=False).st_mtime > WORK_DIR_MAX_AGE):
+                shutil.rmtree(e.path, ignore_errors=True)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def release_info(rel, asset):
     info = {
         "tag": rel.get("tag_name") or "",
@@ -544,6 +572,25 @@ def check_app(app, token=""):
 
 def safe_name(name):
     return re.sub(r"[^\w.-]+", "-", name).strip("-") or "app"
+
+
+# What changes between releases inside a file name: a version (-0.4.1-alpha.4, _v1.2.3, -v5), a date (-2026-01-02),
+# a build number (-17345, build.1234) or a commit hash (-6f3e1bba). Arch tags (x86_64) and short numbers (Mario-64) stay.
+_NAME_VERSION = re.compile(
+    r"(?i)[-_. ](?:v?\d+(?:\.\d+)+(?:[-_.+]?(?:alpha|beta|rc|pre|preview|dev|nightly|hotfix)(?:[-_.]?\d+)*)?|v\d+"
+    r"|\d{4}-\d{2}-\d{2}|(?:build[-_.]?)?\d{4,}|g?(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40})"
+    r"(?=[-_. ]|\.appimage$|$)")
+
+
+def unversioned_name(file_name):
+    """Savage_Wind-0.4.1-alpha.4-x86_64.AppImage -> Savage_Wind-x86_64.AppImage, so the name survives updates.
+    "" when nothing sensible is left."""
+    m = re.match(r"(?i)(.*?)(\.appimage)?$", file_name)
+    stem, ext = m.group(1), ".AppImage" if m.group(2) else ""
+    stem = _NAME_VERSION.sub("", stem + ext)
+    stem = re.sub(r"(?i)\.appimage$", "", stem)
+    stem = re.sub(r"([-_. ])[-_. ]+", r"\1", stem).strip("-_. ")
+    return stem + ext if re.search(r"[A-Za-z]", stem) else ""
 
 
 def asset_kind(name):
@@ -922,6 +969,8 @@ def install_app(app, settings, progress=None, phase=None):
     pinned = pinned_path(app)
     old_files = (app.get("installed") or {}).get("files")
     manifest = None
+    appimage_name = ""
+    sweep_work_dirs(install_dir)
     work = Path(tempfile.mkdtemp(prefix=".sedotdeck-", dir=install_dir))
     try:
         dl = work / safe_name(asset["name"])
@@ -967,7 +1016,8 @@ def install_app(app, settings, progress=None, phase=None):
                 # layout stays stable across updates and Steam shortcuts keep working.
                 entries = list(ex.iterdir())
                 root = entries[0] if len(entries) == 1 and entries[0].is_dir() else ex
-                dest_dir = Path(pinned) if pinned and os.path.isdir(pinned) else install_dir / base
+                dest_dir = (Path(pinned) if pinned and os.path.isdir(pinned)
+                            else Path(app["folder_path"]) if app.get("folder_path") else install_dir / base)
                 manifest = sorted(os.path.relpath(os.path.join(r, f), root) for r, _d, fs in os.walk(root) for f in fs)
                 copy_over(str(root), str(dest_dir))
                 path = str(dest_dir)
@@ -977,6 +1027,12 @@ def install_app(app, settings, progress=None, phase=None):
         if kind in ("appimage", "file"):
             suffix = ".AppImage" if kind == "appimage" else ""
             dest = install_dir / (base + suffix)
+            if kind == "appimage":
+                appimage_name = dl.name
+                # The AppImage's own name without its version; the app's name only if that's empty or taken.
+                plain = unversioned_name(dl.name)
+                if plain and not (install_dir / plain).exists():
+                    dest = install_dir / plain
             if pinned and not os.path.isdir(pinned):
                 dest = Path(pinned)  # the first install pins the path; renaming the app never moves it
             make_executable(dl)
@@ -991,6 +1047,7 @@ def install_app(app, settings, progress=None, phase=None):
         app.pop("target_path", None)  # target_path means a single file; folders are pinned via installed.path
     else:
         app["target_path"] = path
+    app.pop("folder_path", None)  # installed.path pins it again
     app["installed"] = {
         "tag": latest["tag"],
         "asset": asset["name"],
@@ -1006,6 +1063,8 @@ def install_app(app, settings, progress=None, phase=None):
     }
     if kind == "flatpak":
         app["installed"]["flatpak_id"] = flatpak_id
+    if appimage_name:
+        app["installed"]["appimage_name"] = appimage_name
     app["error"] = ""
     app.pop("notice", None)
     if manifest is not None:
@@ -1159,18 +1218,38 @@ def remove_app(cfg, app, delete_files=False):
         ign = cfg["settings"].setdefault("scan_ignored", [])
         if kept not in ign:
             ign.append(kept)
-    if delete_files and is_flatpak(app):
+    if delete_files:
+        delete_app_files(app)
+    cfg["apps"] = [a for a in cfg["apps"] if a["id"] != app["id"]]
+
+
+def delete_app_files(app):
+    """Move an app's installed files (and its .old and launcher) to the Trash; a Flatpak is uninstalled."""
+    if is_flatpak(app):
         if os.path.isdir(app["installed"]["path"]):
             flatpak_cmd("uninstall", "--user", "--noninteractive", "-y", app["installed"]["flatpak_id"])
-    elif delete_files:
-        p = (app.get("installed") or {}).get("path")
-        ensure_not_running(app)
-        if app.get("launcher") and os.path.isfile(app["launcher"]):
-            move_to_trash(app["launcher"])
-        for f in (p, p + ".old") if p else ():
-            if os.path.lexists(f):
-                move_to_trash(f)
-    cfg["apps"] = [a for a in cfg["apps"] if a["id"] != app["id"]]
+        return
+    p = (app.get("installed") or {}).get("path")
+    ensure_not_running(app)
+    if app.get("launcher") and os.path.isfile(app["launcher"]):
+        move_to_trash(app["launcher"])
+    for f in (p, p + ".old") if p else ():
+        if os.path.lexists(f):
+            move_to_trash(f)
+
+
+def uninstall_app(app):
+    """Delete the files but keep tracking the app, so Install brings it back. The pinned path stays, so the
+    reinstall lands at the same file name and a Steam shortcut to it works again."""
+    if not app.get("installed"):
+        raise RuntimeError("%s isn't installed" % app["name"])
+    path = app["installed"].get("path") or ""
+    delete_app_files(app)
+    if os.path.isdir(os.path.dirname(path)) and app["installed"].get("kind") == "archive":
+        app["folder_path"] = path  # a folder port's launcher path is in its Steam shortcut, so come back to the same folder
+    app.pop("installed", None)
+    for k in ("notice", "skip"):
+        app.pop(k, None)
 
 
 def _device(path):
@@ -1433,7 +1512,7 @@ def scan_folder(cfg):
             src = identify_file(p)
         except OSError:
             continue
-        item = {"path": p, "file": f, "size": os.path.getsize(p), "src": src, "name": ""}
+        item = {"path": p, "file": f, "size": os.path.getsize(p), "src": src, "name": "", "plain": unversioned_name(f)}
         if src:
             prov, host, repo = parse_source(src)
             item["display"] = repo if host == "github.com" else "%s/%s" % (host, repo)
@@ -1540,22 +1619,21 @@ def self_update(token="", progress=None):
     tag = rel.get("tag_name") or ""
     if not tag or version_key(tag) <= version_key(VERSION):
         raise RuntimeError("SedotDeck is up to date")
-    if method == "appimage":
-        target = os.environ["APPIMAGE"]
-        asset = next((a for a in rel.get("assets") or [] if SELF_APPIMAGE.search(a["name"])), None)
-        if not asset:
-            raise RuntimeError("Release %s has no AppImage" % tag)
-        url, expected = asset["browser_download_url"], asset.get("sha256") or ""
-    elif method == "script":
-        target = os.path.abspath(__file__)
-        url = "https://raw.githubusercontent.com/%s/%s/sedotdeck.py" % (SELF_REPO, urllib.parse.quote(tag))
-        expected = ""
-    else:
+    if method not in ("appimage", "script"):
         raise RuntimeError("This copy of SedotDeck can't update itself. Download %s from the Releases page." % tag)
+    target = os.environ["APPIMAGE"] if method == "appimage" else os.path.abspath(__file__)
+    wanted = SELF_APPIMAGE.search if method == "appimage" else lambda n: n == "sedotdeck.py"
+    asset = next((a for a in rel.get("assets") or [] if wanted(a["name"])), None)
+    if not asset:
+        raise RuntimeError("Release %s has no %s" % (tag, "AppImage" if method == "appimage" else "sedotdeck.py"))
+    # The forge's SHA-256 digest is the only check that the file is the one the release published.
+    url, expected = asset["browser_download_url"], asset.get("sha256") or ""
+    if not expected:
+        raise RuntimeError("Release %s publishes no SHA-256 for %s, so it wasn't installed" % (tag, asset["name"]))
     tmp = target + ".download"
     try:
         actual = download(url, tmp, progress)
-        if expected and actual != expected:
+        if actual != expected:
             raise RuntimeError("SHA-256 mismatch for the %s download, so it was deleted" % tag)
         with open(tmp, "rb") as f:
             head = f.read(64)
@@ -1633,6 +1711,19 @@ def _rh_get(url):
         return r.read(32 * 1024 * 1024).decode("utf-8")
 
 
+def _one_at_a_time(fn):
+    """Serialize a catalog read: Browse and the catalog's own view ask at the same time on a cold cache, and two
+    writers of the same .tmp file make one fail. The second caller then finds the fresh cache instead of refetching."""
+    lock = threading.Lock()
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+@_one_at_a_time
 def recomphaven(refresh=False):
     """{"items", "fetched_at", "site", "stale"}: the cached list, refetched once a day or on request."""
     cache = None
@@ -1748,6 +1839,7 @@ def _qv_out(data, stale):
     return dict(data, items=items, site=QV_SITE, stale=stale)
 
 
+@_one_at_a_time
 def quiver(refresh=False):
     """{"items", "consoles", "fetched_at", "site", "stale"}: the cached catalog, refetched once a day or on request."""
     cache = None
@@ -1822,6 +1914,7 @@ def _rl_get():
         return json.loads(r.read(16 * 1024 * 1024).decode("utf-8"))
 
 
+@_one_at_a_time
 def recomplauncher(refresh=False):
     """{"items", "consoles", "fetched_at", "site", "stale"}: the cached catalog, refetched once a day or on request."""
     cache = None
@@ -1862,7 +1955,34 @@ BR_SOURCES = {
     "ge": {"name": "The Gaming Emporium", "site": "https://thegamingemporium.com/",
            "icon": "https://thegamingemporium.com/icons/apple-touch-icon.png", "data": "https://thegamingemporium.com/all/"},
 }
-BR_ORDER = ("db", "fg", "ge", "ub")  # title preference, best first; unbaked.games has no repositories, so it comes last
+BR_ORDER = ("rh", "qv", "rl", "db", "fg", "ge", "ub")  # title preference, best first; unbaked.games has no repositories, so it comes last
+# The three catalogs with their own detailed view; Browse merges them with the sites above.
+BR_CATALOGS = {
+    "rh": {"name": "Recomp Haven", "site": "https://recomphaven.com/", "icon": "https://recomphaven.com/assets/icons/icon-192.png"},
+    "qv": {"name": "Quiver", "site": "https://quiverlauncher.com/", "icon": "https://quiverlauncher.com/favicon.ico"},
+    "rl": {"name": "Recomp Launcher", "site": "https://recomplauncher.com/", "icon": "https://recomplauncher.com/assets/logo-512.png"},
+}
+_RH_STAGES = {"released": "Released", "beta": "Beta", "development": "In development", "abandoned": "Abandoned"}
+
+
+def _catalog_fetch(src, refresh):
+    """A catalog's entries in Browse's item shape, with its cover and summary for the merged card."""
+    data = {"rh": recomphaven, "qv": quiver, "rl": recomplauncher}[src](refresh)
+    consoles = data.get("consoles") or {}
+    label = lambda c: (consoles.get(c) or {}).get("label", c) if isinstance(consoles.get(c), dict) else consoles.get(c) or c
+    out = []
+    for x in data.get("items") or []:
+        if not x.get("key"):
+            continue
+        host, _, repo = x["key"].partition("/")
+        out.append({"key": x["key"], "host": host, "repo": x.get("repo") or repo,
+                    "provider": "github" if host == "github.com" else "gitlab" if host == "gitlab.com" else "gitea",
+                    "title": x.get("title") or repo, "console": label(x.get("console") or ""),
+                    "deck": bool(x.get("deck")), "status": _RH_STAGES.get(x.get("stage") or "", ""),
+                    "id": x.get("id") or "",
+                    "url": BR_CATALOGS[src]["site"] + ("#" + urllib.parse.quote(x["id"]) if src == "rh" and x.get("id") else ""),
+                    "cover": x.get("cover") or "", "summary": x.get("summary") or ""})
+    return out, data.get("stale") or ""
 BR_CACHE = CONFIG_DIR / "browse.json"
 BR_FORMAT = 2  # bump when a parser or the item shape changes, so saved lists from older versions are read again
 _br_lock = threading.Lock()
@@ -1990,25 +2110,9 @@ def _br_norm(title):
     return re.sub(r"[\W_]+", "", re.sub(r"^the\b", "", str(title or "").strip().casefold()))
 
 
-def _catalog_keys():
-    """{key: ["rh", "qv", "rl"]}: which saved catalogs list each repository. Nothing is fetched."""
-    listed = {}
-    for name, path in (("rh", RH_CACHE), ("qv", QV_CACHE), ("rl", RL_CACHE)):
-        try:
-            items = json.loads(path.read_text()).get("items")
-        except (OSError, ValueError, AttributeError):
-            continue
-        for x in items if isinstance(items, list) else []:
-            if isinstance(x, dict) and x.get("key"):
-                names = listed.setdefault(str(x["key"]), [])
-                if name not in names:
-                    names.append(name)
-    return listed
-
-
 def merge_browse(per_source):
     """Entries merged by repository, most sources first. per_source is {src: [items from the parse_* functions]}."""
-    known, listed = _known_stars(), _catalog_keys()
+    known = _known_stars()
     groups, by_key, by_title = [], {}, {}
     for src in BR_ORDER:
         for it in per_source.get(src) or []:
@@ -2019,7 +2123,7 @@ def merge_browse(per_source):
             if g is None:
                 g = {"key": it["key"], "host": it["host"], "provider": it["provider"], "repo": it["repo"],
                      "title": it["title"], "console": it["console"], "deck": False, "status": "", "sources": [],
-                     "stars": 0, "also": [], "ub_slug": "" if it["key"] else it["id"]}
+                     "stars": 0, "cover": "", "summary": "", "ub_slug": "" if it["key"] else it["id"]}
                 groups.append(g)
                 if it["key"]:
                     by_key[it["key"]] = g
@@ -2030,9 +2134,10 @@ def merge_browse(per_source):
             g["deck"] = g["deck"] or it["deck"]
             g["status"] = g["status"] or it["status"]
             g["console"] = g["console"] or it["console"]
+            g["cover"] = g["cover"] or it.get("cover") or ""
+            g["summary"] = g["summary"] or it.get("summary") or ""
     for g in groups:
         g["stars"] = known.get(g["key"], 0) if g["key"] else 0
-        g["also"] = list(listed.get(g["key"], [])) if g["key"] else []
     groups.sort(key=lambda g: (-len(g["sources"]), -g["stars"], g["title"].casefold()))
     return groups
 
@@ -2091,15 +2196,15 @@ def _browse(refresh):
     due = [src for src in BR_SOURCES
            if refresh or time.time() - _br_time(saved.get(src) if isinstance(saved.get(src), dict) else {}) >= BR_MAX_AGE]
     fresh = {}
-    if due:
-        # About 20 MB across the four sites; reading them side by side keeps the first open short.
-        with concurrent.futures.ThreadPoolExecutor(len(due)) as pool:
-            jobs = {src: pool.submit(_br_fetch, src) for src in due}
-        for src, job in jobs.items():
-            try:
-                fresh[src] = job.result()
-            except Exception as e:
-                fresh[src] = e
+    # About 20 MB across the four sites; reading them side by side keeps the first open short.
+    with concurrent.futures.ThreadPoolExecutor(len(due) + len(BR_CATALOGS)) as pool:
+        jobs = {src: pool.submit(_br_fetch, src) for src in due}
+        cats = {src: pool.submit(_catalog_fetch, src, refresh) for src in BR_CATALOGS}  # each keeps its own daily cache
+    for src, job in jobs.items():
+        try:
+            fresh[src] = job.result()
+        except Exception as e:
+            fresh[src] = e
     for src, meta in BR_SOURCES.items():
         keep = saved.get(src) if isinstance(saved.get(src), dict) else {}
         items = keep.get("items") if isinstance(keep.get("items"), list) else []
@@ -2114,6 +2219,17 @@ def _browse(refresh):
                 changed = True
         per[src] = items
         info[src] = {"name": meta["name"], "site": meta["site"], "icon": meta["icon"], "count": len(items), "error": error}
+    for src, job in cats.items():
+        meta, error = BR_CATALOGS[src], ""
+        try:
+            per[src], stale = job.result()
+            error = "%s: %s" % (meta["name"], stale) if stale else ""
+        except Exception as e:
+            per[src], error = [], "Couldn't load %s (%s)" % (meta["name"], e)
+        if error:
+            errors.append(error)
+        info[src] = {"name": meta["name"], "site": meta["site"], "icon": meta["icon"], "count": len(per[src]),
+                     "error": error, "catalog": True}
     if changed:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         tmp = BR_CACHE.with_suffix(".tmp")
@@ -2340,13 +2456,31 @@ def add_to_steam(app, shortcuts=None):
     return True
 
 
-def rename_app_file(app, shortcuts=None):
-    """Give an AppImage the clean name <App>.AppImage (and its .old), repointing a Steam shortcut to it."""
+def suggested_file_name(app):
+    """The AppImage's name as its project ships it, minus the version; the app's name if that leaves nothing."""
+    inst = app.get("installed") or {}
+    src = inst.get("appimage_name") or (inst.get("asset") if (inst.get("asset") or "").lower().endswith(".appimage") else "")
+    return unversioned_name(src or os.path.basename(inst.get("path") or "")) or safe_name(app["name"]) + ".AppImage"
+
+
+def clean_file_name(name):
+    """A file name the user typed, checked and given the .AppImage extension."""
+    name = (name or "").strip()
+    if not re.search(r"(?i)\.appimage$", name):
+        name += ".AppImage"
+    if "/" in name or "\0" in name or name.startswith(".") or len(name) > 200 or not re.search(r"\w", name[:-9]):
+        raise RuntimeError("Use a plain file name, such as Savage_Wind-x86_64.AppImage")
+    return name
+
+
+def rename_app_file(app, shortcuts=None, name=None):
+    """Rename an AppImage (and its .old) to `name`, or to suggested_file_name(), repointing a Steam shortcut to it.
+    Updates keep writing to the new path."""
     inst = app.get("installed") or {}
     old = inst.get("path") or ""
     if inst.get("kind") != "appimage" or not os.path.isfile(old):
         raise RuntimeError("%s has no AppImage file to rename" % app["name"])
-    new = os.path.join(os.path.dirname(old), safe_name(app["name"]) + ".AppImage")
+    new = os.path.join(os.path.dirname(old), clean_file_name(name) if name else suggested_file_name(app))
     if new == old:
         raise RuntimeError("%s already has that name" % os.path.basename(old))
     if os.path.lexists(new):
@@ -2388,7 +2522,41 @@ def rename_app_file(app, shortcuts=None):
     return new
 
 
+def auto_rename(app, settings):
+    """With Auto rename on, give a just-installed AppImage its suggested name. Returns the new path, or "" when it
+    keeps its name. Never raises: a name that's taken, or Steam running, leaves the rename to the app menu."""
+    inst = app.get("installed") or {}
+    p = inst.get("path") or ""
+    if not settings.get("auto_rename") or inst.get("kind") != "appimage" or not os.path.isfile(p):
+        return ""
+    if os.path.basename(p) == suggested_file_name(app):
+        return ""
+    try:
+        return rename_app_file(app)
+    except (RuntimeError, OSError):
+        return ""
+
+
+def rename_all(apps, shortcuts=None):
+    """Rename every AppImage whose file name differs from its suggested name. Returns (renamed, [(app, reason)])."""
+    renamed, failed = [], []
+    for a in apps:
+        inst = a.get("installed") or {}
+        p = inst.get("path") or ""
+        if inst.get("kind") != "appimage" or not os.path.isfile(p) or os.path.basename(p) == suggested_file_name(a):
+            continue
+        try:
+            renamed.append(os.path.basename(rename_app_file(a, shortcuts)))
+        except (RuntimeError, OSError) as e:
+            failed.append((a["name"], str(e)))
+    return renamed, failed
+
+
 # --------------------------------------------------------------------------- web server
+
+class Cancelled(Exception):
+    """Raised from a download's progress callback when the user cancels it."""
+
 
 class Jobs:
     """Background tasks (check/install) with progress the UI can poll."""
@@ -2402,13 +2570,15 @@ class Jobs:
             cur = self.items.get(app_id)
             if cur and cur["state"] == "running":
                 return False
-            job = {"state": "running", "label": label, "progress": 0.0, "message": ""}
+            job = {"state": "running", "label": label, "progress": 0.0, "message": "", "cancel": False}
             self.items[app_id] = job
 
         def run():
             try:
                 fn(job)
                 job["state"] = "done"
+            except Cancelled:
+                job["state"], job["message"] = "cancelled", "Download cancelled"
             except Exception as e:
                 job["state"] = "error"
                 job["message"] = str(e)
@@ -2416,6 +2586,15 @@ class Jobs:
 
         threading.Thread(target=run, daemon=True).start()
         return True
+
+    def cancel(self, app_id):
+        """Ask a running download to stop; it stops at its next chunk and deletes what it fetched."""
+        with self.lock:
+            job = self.items.get(app_id)
+            if not job or job["state"] != "running":
+                return False
+            job["cancel"] = True
+            return True
 
     def snapshot(self):
         with self.lock:
@@ -2481,8 +2660,10 @@ class Server:
                 d["steam_exe"], d["steam_dir"], d["proton"] = tgt or ("", "", False)
                 d["steam_args"] = steam_args(a) if tgt else ""
                 d["in_steam"] = bool(tgt) and steam_key(a, tgt) in in_steam
-                clean = safe_name(a["name"]) + ".AppImage"
-                d["rename_to"] = clean if d["exists"] and inst.get("kind") == "appimage" and os.path.basename(p) != clean else ""
+                is_appimage = d["exists"] and inst.get("kind") == "appimage"
+                d["can_rename"] = is_appimage
+                clean = suggested_file_name(a) if is_appimage else ""
+                d["rename_to"] = clean if clean and os.path.basename(p) != clean else ""
                 d["disk"] = (os.path.getsize(p) if os.path.isfile(p) else inst.get("size", 0)) if d["exists"] else 0
                 d["old_disk"] = os.path.getsize(p + ".old") if d["has_backup"] else 0
                 apps.append(d)
@@ -2509,7 +2690,7 @@ class Server:
                 raise RuntimeError(app["error"])
             adopt_app(app, path)
             self.save()
-            if rename and os.path.basename(path) != safe_name(app["name"]) + ".AppImage":
+            if rename and os.path.basename(path) != suggested_file_name(app):
                 try:
                     with _lock:
                         rename_app_file(app)
@@ -2525,14 +2706,20 @@ class Server:
             job["label"] = "Downloading"
 
             def prog(done, total):
+                if job["cancel"]:
+                    raise Cancelled()
                 job["progress"] = (done / total) if total else 0
                 job["message"] = "%.1f / %.1f MB" % (done / 1e6, total / 1e6) if total else "%.1f MB" % (done / 1e6)
 
             def phase(label):
+                if job["cancel"]:
+                    raise Cancelled()  # pressed just as the download finished: nothing is installed yet
                 job["label"], job["message"] = label, ""
 
             install_app(app, self.cfg["settings"], prog, phase)
-            self.save()
+            with _lock:
+                auto_rename(app, self.cfg["settings"])
+                self.save()
         return self.jobs.start(app["id"], "Downloading", fn)
 
     def handle(self, path, body):
@@ -2708,9 +2895,16 @@ class Server:
             if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
                 raise ValueError("Wait for %s to finish first" % app["name"])
             with _lock:
-                new = rename_app_file(app)
+                new = rename_app_file(app, name=body.get("file") or None)
                 self.save()
             return {"ok": True, "file": os.path.basename(new)}
+
+        if path == "/api/rename_all":
+            busy = {k for k, j in self.jobs.snapshot().items() if j.get("state") == "running"}
+            with _lock:
+                renamed, failed = rename_all([a for a in cfg["apps"] if a["id"] not in busy])
+                self.save()
+            return {"ok": True, "renamed": renamed, "failed": [{"name": n, "error": e} for n, e in failed]}
 
         if path == "/api/clean_backups":
             removed = freed = 0
@@ -2730,6 +2924,20 @@ class Server:
             rollback_app(app)
             self.save()
             return {"ok": True}
+
+        if path == "/api/uninstall":
+            targets = self._apps(body)
+            running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
+            if running:
+                raise ValueError("Wait for %s to finish first" % ", ".join(running))
+            for app in targets:  # before anything is deleted, so a refusal changes nothing
+                if not is_flatpak(app):
+                    ensure_not_running(app)
+            with _lock:
+                for app in targets:
+                    uninstall_app(app)
+                self.save()
+            return {"ok": True, "count": len(targets)}
 
         if path == "/api/remove":
             targets = self._apps(body)
@@ -2801,6 +3009,8 @@ class Server:
         if path == "/api/self_update":
             def fn(job):
                 def prog(done, total):
+                    if job["cancel"]:
+                        raise Cancelled()
                     job["progress"] = (done / total) if total else 0
                     job["done"] = done
                     job["total"] = total
@@ -2808,6 +3018,9 @@ class Server:
             if not self.jobs.start("__self__", "Updating SedotDeck", fn):
                 raise ValueError("SedotDeck is already updating")
             return {"ok": True}
+
+        if path == "/api/cancel":
+            return {"ok": self.jobs.cancel(str(body.get("id") or ""))}
 
         if path == "/api/launch":
             launch_app(self._app(body))
@@ -2865,6 +3078,10 @@ class Server:
                     s["install_dir"] = body["install_dir"].strip()
                 if "keep_backup" in body:
                     s["keep_backup"] = bool(body["keep_backup"])
+                if "auto_rename" in body:
+                    s["auto_rename"] = bool(body["auto_rename"])
+                if body.get("theme") in THEMES:
+                    s["theme"] = body["theme"]
                 if body.get("clear_token"):
                     s["github_token"] = ""
                 elif body.get("github_token"):
@@ -2906,7 +3123,9 @@ def make_handler(srv, httpd_ref):
         def do_GET(self):
             srv.last_seen = time.time()
             if urllib.parse.urlsplit(self.path).path in ("/", "/index.html"):
-                html = INDEX_HTML.replace("__TOKEN__", srv.token).replace("__VERSION__", VERSION)
+                theme = srv.cfg["settings"].get("theme")
+                html = (INDEX_HTML.replace("__TOKEN__", srv.token).replace("__VERSION__", VERSION)
+                        .replace("__THEME__", theme if theme in THEMES else "dark"))
                 self._send(200, html.encode(), "text/html; charset=utf-8")
             else:
                 self._send(404, {"error": "not found"})
@@ -3104,6 +3323,7 @@ def cmd_update(args):
                 sys.stdout.flush()
         try:
             path = install_app(a, cfg["settings"], prog)
+            path = auto_rename(a, cfg["settings"]) or path
             print("\n  -> %s" % path)
         except Exception as e:
             print("\n  FAILED: %s" % e)
@@ -3123,13 +3343,26 @@ def cmd_remove(args):
     print("Removed", a["name"])
 
 
+def cmd_uninstall(args):
+    cfg = load_config()
+    a = find_app(cfg, args.name)
+    if not a:
+        sys.exit("Unknown app: %s" % args.name)
+    try:
+        uninstall_app(a)
+    except RuntimeError as e:
+        sys.exit(str(e))
+    save_config(cfg)
+    print("Uninstalled %s. It stays in the list; run: sedotdeck.py update \"%s\" to install it again" % (a["name"], a["name"]))
+
+
 def cmd_rename(args):
     cfg = load_config()
     a = find_app(cfg, args.name)
     if not a:
         sys.exit("Unknown app: %s" % args.name)
     try:
-        new = rename_app_file(a)
+        new = rename_app_file(a, name=args.file)
     except RuntimeError as e:
         sys.exit(str(e))
     save_config(cfg)
@@ -3225,8 +3458,14 @@ def main():
     s.add_argument("--delete-files", action="store_true", help="also move its files to the Trash")
     s.set_defaults(fn=cmd_remove)
 
-    s = sub.add_parser("rename", help="give an AppImage the clean name <App>.AppImage (updates its Steam shortcut)")
+    s = sub.add_parser("uninstall", help="move an app's files to the Trash but keep it in the list")
     s.add_argument("name")
+    s.set_defaults(fn=cmd_uninstall)
+
+    s = sub.add_parser("rename", help="rename an app's AppImage, by default to its own name without the version "
+                                      "(updates follow it, and so does its Steam shortcut)")
+    s.add_argument("name")
+    s.add_argument("file", nargs="?", help="the new file name, e.g. Savage_Wind-x86_64.AppImage")
     s.set_defaults(fn=cmd_rename)
 
     s = sub.add_parser("export", help="save the app list to share or back up (no tokens)")
@@ -3246,9 +3485,19 @@ def main():
 # --------------------------------------------------------------------------- UI
 
 INDEX_HTML = r"""<!doctype html>
-<html lang="en"><head>
+<html lang="en" data-theme-pref="__THEME__"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
+<script>
+// Set before the first paint so a light theme never flashes dark.
+const themeMedia=matchMedia("(prefers-color-scheme: light)");
+function applyTheme(pref){
+  document.documentElement.dataset.themePref=pref;
+  document.documentElement.dataset.theme=pref=="light"||pref=="system"&&themeMedia.matches?"light":"dark";
+}
+applyTheme(document.documentElement.dataset.themePref);
+themeMedia.addEventListener("change",()=>applyTheme(document.documentElement.dataset.themePref));
+</script>
 <title>SedotDeck</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 256 256%22%3E%3Ctitle%3ESedotDeck%3C/title%3E%3Crect width=%22256%22 height=%22256%22 rx=%2248%22 fill=%22%231a1d23%22/%3E%3Cg transform=%22translate%2815.36 9.36%29 scale%280.88%29%22%3E%3Cpath fill=%22%23e6e8eb%22 fill-rule=%22evenodd%22 d=%22M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z%22/%3E%3Cpath fill=%22%231a9fff%22 d=%22M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z%22/%3E%3C/g%3E%3C/svg%3E">
 <style>
@@ -3258,7 +3507,22 @@ INDEX_HTML = r"""<!doctype html>
   --text:#e6e8eb;--dim:#9aa3ad;--faint:#7d8590;
   --accent:#1a9fff;--accent-btn:#1475c4;--accent-btn-hi:#1268ae;
   --good:#8bd17c;--warn:#e8b84a;--bad:#ff7b7b;
+  --btn-hover:#2c313a;--btn-hover-line:#4a525e;--good-line:#3d5a37;
+  --info-bg:#16273a;--info-line:#2d5878;--pick-bg:#1d3a55;--strong:#fff;
+  --shadow:rgba(0,0,0,.55);--backdrop:rgba(0,0,0,.6);
   --r:6px;
+  color-scheme:dark;
+}
+/* Desktop Mode only, by choice: the same greys inverted, with the accent and status colors darkened to keep AA contrast on white. */
+:root[data-theme="light"]{
+  --bg:#eef0f3;--panel:#fff;--panel-hi:#f5f6f8;--line:#d3d8de;--line-hi:#b8c0c9;
+  --text:#16191d;--dim:#4c5560;--faint:#5c6570;
+  --accent:#0a63ad;--accent-btn:#1470bd;--accent-btn-hi:#105fa1;
+  --good:#266f2a;--warn:#875f00;--bad:#b52a25;
+  --btn-hover:#e4e8ec;--btn-hover-line:#9fa8b3;--good-line:#9cc79a;
+  --info-bg:#e6f1fb;--info-line:#a9cbea;--pick-bg:#d6e8f8;--strong:#000;
+  --shadow:rgba(20,30,40,.18);--backdrop:rgba(20,30,40,.35);
+  color-scheme:light;
 }
 *{box-sizing:border-box}
 html{background:var(--bg)}
@@ -3278,7 +3542,7 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;f
 
 button{font:inherit;font-size:14px;font-weight:500;color:var(--text);cursor:pointer;min-height:40px;padding:8px 16px;
   border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel-hi);transition:background .12s,border-color .12s}
-button:hover:not(:disabled){background:#2c313a;border-color:#4a525e}
+button:hover:not(:disabled){background:var(--btn-hover);border-color:var(--btn-hover-line)}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
   outline:3px solid var(--accent);outline-offset:2px}
 button:disabled{opacity:.45;cursor:default}
@@ -3334,7 +3598,7 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .ver b{color:var(--text);font-weight:600}
 .ver a[data-a]{white-space:nowrap;font-size:13px}
 .tag{font-size:12px;padding:0 6px;border-radius:4px;color:var(--dim);border:1px solid var(--line-hi);white-space:nowrap;line-height:18px}
-.tag.ok{color:var(--good);border-color:#3d5a37}
+.tag.ok{color:var(--good);border-color:var(--good-line)}
 .actions{display:flex;gap:6px;align-items:center;justify-content:flex-end}
 .actions button{min-height:38px;padding:6px 14px;font-size:14px}
 .actions .more{width:38px;padding:0}
@@ -3343,6 +3607,8 @@ main{padding:16px 20px 32px;max-width:1180px;margin:0 auto}
 .bar i{display:block;height:100%;width:100%;transform-origin:left;background:var(--accent);transition:transform .3s ease-out}
 .bar.wait i{opacity:.4}
 .jobtxt{font-size:12.5px;color:var(--dim);margin-top:4px}
+.jobrow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.jobrow .jobtxt{flex:1;margin-top:0;min-width:0}
 .done-check{color:var(--good);font-size:13px;font-weight:600}
 #selfProg{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-height:44px;padding:4px 8px;font-size:12.5px;font-weight:400;color:var(--dim)}
 #selfProg .bar{display:block;width:120px;max-width:100%}
@@ -3359,7 +3625,7 @@ body.selecting .app.sel .pickbox{background:var(--accent-btn);border-color:var(-
 body.selecting .app.sel .pickbox::after{content:"";width:6px;height:11px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
 .selbar{position:fixed;left:12px;right:12px;bottom:16px;margin:0 auto;width:max-content;z-index:12;display:flex;align-items:center;gap:6px;flex-wrap:wrap;
   justify-content:center;padding:8px 10px 8px 16px;border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel);
-  max-width:calc(100vw - 24px);box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  max-width:calc(100vw - 24px);box-shadow:0 8px 24px var(--shadow)}
 .selbar button{min-height:38px;padding:6px 12px;font-size:13.5px}
 .selbar #selN{font-size:13.5px;margin-right:4px;white-space:nowrap}
 .sel-acts{display:flex;gap:6px;flex-wrap:wrap}
@@ -3382,8 +3648,8 @@ label.frow{flex-direction:row;cursor:pointer} label.frow:hover{background:var(--
 
 /* ---- dialogs, menu, toast */
 dialog{color:var(--text);padding:0;width:min(580px,94vw);max-height:calc(100vh - 32px);overflow:auto;overscroll-behavior:contain;
-  border-radius:8px;border:1px solid var(--line-hi);background:var(--panel);box-shadow:0 16px 48px rgba(0,0,0,.6)}
-dialog::backdrop{background:rgba(0,0,0,.6)}
+  border-radius:8px;border:1px solid var(--line-hi);background:var(--panel);box-shadow:0 16px 48px var(--shadow)}
+dialog::backdrop{background:var(--backdrop)}
 .dlg{padding:20px;display:flex;flex-direction:column;gap:12px}
 .dlg h2{margin:0;font-size:18px;font-weight:600}
 .dlg p{margin:0;color:var(--dim)}
@@ -3398,7 +3664,7 @@ select{padding-right:8px}
 .assets{max-height:168px;overflow:auto;border-radius:var(--r);font-size:13px;background:var(--bg);border:1px solid var(--line)}
 .assets div{padding:8px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;cursor:pointer}
 .assets div:last-child{border:0} .assets div:hover{background:var(--panel-hi)}
-.assets .pick{background:#1d3a55;color:#fff}
+.assets .pick{background:var(--pick-bg);color:var(--strong)}
 .assets small{margin-left:auto;color:var(--faint)}
 .progs{max-height:300px} .progs div{align-items:center} .progs .mono{overflow-wrap:anywhere}
 .progs .tag{flex:none}
@@ -3410,19 +3676,19 @@ details.adv{border-radius:var(--r);border:1px solid var(--line)}
 details.adv>summary{cursor:pointer;padding:10px 14px;font-size:13.5px;color:var(--dim)}
 details.adv[open]>summary{border-bottom:1px solid var(--line)}
 details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
-.using{padding:10px 12px;border-radius:var(--r);border:1px solid #2d5878;background:#16273a;font-size:13.5px}
+.using{padding:10px 12px;border-radius:var(--r);border:1px solid var(--info-line);background:var(--info-bg);font-size:13.5px}
 .notes{white-space:pre-wrap;font-size:13.5px;line-height:1.5;padding:12px 14px;border-radius:var(--r);max-height:340px;overflow:auto;
   background:var(--bg);border:1px solid var(--line);overflow-wrap:anywhere}
-.notes b{color:#fff}
+.notes b{color:var(--strong)}
 .inl{display:flex;gap:8px}.inl input{flex:1;min-width:0}
 .menu{position:fixed;z-index:15;min-width:230px;padding:4px;border-radius:var(--r);border:1px solid var(--line-hi);background:var(--panel);
-  box-shadow:0 12px 32px rgba(0,0,0,.6);display:flex;flex-direction:column}
+  box-shadow:0 12px 32px var(--shadow);display:flex;flex-direction:column}
 .menu button{background:none;border:0;text-align:left;min-height:40px;padding:8px 12px;border-radius:4px;font-size:14px}
 .menu button:hover:not(:disabled),.menu button:focus-visible{background:var(--panel-hi)}
 .menu button small{display:block;color:var(--faint);font-size:12px}
 .menu hr{border:0;border-top:1px solid var(--line);margin:4px 6px}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:var(--r);
-  border:1px solid var(--line-hi);background:var(--panel-hi);box-shadow:0 8px 24px rgba(0,0,0,.5);
+  border:1px solid var(--line-hi);background:var(--panel-hi);box-shadow:0 8px 24px var(--shadow);
   opacity:0;transition:opacity .15s;pointer-events:none;max-width:90vw;z-index:20}
 #toast.show{opacity:1} #toast.bad{border-color:var(--bad)}
 
@@ -3437,16 +3703,20 @@ details.adv>div{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
 .added{color:var(--good);font-size:13.5px;font-weight:600}
 
 /* ---- Recomp Haven */
-.rh-head{display:flex;gap:12px;align-items:center;margin:0 0 12px}
-.rh-head img{width:40px;height:40px;border-radius:8px;flex:none}
-.rh-head div{flex:1;min-width:0}
-.rh-head b{display:block;font-size:16px}
-.rh-head .hint{display:block}
-.rh-site{white-space:nowrap;font-size:14px}
+.set-h{font-size:13px;font-weight:700;color:var(--dim);margin:10px 0 -2px;letter-spacing:0}
+.adv-h{font-size:12.5px;font-weight:600;color:var(--dim);margin:6px 0 -4px}
+.br-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+.br-bar>label{display:flex;flex-direction:row;gap:8px;align-items:center;margin:0}
+.br-bar select{min-width:240px}
+.br-about{flex:1;min-width:220px;font-size:13px}
+.br-about summary{cursor:pointer;color:var(--dim);width:max-content}
+.br-about .hint{margin-top:6px}
 .rh-tools{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
 .rh-tools input{flex:1;min-width:200px}
 .rh-tools input[type=checkbox]{flex:none;min-width:0}
 .rh-tools label{flex-direction:row;align-items:center;gap:8px;white-space:nowrap}
+.rh-tools label{max-width:100%;min-width:0}
+.rh-tools label select{flex:1;min-width:0}  /* long system names must not push past a phone-width column */
 #vRh>.hint{margin:0 0 12px}
 .rh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:8px;align-items:start}
 .rh-grid .group{grid-column:1/-1}
@@ -3486,7 +3756,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="logo" viewBox="0 0 256 256"><g><path fill="#e6e8eb" fill-rule="evenodd" d="M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z"/><path fill="#1a9fff" d="M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z"/></g></symbol>
+  <symbol id="logo" viewBox="0 0 256 256"><g><path style="fill:var(--text)" fill-rule="evenodd" d="M60 120H196A44 44 0 0 1 240 164V176A44 44 0 0 1 196 220H60A44 44 0 0 1 16 176V164A44 44 0 0 1 60 120ZM84 140H172A6 6 0 0 1 178 146V194A6 6 0 0 1 172 200H84A6 6 0 0 1 78 194V146A6 6 0 0 1 84 140Z"/><path fill="#1a9fff" d="M163 122V96A3 3 0 0 1 163.88 93.88L192.16 65.59A17 17 0 0 0 168.12 41.55L139.84 69.84A37 37 0 0 0 129 96V122Z"/></g></symbol>
   <symbol id="gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V6M6.5 11.5 12 6l5.5 5.5"/></g></symbol>
@@ -3507,11 +3777,8 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
 <main>
 <nav class="tabs" id="tabs" role="tablist">
   <button type="button" role="tab" data-tab="apps" class="on">My apps</button>
-  <button type="button" role="tab" data-tab="gh">Discover</button>
-  <button type="button" role="tab" data-tab="rh"><img src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">Recomp Haven</button>
-  <button type="button" role="tab" data-tab="qv">Quiver</button>
-  <button type="button" role="tab" data-tab="rl">Recomp Launcher</button>
   <button type="button" role="tab" data-tab="br">Browse</button>
+  <button type="button" role="tab" data-tab="gh">Search GitHub</button>
   <span class="tabs-end"><button type="button" class="ghost" id="btnSel">Select</button></span>
 </nav>
 <section id="vApps"><div id="found"></div><div class="summary" id="summary"></div><div id="list" class="list"></div></section>
@@ -3522,10 +3789,22 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div class="hint" id="ghInfo">Finds GitHub projects by name or description. Add looks at the latest release before anything downloads.</div>
   <div id="ghList" class="list"></div>
 </section>
+<div id="brBar" class="br-bar" hidden>
+  <label>Source<select id="brSrc" aria-label="Which list to browse"><option value="">All sources</option>
+    <option value="rh">Recomp Haven</option><option value="qv">Quiver</option><option value="rl">Recomp Launcher</option>
+    <option value="db">DecompBuddy</option><option value="fg">FanGamesDB</option><option value="ge">The Gaming Emporium</option><option value="ub">unbaked.games</option></select></label>
+  <details class="br-about"><summary>About these lists</summary><div class="hint">
+    Lists from <a href="https://recomphaven.com/" target="_blank" rel="noopener">Recomp Haven</a> (by rikuwru),
+    <a href="https://quiverlauncher.com/" target="_blank" rel="noopener">Quiver</a>,
+    <a href="https://recomplauncher.com/" target="_blank" rel="noopener">Recomp Launcher</a>,
+    <a href="https://unbaked.games/" target="_blank" rel="noopener">unbaked.games</a>,
+    <a href="https://decompbuddy.com/" target="_blank" rel="noopener">DecompBuddy</a> (catalog GPL-3.0),
+    <a href="https://fangamesdb.com/" target="_blank" rel="noopener">FanGamesDB</a> and
+    <a href="https://thegamingemporium.com/" target="_blank" rel="noopener">The Gaming Emporium</a>, read from their public data.
+    SedotDeck isn't part of any of them. Box art belongs to each game's publisher, and every project needs your own copy of the game.
+  </div></details>
+</div>
 <section id="vRh" hidden>
-  <div class="rh-head"><img id="rhLogo" src="https://recomphaven.com/assets/icons/icon-192.png" alt="" onerror="this.remove()">
-    <div><b>Recomp Haven</b><span class="hint">Recomps and PC ports with a Linux release. List, tiers and summaries by <a href="https://github.com/rikuwru/recomphaven" target="_blank" rel="noopener">Recomp Haven</a> (rikuwru). Box art belongs to each game's publisher, and every recomp needs your own copy of the game.</span></div>
-    <a class="rh-site" href="https://recomphaven.com/" target="_blank" rel="noopener">recomphaven.com ↗</a></div>
   <div class="rh-tools"><input type="text" id="rhQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search Recomp Haven">
     <label>System<select id="rhCon"><option value="">All systems</option></select></label>
     <label>Sort<select id="rhSort">
@@ -3536,9 +3815,6 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div id="rhList" class="rh-grid"></div>
 </section>
 <section id="vQv" hidden>
-  <div class="rh-head">
-    <div><b>Quiver catalog</b><span class="hint">Ports and recomps with a Linux release that Quiver has verified. List, descriptions and player reports from the catalog behind Quiver Launcher; SedotDeck isn't part of Quiver. Box art, mostly from SteamGridDB, belongs to each game's publisher, and every port needs your own copy of the game.</span></div>
-    <a class="rh-site" href="https://quiverlauncher.com/" target="_blank" rel="noopener">quiverlauncher.com ↗</a></div>
   <div class="rh-tools"><input type="text" id="qvQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search the Quiver catalog">
     <label>System<select id="qvCon"><option value="">All systems</option></select></label>
     <label>Sort<select id="qvSort">
@@ -3549,9 +3825,6 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div id="qvList" class="rh-grid"></div>
 </section>
 <section id="vRl" hidden>
-  <div class="rh-head">
-    <div><b>Recomp Launcher</b><span class="hint">PC recomps with a Linux release from the catalog behind RecompLauncher (recomplauncher.com); SedotDeck isn't part of it. Each entry links to its developer's GitHub. Box art belongs to each game's publisher, and every recomp needs your own copy of the game.</span></div>
-    <a class="rh-site" href="https://recomplauncher.com/" target="_blank" rel="noopener">recomplauncher.com ↗</a></div>
   <div class="rh-tools"><input type="text" id="rlQ" placeholder="Search games or projects" autocomplete="off" spellcheck="false" aria-label="Search the Recomp Launcher catalog">
     <label>System<select id="rlCon"><option value="">All systems</option></select></label>
     <label>Sort<select id="rlSort">
@@ -3561,14 +3834,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div id="rlList" class="rh-grid"></div>
 </section>
 <section id="vBr" hidden>
-  <div class="rh-head">
-    <div><b>Browse</b><span class="hint">Ports, decomps and recomps from unbaked.games, DecompBuddy, FanGamesDB and The Gaming Emporium, merged by repository. SedotDeck isn't part of any of these sites. DecompBuddy's catalog is GPL-3.0. Every project needs your own copy of the game.</span>
-      <span class="hint">Sources: <a href="https://unbaked.games/" target="_blank" rel="noopener"><img class="br-ico" src="https://unbaked.games/favicon.svg" width="16" height="16" alt="" onerror="this.remove()">unbaked.games ↗</a>
-        · <a href="https://decompbuddy.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://decompbuddy.com/assets/favicon.png" width="16" height="16" alt="" onerror="this.remove()">DecompBuddy ↗</a>
-        · <a href="https://fangamesdb.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://fangamesdb.com/favicon.svg" width="16" height="16" alt="" onerror="this.remove()">FanGamesDB ↗</a>
-        · <a href="https://thegamingemporium.com/" target="_blank" rel="noopener"><img class="br-ico" src="https://thegamingemporium.com/icons/apple-touch-icon.png" width="16" height="16" alt="" onerror="this.remove()">The Gaming Emporium ↗</a></span></div></div>
   <div class="rh-tools"><input type="text" id="brQ" placeholder="Search games, projects or repos" autocomplete="off" spellcheck="false" aria-label="Search Browse">
-    <label>Source<select id="brSrc"><option value="">All sources</option></select></label>
     <label>System<select id="brCon"><option value="">All systems</option></select></label>
     <label><input type="checkbox" id="brDeck"> Tested on Steam Deck</label>
     <label>Sort<select id="brSort">
@@ -3592,15 +3858,17 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div class="hint" id="aInfo"></div>
   <div class="using" id="aUsing" hidden></div>
   <label class="row" id="aRenL" hidden><input type="checkbox" id="aRen" checked> <span>Rename to <span class="mono" id="aRenName"></span></span></label>
-  <details class="adv" id="aAdv"><summary>Advanced: name, category, which release and file</summary><div>
-    <label>Name<input type="text" id="aName" placeholder="Shown in the list, also the file name"></label>
+  <details class="adv" id="aAdv"><summary>More options</summary><div>
+    <label>Name<input type="text" id="aName" placeholder="Shown in My apps. The file keeps its own name"></label>
     <label>Category<input type="text" id="aCatg" list="catList" maxlength="40" placeholder="Optional, e.g. Emulators. Apps with one are listed together"></label>
-    <label>Skip releases named (regex)<input type="text" id="aSkip" placeholder="e.g. nightly|beta: releases whose title or tag match are ignored"></label>
-    <label class="row"><input type="checkbox" id="aLatest"> <span>Only the release the developer marked “Latest”</span></label>
-    <label>Asset pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
+    <h3 class="adv-h">Which release</h3>
     <label class="row"><input type="checkbox" id="aPre"> Include pre-releases / nightlies</label>
+    <label class="row"><input type="checkbox" id="aLatest"> <span>Only the release the developer marked “Latest”</span></label>
+    <label>Skip releases named (regex)<input type="text" id="aSkip" placeholder="e.g. nightly|beta: releases whose title or tag match are ignored"></label>
+    <h3 class="adv-h">Which file</h3>
     <div class="assets" id="aAssets" hidden></div>
     <div class="hint" id="aTip" hidden>Click a file to download that one instead. SedotDeck turns it into a pattern that keeps matching future versions.</div>
+    <label>File pattern (regex)<input type="text" id="aPat" placeholder="auto: picks the Linux AppImage / Linux build"></label>
   </div></details>
   <div class="btns"><button type="button" class="ghost" onclick="dAdd.close()">Cancel</button><button class="primary" id="aSave" type="submit">Add</button></div>
 </form></dialog>
@@ -3614,12 +3882,19 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
 
 <dialog id="dSet"><form class="dlg" method="dialog" id="fSet">
   <h2>Settings</h2>
-  <div class="inl" style="align-items:center"><span style="flex:1">SedotDeck __VERSION__ <span class="hint" id="sSelfInfo"></span></span><button type="button" id="sSelf">Check for SedotDeck updates</button></div>
+  <div class="inl" style="align-items:center"><span class="hint" style="flex:1">SedotDeck __VERSION__ <span id="sSelfInfo"></span></span><button type="button" class="ghost" id="sSelf">Check for SedotDeck updates</button></div>
+  <h3 class="set-h">General</h3>
   <label>Install folder<div class="inl"><input type="text" id="sDir"><button type="button" id="sOpen">Open folder</button></div></label>
+  <label>Theme<select id="sTheme">
+    <option value="dark">Dark</option><option value="light">Light</option><option value="system">Match system</option>
+  </select></label>
+  <h3 class="set-h">Updates</h3>
   <label class="row"><input type="checkbox" id="sBak"> Keep previous version as <span class="mono">.old</span> (enables rollback)</label>
-  <label>GitHub token (optional)<input type="password" id="sTok" placeholder="ghp_… (raises the rate limit from 60 to 5000/hour)"></label>
-  <div class="hint" id="sTokInfo"></div>
-  <details class="adv"><summary>More</summary><div>
+  <label class="row"><input type="checkbox" id="sAutoRen"> Auto rename: after each update, give the AppImage its own name without the version</label>
+  <div class="inl" id="sRenRow" style="align-items:center"><span class="hint" style="flex:1" id="sRenInfo"></span><button type="button" id="sRenAll"></button></div>
+  <details class="adv"><summary>Advanced</summary><div>
+    <label>GitHub token (optional)<input type="password" id="sTok" placeholder="ghp_… (raises the rate limit from 60 to 5000/hour)"></label>
+    <div class="hint" id="sTokInfo" style="margin-top:-6px"></div>
     <label>App list</label>
     <div class="btns" style="justify-content:flex-start;margin-top:-6px">
       <button type="button" id="sExport">Export list</button>
@@ -3648,6 +3923,14 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <div class="btns"><button type="button" class="ghost" onclick="dLaunch.close()">Cancel</button><button type="button" class="primary" id="lOk">Use this</button></div>
 </form></dialog>
 
+<dialog id="dRen"><form class="dlg" method="dialog" id="fRen">
+  <h2 id="rTitle">Rename file</h2>
+  <p>Updates keep writing to this name, and a Steam shortcut to the file is moved with it.</p>
+  <label>File name<input type="text" id="rName" maxlength="200" autocomplete="off" spellcheck="false"></label>
+  <div class="hint" id="rHint"></div>
+  <div class="btns"><button type="button" class="ghost" onclick="dRen.close()">Cancel</button><button type="button" class="ghost" id="rSuggest"></button><button class="primary" type="submit" id="rSave">Rename</button></div>
+</form></dialog>
+
 <dialog id="dCat"><form class="dlg" method="dialog" id="fCat">
   <h2 id="cTitle">Category</h2>
   <p>Apps with the same category are listed together.</p>
@@ -3665,7 +3948,7 @@ body:has(.padhint:not([hidden])) main{padding-bottom:96px}
   <h2 id="suTitle"></h2>
   <div class="hint" id="suMeta"></div>
   <div class="notes" id="suBody"></div>
-  <div class="btns"><button type="button" class="ghost" id="suSkip">Skip this version</button><button type="button" class="ghost" id="suLater">Later</button><button type="button" class="primary" id="suGo">Update now</button><button type="button" class="ghost" id="suClose">Close</button><button type="button" class="primary" id="suPrimary">Keep using SedotDeck</button></div>
+  <div class="btns"><button type="button" class="ghost" id="suSkip">Skip this version</button><button type="button" class="ghost" id="suLater">Later</button><button type="button" class="primary" id="suGo">Update now</button><button type="button" class="ghost" id="suClose">Close</button><button type="button" class="ghost" id="suCancel">Cancel download</button><button type="button" class="primary" id="suPrimary">Keep using SedotDeck</button></div>
 </form></dialog>
 <div id="menu" class="menu" role="menu" hidden></div>
 <div id="toast"></div>
@@ -3730,9 +4013,12 @@ function card(a){
   if(job){
     if(running){
       const dl=job.label=="Downloading"&&job.progress;
-      jobHtml=`<div class="bar ${dl?"dl":"wait"}"><i style="transform:scaleX(${dl?job.progress.toFixed(3):1})"></i></div><div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
+      const txt=`<div class="jobtxt">${esc(job.label)}… ${esc(job.message)}</div>`;
+      jobHtml=`<div class="bar ${dl?"dl":"wait"}"><i style="transform:scaleX(${dl?job.progress.toFixed(3):1})"></i></div>`
+        +(job.label=="Downloading"?`<div class="jobrow">${txt}<button type="button" class="ghost" data-a="cancel" data-id="${a.id}" ${job.cancel?"disabled":""}>${job.cancel?"Cancelling…":"Cancel"}</button></div>`:txt);
     }
     else if(job.state=="error") jobHtml=`<div class="err">${esc(job.message)}</div>`;
+    else if(job.state=="cancelled") jobHtml=`<div class="jobtxt">${esc(job.message)}</div>`;
   }
   if(doneAt[a.id]&&Date.now()-doneAt[a.id]<4000&&!running)
     jobHtml=`<div class="done-check">Installed ${esc(inst&&inst.tag||"")}</div>`;
@@ -3788,7 +4074,7 @@ function render(){
   $("#summary").innerHTML=useChips?chips.map(([k,t,n])=>`<button class="${FILTER==k?"on":""}" data-f="${k}" aria-pressed="${FILTER==k}">${t}<b>${n}</b></button>`).join(""):"";
   const shown=FILTER=="all"?apps:apps.filter(a=>status(a)==FILTER);
   if(!S.apps.length&&!foundLater&&(S.found||[]).some(f=>f.src)){L.innerHTML=""}  // the found banner is the next step
-  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or browse <a href="#" data-tab="rh">Recomp Haven</a>, the <a href="#" data-tab="qv">Quiver catalog</a>, <a href="#" data-tab="rl">Recomp Launcher</a> and <a href="#" data-tab="br">Browse</a>.</div>'}
+  else if(!S.apps.length){L.innerHTML='<div class="empty"><b>No apps yet</b>Use Add app with a link to any release page, <a href="#" data-tab="gh">search GitHub</a> for a game, or <a href="#" data-tab="br">browse</a> ports and recomps from seven catalogs.</div>'}
   else if(!shown.length){L.innerHTML='<div class="empty"><b>Nothing here</b>No apps match this filter.</div>'}
   else{
     const cats=[...new Set(shown.map(a=>a.category||""))].sort((x,y)=>!x-!y||x.localeCompare(y));
@@ -3850,6 +4136,13 @@ async function doAction(k,a,el){
   else if(k=="launch")act("/api/launch",{id},"Launching "+a.name);
   else if(k=="menu")openMenu(el,a);
   else if(k=="rollback"){if(await ask({title:`Roll back ${a.name}?`,text:"The previous version (.old) will be restored.",ok:"Roll back"}))act("/api/rollback",{id},"Rolled back")}
+  else if(k=="uninstall"){
+    const flat=a.installed.kind=="flatpak";
+    const ok=await ask({title:`Uninstall ${a.name}?`,ok:"Uninstall",danger:true,
+      text:(flat?"The Flatpak is uninstalled; its settings and saves in ~/.var/app stay. ":"Its files go to the Trash, so you can restore them. ")
+        +"It stays in My apps: Install puts it back"+(a.in_steam?", and its Steam shortcut works again.":".")});
+    if(ok)act("/api/uninstall",{id},`${a.name} uninstalled`);
+  }
   else if(k=="remove"){
     const r=await ask({title:`Remove ${a.name}?`,text:"SedotDeck will stop tracking it.",ok:"Remove",danger:true,
                        check:a.installed&&a.exists?"Also move its downloaded files to the Trash":""});
@@ -3861,12 +4154,12 @@ async function doAction(k,a,el){
   else if(k=="skip")act("/api/skip",{id},`Skipped ${a.latest.tag}. SedotDeck will tell you about the next version.`);
   else if(k=="unskip")act("/api/skip",{id,undo:true},`${a.name}: update offered again`);
   else if(k=="folder")act("/api/open_folder",{id});
-  else if(k=="rename")act("/api/rename",{id},r=>`Renamed to ${r.file}`);
+  else if(k=="renameto")openRename(a);
+  else if(k=="cancel")act("/api/cancel",{id});
   else if(k=="steam"&&!a.steam_exe)openLaunch(a,true);
   else if(k=="steam")addSteam(a);
   else if(k=="program")openLaunch(a,false);
   else if(k=="move")act("/api/move",{id},r=>`${a.name} now follows ${r.repo}`);
-  else if(k=="category")openCat([a.id]);
   else if(k=="rhpage")openUrl(RH.site+"#"+encodeURIComponent(a.rh_id));
   else if(k=="qvpage")openUrl(QV.site+"apps/"+encodeURIComponent(a.qv_id));
   else if(k=="rlpage")openUrl(RL.site+"game/"+encodeURIComponent(a.rl_id));
@@ -3919,27 +4212,29 @@ function openMenu(btn,a){
   if(menuFor==btn){closeMenu();return}
   const L=a.latest||{},st=status(a),here=a.installed&&a.exists,running=st=="busy";
   const it=(k,t,{hint="",danger=false,off=false}={})=>`<button type="button" role="menuitem" data-k="${k}" class="${danger?"danger":""}" ${off?"disabled":""}>${t}${hint?`<small>${hint}</small>`:""}</button>`;
-  const rows=[it("check","Check for updates",{off:running})];
-  if(L.notes&&st!="update")rows.push(it("notes",`Release notes ${esc(L.tag||"")}`));
-  if(st=="update")rows.push(it("skip",`Skip ${esc(L.tag||"")}`,{hint:"Get told about the next version instead"}));
-  if(a.skipped)rows.push(it("unskip",`Offer ${esc(L.tag||"")} again`));
-  if(a.has_backup)rows.push(it("rollback","Roll back to previous version",{off:running}));
+  // Grouped: this version, the file and how it starts, where it comes from, then managing the app itself.
+  const ver=[],file=[],links=[];
+  if(L.notes&&st!="update")ver.push(it("notes",`Release notes ${esc(L.tag||"")}`));
+  if(st=="update")ver.push(it("skip",`Skip ${esc(L.tag||"")}`,{hint:"Get told about the next version instead"}));
+  if(a.skipped)ver.push(it("unskip",`Offer ${esc(L.tag||"")} again`));
+  if(a.has_backup)ver.push(it("rollback","Roll back to previous version",{off:running}));
   if(S.steam&&here&&!a.in_steam)
-    rows.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":a.steam_exe?"Adds it as a Non-Steam game":"Pick its program first"}));
+    file.push(it("steam","Add to Steam",{off:S.steam_running,hint:S.steam_running?"Close Steam first (Steam menu > Exit)":a.steam_exe?"Adds it as a Non-Steam game":"Pick its program first"}));
   if(here&&a.installed.kind=="archive"){
     const lc=a.launch||{};
-    rows.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):a.has_launcher?"Automatic":"Not chosen yet"}));
-    rows.push(it("folder","Open folder"));
+    file.push(it("program","Choose program…",{off:running,hint:lc.file?esc(lc.file)+(lc.manual?"":" (automatic)"):a.has_launcher?"Automatic":"Not chosen yet"}));
+    file.push(it("folder","Open folder"));
   }
-  if(a.rename_to){const lock=a.in_steam&&S.steam_running;
-    rows.push(it("rename",`Rename file to ${esc(a.rename_to)}`,{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":a.in_steam?"Also updates its Steam shortcut":""}))}
-  rows.push(it("release","Open release page"));
-  if(a.rh_id)rows.push(it("rhpage","View on Recomp Haven"));
-  if(a.qv_id)rows.push(it("qvpage","View on quiverlauncher.com"));
-  if(a.rl_id)rows.push(it("rlpage","View on recomplauncher.com"));
-  if(a.br_url)rows.push(it("brpage","View on "+(BR_NAMES[a.br_src]||"Browse")));
-  rows.push("<hr>",it("category","Category…",{hint:a.category?esc(a.category):""}),it("edit","Edit"),it("remove","Remove…",{danger:true}));
-  menu.innerHTML=rows.join("");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
+  if(a.can_rename){const lock=a.in_steam&&S.steam_running;
+    file.push(it("renameto","Rename file…",{off:lock,hint:lock?"Close Steam first (Steam menu > Exit)":esc(a.file_name)}))}
+  links.push(it("release","Open release page"));
+  const cat=a.rh_id?["rhpage","Recomp Haven"]:a.qv_id?["qvpage","Quiver"]:a.rl_id?["rlpage","Recomp Launcher"]:a.br_url?["brpage",BR_NAMES[a.br_src]||"Browse"]:null;
+  if(cat)links.push(it(cat[0],"View on "+cat[1]));
+  const manage=[it("edit","Edit")];
+  if(a.installed)manage.push(it("uninstall","Uninstall…",{off:running,hint:"Keeps it in My apps"}));
+  manage.push(it("remove","Remove…",{danger:true}));
+  const rows=[ver,file,links,manage].filter(g=>g.length).map(g=>g.join(""));
+  menu.innerHTML=rows.join("<hr>");menu.hidden=false;menuFor=btn;menu.dataset.id=a.id;
   const r=btn.getBoundingClientRect(),m=menu.getBoundingClientRect();
   menu.style.left=Math.max(8,Math.min(r.right-m.width,innerWidth-m.width-8))+"px";
   menu.style.top=(r.bottom+6+m.height>innerHeight?Math.max(8,r.top-6-m.height):r.bottom+6)+"px";
@@ -4019,7 +4314,7 @@ $("#found").addEventListener("click",async e=>{
     t.disabled=true;foundKey="";
     act("/api/track_found",{items,rename:!!($("#fRen")&&$("#fRen").checked)},r=>`Tracking ${r.count} app(s), checking for updates…`);
   }
-  else if(t.dataset.link){const f=byPath(t.dataset.link);if(f)openAdd(null,{path:f.path,file:f.file})}
+  else if(t.dataset.link){const f=byPath(t.dataset.link);if(f)openAdd(null,{path:f.path,file:f.file,plain:f.plain})}
   else if(t.dataset.ign){foundKey="";act("/api/scan_ignore",{paths:[t.dataset.ign]},"Hidden. Settings can show it again.")}
 });
 $("#btnCheck").onclick=()=>act("/api/check",{});
@@ -4045,13 +4340,12 @@ function openAdd(a,adopt){
   $("#aCatg").value=a?a.category||"":"";$("#aSkip").value=a?a.skip_titles||"":"";$("#aLatest").checked=a?!!a.latest_only:false;
   $("#aAssets").hidden=true;$("#aTip").hidden=true;$("#aInfo").textContent="";lastPrev="";
   $("#aAdv").open=!!a;
-  $("#aUsing").hidden=$("#aRenL").hidden=!ADOPT;$("#aRen").checked=true;renName();
+  $("#aUsing").hidden=!ADOPT;$("#aRenL").hidden=!ADOPT||!ADOPT.plain||ADOPT.plain==ADOPT.file;$("#aRen").checked=true;
+  if(ADOPT)$("#aRenName").textContent=ADOPT.plain||"";
   if(ADOPT)$("#aUsing").innerHTML=`SedotDeck will keep <span class="mono">${esc(ADOPT.file)}</span> up to date. It keeps its name, so a Steam shortcut to it keeps working.`;
   dAdd.showModal();
   if(a)preview();else $("#aRepo").focus();
 }
-function renName(){$("#aRenName").textContent=($("#aName").value.trim().replace(/[^\w.-]+/g,"-").replace(/^-+|-+$/g,"")||"Name")+".AppImage"}
-$("#aName").addEventListener("input",renName);
 $("#btnAdd").onclick=()=>openAdd(null);
 const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 function patternFor(name){
@@ -4112,6 +4406,19 @@ $("#selRm").onclick=async()=>{
   if(r)act("/api/remove",{ids,delete_files:!!r.checked},x=>`Removed ${x.count} app(s)`);
 };
 let catIds=[];
+let renId="";
+function openRename(a){
+  renId=a.id;$("#rTitle").textContent=`Rename file · ${a.name}`;$("#rName").value=a.file_name||"";
+  $("#rHint").textContent=".AppImage is added if you leave it out.";
+  const sg=$("#rSuggest");sg.hidden=!a.rename_to;sg.textContent=`Use ${a.rename_to}`;
+  sg.onclick=()=>{$("#rName").value=a.rename_to;$("#rName").focus()};
+  dRen.showModal();const n=$("#rName"),dot=n.value.toLowerCase().lastIndexOf(".appimage");n.focus();n.setSelectionRange(0,dot>0?dot:n.value.length);
+}
+$("#fRen").onsubmit=e=>{e.preventDefault();const file=$("#rName").value.trim();
+  const a=S.apps.find(x=>x.id==renId);
+  if(!file||a&&file==a.file_name){dRen.close();return}
+  dRen.close();act("/api/rename",{id:renId,file},r=>`Renamed to ${r.file}`)};
+
 function openCat(ids){
   catIds=ids;const apps=S.apps.filter(a=>ids.includes(a.id)),same=[...new Set(apps.map(a=>a.category||""))];
   $("#cTitle").textContent=apps.length==1?`Category · ${apps[0].name}`:`Category · ${apps.length} apps`;
@@ -4122,16 +4429,22 @@ $("#fCat").onsubmit=e=>{e.preventDefault();saveCat($("#cName").value.trim())};
 $("#cClear").onclick=()=>saveCat("");
 
 // ---- tabs
-let TAB="apps";
+let TAB="apps",BRSRC="";
+const BR_CATS=["rh","qv","rl"];
+try{BRSRC=localStorage.getItem("sedotdeck.brsrc")||""}catch(e){}
+if($("#brSrc").querySelector(`option[value="${CSS.escape(BRSRC)}"]`))$("#brSrc").value=BRSRC;else BRSRC="";
 function setTab(t){
   TAB=t;try{localStorage.setItem("sedotdeck.tab",t)}catch(e){}
   $("#tabs").querySelectorAll("[data-tab]").forEach(b=>{b.classList.toggle("on",b.dataset.tab==t);b.setAttribute("aria-selected",b.dataset.tab==t)});
-  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#vRh").hidden=t!="rh";$("#vQv").hidden=t!="qv";$("#vRl").hidden=t!="rl";$("#vBr").hidden=t!="br";$(".tabs-end").hidden=t!="apps";
+  // Recomp Haven, Quiver and Recomp Launcher keep their own detailed view, picked from Browse's Source list.
+  const cat=t=="br"&&BR_CATS.includes(BRSRC)?BRSRC:"";
+  $("#vApps").hidden=t!="apps";$("#vGh").hidden=t!="gh";$("#brBar").hidden=t!="br";$("#vBr").hidden=t!="br"||!!cat;
+  $("#vRh").hidden=cat!="rh";$("#vQv").hidden=cat!="qv";$("#vRl").hidden=cat!="rl";$(".tabs-end").hidden=t!="apps";
   if(t!="apps"&&SEL)setSel(false);
-  if(t=="rh")loadRh(false);
-  if(t=="qv")loadQv(false);
-  if(t=="rl")loadRl(false);
   if(t=="br")loadBr(false);
+  if(cat=="rh")loadRh(false);
+  if(cat=="qv")loadQv(false);
+  if(cat=="rl")loadRl(false);
   if(t=="gh")$("#ghQ").focus();
 }
 document.addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(b){e.preventDefault();setTab(b.dataset.tab)}});
@@ -4174,7 +4487,6 @@ function rhCard(x,tracked){
 }
 function renderRh(){
   if(!RH.items)return;
-  if(RH.logo&&$("#rhLogo"))$("#rhLogo").src=RH.logo;
   rhKey=S.apps.map(a=>a.host+"/"+a.repo).join();
   const tracked=new Set(S.apps.map(a=>(a.host+"/"+a.repo).toLowerCase()));
   // The system list only offers systems that have something to install, with counts.
@@ -4349,8 +4661,7 @@ $("#rlList").onclick=async e=>{
 };
 
 // ---- Browse: ports, decomps and recomps from four sites, merged by repository
-const BR_NAMES={ub:"unbaked.games",db:"DecompBuddy",fg:"FanGamesDB",ge:"The Gaming Emporium"};
-const BR_ALSO={rh:"Recomp Haven",qv:"Quiver",rl:"Recomp Launcher"};
+const BR_NAMES={ub:"unbaked.games",db:"DecompBuddy",fg:"FanGamesDB",ge:"The Gaming Emporium",rh:"Recomp Haven",qv:"Quiver",rl:"Recomp Launcher"};
 let BR={items:null,sources:{},fetched_at:0,stale:false},brLoading=false,brAdding=new Set(),brKey="",brShow=200;
 const BR_PAGE=200;  // thousands of cards at once make typing in the search box lag on the Deck
 try{$("#brSort").value=localStorage.getItem("sedotdeck.brsort")||"sources"}catch(e){}
@@ -4371,13 +4682,16 @@ const BR_SORT={
 function brCard(x,tracked){
   // Entries with a repository match by it; DecompBuddy and Emporium links are the site's own home page, not the entry's.
   const added=x.key?tracked.has(x.key):tracked.has(x.sources[0].url),busy=brAdding.has(brId(x));
+  const initials=x.title.replace(/^the\s+/i,"").split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase();
   const badges=x.sources.map(s=>{const m=BR.sources[s.src]||{},name=m.name||BR_NAMES[s.src]||s.src;
     return `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(name)}" aria-label="${esc(name)}"><img class="br-ico" src="${esc(m.icon||"")}" alt="" loading="lazy" onerror="this.remove()"></a>`}).join("");
-  return `<div class="rh-card"><div class="rh-body">
+  return `<div class="rh-card" title="${esc(x.summary||"")}">
+    <div class="rh-cover">${esc(initials)}${x.cover?`<img src="${esc(x.cover)}" alt="" loading="lazy" onerror="this.remove()">`:""}</div>
+    <div class="rh-body">
       <div class="rh-title">${esc(x.title)}</div>
       <div class="rh-meta"><span class="tag" title="${esc(brCon(x.console))}">${esc(brCon(x.console))}</span>${x.deck?'<span class="tag added">Tested on Steam Deck</span>':""}${x.status?`<span>${esc(x.status)}</span>`:""}${x.stars>0?`<span class="rh-stars" title="${x.stars.toLocaleString()} GitHub stars">★ ${stars(x.stars)}</span>`:""}</div>
       <div class="rh-meta">${badges}${x.repo?`<span class="mono" title="${esc(x.host+"/"+x.repo)}">${esc(x.repo)}</span>`:""}</div>
-      ${x.also.length?`<div class="rh-req">Also in ${x.also.map(c=>BR_ALSO[c]).join(", ")}</div>`:""}
+      ${x.summary?`<div class="rh-req">${esc(x.summary)}</div>`:""}
       <div class="rh-act">${added?'<span class="added">In My apps</span>':`<button class="primary" data-br="${esc(brId(x))}" ${busy?"disabled":""}>${busy?"Adding…":"Add"}</button>`}</div>
     </div></div>`;
 }
@@ -4385,15 +4699,15 @@ function renderBr(){
   if(!BR.items)return;
   brKey=S.apps.map(a=>a.host+"/"+a.repo).join();
   const tracked=new Set(S.apps.flatMap(a=>[(a.host+"/"+a.repo).toLowerCase(),a.br_url].filter(Boolean)));
-  const src=$("#brSrc"),scur=src.value;
-  src.innerHTML='<option value="">All sources</option>'+Object.keys(BR.sources).map(k=>`<option value="${esc(k)}">${esc(BR.sources[k].name)} (${BR.sources[k].count})</option>`).join("");
-  src.value=BR.sources[scur]?scur:"";
+  const src=$("#brSrc");
+  // The options are in the markup, so switching sources still works when Browse itself failed to load; counts come later.
+  for(const o of src.options)if(o.value&&BR.sources[o.value])o.textContent=`${BR.sources[o.value].name} (${BR.sources[o.value].count})`;
   const con=$("#brCon"),ccur=con.value,per={};
   BR.items.forEach(x=>per[brCon(x.console)]=(per[brCon(x.console)]||0)+1);
   con.innerHTML='<option value="">All systems</option>'+Object.keys(per).sort((a,b)=>a.localeCompare(b))
     .map(k=>`<option value="${esc(k)}">${esc(k)} (${per[k]})</option>`).join("");
   con.value=per[ccur]?ccur:"";
-  const q=$("#brQ").value.trim().toLowerCase(),sel=src.value,system=con.value,deck=$("#brDeck").checked,sort=$("#brSort").value;
+  const q=$("#brQ").value.trim().toLowerCase(),sel=BR_CATS.includes(src.value)?"":src.value,system=con.value,deck=$("#brDeck").checked,sort=$("#brSort").value;
   const list=BR.items.filter(x=>(!system||brCon(x.console)==system)&&(!sel||x.sources.some(s=>s.src==sel))&&(!deck||x.deck)
     &&(!q||[x.title,x.console,x.repo].join(" ").toLowerCase().includes(q))).sort(BR_SORT[sort]||BR_SORT.sources);
   const when=BR.fetched_at?`Updated ${ago(BR.fetched_at)}`:"";
@@ -4409,7 +4723,8 @@ function renderBr(){
   }else $("#brList").innerHTML=shown.map(x=>brCard(x,tracked)).join("")+more;
 }
 const brFilter=()=>{brShow=BR_PAGE;renderBr()};
-$("#brQ").oninput=brFilter;$("#brSrc").onchange=brFilter;$("#brCon").onchange=brFilter;$("#brDeck").onchange=brFilter;
+$("#brQ").oninput=brFilter;
+$("#brSrc").onchange=()=>{BRSRC=$("#brSrc").value;try{localStorage.setItem("sedotdeck.brsrc",BRSRC)}catch(e){}setTab("br");brFilter()};$("#brCon").onchange=brFilter;$("#brDeck").onchange=brFilter;
 $("#brSort").onchange=()=>{try{localStorage.setItem("sedotdeck.brsort",$("#brSort").value)}catch(e){}brFilter()};
 $("#brInfo").onclick=e=>{if(e.target.id=="brRefresh"){e.preventDefault();BR.items=null;loadBr(true)}};
 $("#brList").onclick=async e=>{
@@ -4417,11 +4732,12 @@ $("#brList").onclick=async e=>{
   const b=e.target.closest("[data-br]");if(!b)return;
   const x=BR.items.find(i=>brId(i)==b.dataset.br);if(!x)return;
   // "View on …" should open the entry's own page when a source has one (FanGamesDB, unbaked.games).
-  const s=x.sources.find(s=>s.src=="fg"||s.src=="ub")||x.sources[0];
+  const s=x.sources.find(s=>s.src=="fg"||s.src=="ub")||x.sources.find(s=>!BR_CATS.includes(s.src));
+  const ids={};for(const c of x.sources)if(BR_CATS.includes(c.src)&&c.id)ids[c.src+"_id"]=c.id;
   brAdding.add(brId(x));renderBr();
   try{
     const repo=x.repo?"https://"+x.host+"/"+x.repo:(await api("/api/browse_resolve",{slug:x.ub_slug})).repo;
-    await api("/api/add",{repo,name:x.title,br_src:s.src,br_url:s.url});
+    await api("/api/add",{repo,name:x.title,...ids,...(s?{br_src:s.src,br_url:s.url}:{})});
     toast(`${x.title} added to My apps, checking for its release…`);await refresh();
   }catch(err){toast(err.message,true)}
   brAdding.delete(brId(x));renderBr();
@@ -4487,6 +4803,7 @@ function selfPaint(){
   for(const id of ["#suSkip","#suLater","#suGo"])$(id).hidden=!offer;
   $("#suGo").textContent=selfCan()?"Update now":"Open release page";
   $("#suClose").hidden=!err;
+  $("#suCancel").hidden=!prog;$("#suCancel").disabled=!!j.cancel;
   $("#suPrimary").hidden=offer;
   $("#suPrimary").textContent=prog?"Keep using SedotDeck":done?"Close":"Try again";
 }
@@ -4508,6 +4825,7 @@ async function startSelf(){
 }
 // Called once when the download job ends: the open dialog changes view, a closed one leaves a toast or the header note.
 function selfEnd(j){
+  if(j.state=="cancelled"){selfMode=null;if(dSelf.open)selfPaint();toast(j.message);return}
   const ok=j.state=="done";
   if(ok&&SELF)selfTag=SELF.latest;
   if(dSelf.open){selfMode=ok?"done":"error";selfErr=j.message||"";selfPaint()}
@@ -4518,18 +4836,24 @@ $("#suGo").onclick=()=>{if(selfCan())startSelf();else{dSelf.close();openUrl(SELF
 $("#suSkip").onclick=()=>{dSelf.close();act("/api/self_update_skip",{tag:SELF.latest},`Skipped ${SELF.latest}. You'll be asked again for the next version.`)};
 $("#suLater").onclick=()=>dSelf.close();
 $("#suClose").onclick=()=>dSelf.close();
+$("#suCancel").onclick=()=>act("/api/cancel",{id:"__self__"});
 $("#suPrimary").onclick=()=>{if(selfMode=="error")startSelf();else dSelf.close()};
 $("#sSelf").onclick=()=>{dSet.close();checkSelf(true)};
 
 $("#btnSet").onclick=()=>{
-  $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTok").value="";
+  $("#sDir").value=S.settings.install_dir||"";$("#sBak").checked=!!S.settings.keep_backup;$("#sTheme").value=S.settings.theme||"dark";
+  $("#sAutoRen").checked=!!S.settings.auto_rename;
+  const ren=S.apps.filter(a=>a.rename_to);$("#sRenRow").hidden=!ren.length;
+  $("#sRenAll").textContent=`Rename ${ren.length} file${ren.length>1?"s":""} now`;
+  $("#sRenInfo").textContent=ren.slice(0,2).map(a=>`${a.file_name} → ${a.rename_to}`).join(", ")+(ren.length>2?`, and ${ren.length-2} more`:"");
+  $("#sRenAll").disabled=S.steam_running&&ren.some(a=>a.in_steam);$("#sRenAll").title=$("#sRenAll").disabled?"Close Steam first (Steam menu > Exit)":"";$("#sTok").value="";
   $("#sTokInfo").innerHTML=S.settings.has_token?'Token saved. <a href="#" id="clrTok">Remove token</a>':"No token set.";
   const c=$("#clrTok");if(c)c.onclick=ev=>{ev.preventDefault();act("/api/settings",{clear_token:true},"Token removed");dSet.close()};
   const sum=k=>S.apps.reduce((t,a)=>t+(a[k]||0),0),old=sum("old_disk"),n=S.settings.scan_ignored||0;
   $("#sDisk").textContent=`Apps use ${size(sum("disk"))}. Previous versions (.old, for Rollback) use ${size(old)}.`;
   $("#sClean").disabled=!old;
   $("#sUnhide").hidden=!n;$("#sUnhide").textContent=`Show ${n} hidden file${n>1?"s":""} again`;
-  dSet.showModal();
+  dSet.returnValue="";dSet.showModal();
 };
 const size=b=>b>=1e9?(b/1e9).toFixed(1)+" GB":(b/1e6).toFixed(0)+" MB";
 $("#sClean").onclick=async()=>{
@@ -4537,7 +4861,14 @@ $("#sClean").onclick=async()=>{
   act("/api/clean_backups",{},r=>`Deleted ${r.removed} backup(s), freed ${size(r.freed)}`);dSet.close();
 };
 $("#sUnhide").onclick=()=>{foundKey="";foundLater=false;act("/api/scan_ignore",{clear:true},"Hidden files are shown again");dSet.close()};
-$("#fSet").onsubmit=e=>{e.preventDefault();act("/api/settings",{install_dir:$("#sDir").value,keep_backup:$("#sBak").checked,github_token:$("#sTok").value},"Settings saved");dSet.close()};
+$("#sTheme").onchange=()=>applyTheme($("#sTheme").value);
+$("#sRenAll").onclick=()=>{dSet.close();act("/api/rename_all",{},r=>{
+  const n=r.renamed.length,f=r.failed;
+  return (n?`Renamed ${n} file${n>1?"s":""}`:"Nothing renamed")+(f.length?`. ${f[0].name}: ${f[0].error}`+(f.length>1?` (and ${f.length-1} more)`:""):"")})};
+dSet.addEventListener("close",()=>{if(dSet.returnValue!="saved")applyTheme(S.settings.theme||"dark")});
+$("#fSet").onsubmit=e=>{e.preventDefault();const theme=$("#sTheme").value;
+  act("/api/settings",{install_dir:$("#sDir").value,keep_backup:$("#sBak").checked,auto_rename:$("#sAutoRen").checked,theme,github_token:$("#sTok").value},"Settings saved");
+  S.settings.theme=theme;dSet.close("saved")};
 $("#sOpen").onclick=()=>act("/api/open",{});
 $("#sExport").onclick=async()=>{
   try{
