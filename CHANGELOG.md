@@ -4,6 +4,10 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-04
+
+SedotDeck 0.1.0 leaves alpha: each catalog in its own style, save backups before every update, a new look with sounds for the controller, plus themes, uninstall and downloads you can cancel.
+
 - Fewer tabs: My apps, Browse and Search GitHub. Browse shows the seven catalogs one at a time, each picked from a row of buttons with the site's own icon and drawn in its own site's colors, typefaces and card shape (light or dark where the site has both); Recomp Haven, Quiver and Recomp Launcher keep their own tiers and filters
 - My apps shows each app's box art when a catalog lists its repository. With fewer than eight apps, Steam Deck-tested projects (the most starred among the latest releases, one per series) and a way into each catalog sit under the list; an empty My apps starts with a box to paste a release link
 - Save backups: Saves… in the app menu (and `sedotdeck.py saves`) sets where a game keeps its saves, with suggestions named after the game. The folder is zipped before every update and on Back up now, the newest 10 kept in `~/Applications/Save backups`. Restore backs up the current saves first and moves them to the Trash, so it can be undone. If the backup fails, the update doesn't run
@@ -84,7 +88,8 @@ First alpha of SedotDeck, the app formerly called DeckPort.
 
 Coming from DeckPort? Your app list moves over on first start.
 
-[Unreleased]: https://github.com/intermission88/SedotDeck/compare/v0.0.4-alpha...HEAD
+[Unreleased]: https://github.com/intermission88/SedotDeck/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/intermission88/SedotDeck/releases/tag/v0.1.0
 [0.0.4-alpha]: https://github.com/intermission88/SedotDeck/releases/tag/v0.0.4-alpha
 [0.0.3-alpha]: https://github.com/intermission88/SedotDeck/releases/tag/v0.0.3-alpha
 [0.0.2-alpha]: https://github.com/intermission88/SedotDeck/releases/tag/v0.0.2-alpha

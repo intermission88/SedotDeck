@@ -45,7 +45,7 @@ from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.0.4-alpha"
+VERSION = "0.1.0"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sedotdeck"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_PORT = 8765

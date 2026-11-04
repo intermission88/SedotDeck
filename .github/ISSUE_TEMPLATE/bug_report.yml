@@ -7,7 +7,7 @@ body:
     attributes:
       label: SedotDeck version
       description: Shown next to the SedotDeck title, or run `sedotdeck --version`.
-      placeholder: 0.0.4-alpha
+      placeholder: 0.1.0
     validations:
       required: true
   - type: dropdown

@@ -18,15 +18,16 @@
 </div>
 
 > [!IMPORTANT]
-> **Written by AI, in alpha.** [Claude](https://claude.com/claude-code) writes the code; [intermission88](https://github.com/intermission88) decides what it does, reviews every change and tests it on a Steam Deck.
+> **Written by AI.** [Claude](https://claude.com/claude-code) writes the code; [intermission88](https://github.com/intermission88) decides what it does, reviews every change and tests it on a Steam Deck.
 
 ## Features
 
 - **Update all in one click** for releases on GitHub, GitLab, Codeberg, Gitea and Forgejo, pre-releases and nightlies too if you turn them on. SedotDeck picks the Linux file itself; a repo with only tags installs from the tag's source code.
-- **Browse and add** from one list that merges [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/) by repository, or search GitHub. Pick Recomp Haven, Quiver or Recomp Launcher as the source for its tiers and filters.
+- **Browse and add** from [Recomp Haven](https://recomphaven.com/), [Quiver](https://quiverlauncher.com/), [Recomp Launcher](https://recomplauncher.com/), [unbaked.games](https://unbaked.games/), [DecompBuddy](https://decompbuddy.com/), [FanGamesDB](https://fangamesdb.com/) and [The Gaming Emporium](https://thegamingemporium.com/), one catalog at a time and each in its own site's look, or search GitHub by the game's name.
+- **Save backups**: pick a game's save folder once; SedotDeck zips it before every update and puts any backup back when you ask.
 - **Steam shortcuts keep working**: paths never change on update. Works for AppImages, Flatpaks, zipped ports and Windows `.exe` through Proton.
-- **Safe**: SHA-256 checks, Rollback, saves untouched, running games left alone.
-- **Game Mode** plugin for Decky, with controller support.
+- **Safe**: SHA-256 checks, Rollback, Uninstall to the Trash, running games left alone.
+- **Made for the controller**: D-pad navigation with sound effects, and a Game Mode plugin for Decky.
 - **No `pip`, no `sudo`**: one Python file on SteamOS's own Python.
 
 ## Install
@@ -73,7 +74,7 @@ Steam overwrites `shortcuts.vdf` when it exits. In Game Mode the Decky plugin us
 <details>
 <summary><b>Where is my data?</b></summary>
 
-Settings in `~/.config/sedotdeck/`, games in `~/Applications/`. No telemetry.
+Settings in `~/.config/sedotdeck/`, games in `~/Applications/`, save backups in `~/Applications/Save backups/`. No telemetry.
 </details>
 
 <details>
