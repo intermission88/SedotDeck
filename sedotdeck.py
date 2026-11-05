@@ -3051,15 +3051,16 @@ class Server:
             if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app, honor_skip=False):
                 # Installed and current: don't download the same release again.
                 raise ValueError("%s is already up to date" % app["name"])
+            if not self.install(app):
+                raise ValueError("Wait for %s to finish first" % app["name"])
             app.pop("skip", None)  # updating on purpose undoes "Skip this version"
-            targets = [app]
+            return {"ok": True, "count": 1}
         elif body.get("ids"):
             targets = [a for a in self._apps(body) if has_update(a, honor_skip=False)]
         else:
             targets = [a for a in cfg["apps"] if has_update(a)]
-        for a in targets:
-            self.install(a)
-        return {"ok": True, "count": len(targets)}
+        # An app that is still checking or downloading is skipped, so count only the jobs that started.
+        return {"ok": True, "count": sum(1 for a in targets if self.install(a))}
 
     def api_skip(self, body):
         app = self._app(body)
@@ -4973,7 +4974,7 @@ $("#found").addEventListener("click",async e=>{
   else if(t.dataset.ign){foundKey="";act("/api/scan_ignore",{paths:[t.dataset.ign]},"Hidden. Settings can show it again.")}
 });
 $("#btnCheck").onclick=()=>act("/api/check",{});
-$("#btnUpdAll").onclick=()=>act("/api/update",{},r=>`Updating ${r.count} app(s)`);
+$("#btnUpdAll").onclick=()=>act("/api/update",{},r=>r.count?`Updating ${r.count} app(s)`:"Wait for the running checks to finish");
 if(APP){
   // Links open in the system browser instead of navigating the app window.
   document.addEventListener("click",e=>{

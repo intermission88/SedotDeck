@@ -4,6 +4,9 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [Unreleased]
 
+**Fixes**
+- Pressing Update or Install while an app was still checking did nothing, though SedotDeck said it was updating. It now asks you to wait, and Update all counts only the apps it started
+
 ## [0.1.0] - 2026-11-04
 
 SedotDeck 0.1.0 leaves alpha: save backups before every update, uninstall, downloads you can cancel, and a redesign with themes and controller sounds.
