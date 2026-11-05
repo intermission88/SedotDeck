@@ -771,12 +771,6 @@ def launch_candidates(folder, wants=()):
     return out
 
 
-def find_main_exe(folder, wants):
-    """The program SedotDeck picks by itself in a folder port, preferring a Linux one named like the app."""
-    best = next((c for c in launch_candidates(folder, wants) if c["auto"]), None)
-    return best["path"] if best else None
-
-
 def _app_wants(app):
     return stem_of(app["name"]), stem_of((app.get("repo") or "").split("/")[-1])
 
@@ -2925,415 +2919,446 @@ class Server:
 
     def handle(self, path, body):
         self.sync()
+        name = path[len("/api/"):] if path.startswith("/api/") else ""
+        fn = getattr(self, "api_" + name, None) if re.fullmatch(r"[a-z_]+", name) else None
+        if fn is None:
+            raise LookupError("unknown endpoint")
+        return fn(body)
+
+    def api_state(self, body):
+        return self.state()
+
+    def api_preview(self, body):
+        src = resolve_source(body.get("repo", ""))
+        if body.get("skip_titles"):
+            re.compile(body["skip_titles"])
+        rel = fetch_release(src, body.get("prerelease", False),
+                            self.gh_token() if src["provider"] == "github" else "",
+                            body.get("skip_titles", ""), bool(body.get("latest_only")))
+        pattern = body.get("pattern", "")
+        assets = rel.get("assets", [])
+        picked = pick_release_asset(rel, pattern)
+        return {
+            "repo": display_repo(src),
+            "provider": src["provider"],
+            "tag": rel.get("tag_name"),
+            "assets": [{"name": a["name"], "size": a.get("size", 0)} for a in assets],
+            "picked": picked["name"] if picked else None,
+        }
+
+    def api_track_found(self, body):
         cfg = self.cfg
-        if path == "/api/state":
-            return self.state()
-
-        if path == "/api/preview":
-            src = resolve_source(body.get("repo", ""))
-            if body.get("skip_titles"):
-                re.compile(body["skip_titles"])
-            rel = fetch_release(src, body.get("prerelease", False),
-                                self.gh_token() if src["provider"] == "github" else "",
-                                body.get("skip_titles", ""), bool(body.get("latest_only")))
-            pattern = body.get("pattern", "")
-            assets = rel.get("assets", [])
-            picked = pick_release_asset(rel, pattern)
-            return {
-                "repo": display_repo(src),
-                "provider": src["provider"],
-                "tag": rel.get("tag_name"),
-                "assets": [{"name": a["name"], "size": a.get("size", 0)} for a in assets],
-                "picked": picked["name"] if picked else None,
-            }
-
-        if path == "/api/track_found":
-            # Files from the folder scan: each becomes a tracked app that updates that exact file.
-            # Everything is validated first, so one bad item changes nothing.
-            plan, seen = [], set()
-            with _lock:
-                for item in body.get("items") or []:
-                    path_ = validate_adopt_path(cfg, item.get("path"), item.get("app_id"))
-                    if path_ in seen:
-                        raise ValueError("%s is listed twice" % os.path.basename(path_))
-                    seen.add(path_)
-                    if item.get("app_id"):
-                        app = self._app({"id": item["app_id"]})
-                    else:
-                        app = new_app("", item.get("name", ""), src=resolve_source(item.get("src", "")))
-                        if any(same_source(a, app) for a in cfg["apps"]) or any(same_source(a, app) for a, _p in plan):
-                            raise ValueError("%s is already tracked" % display_repo(app))
-                    plan.append((app, path_))
-                for app, path_ in plan:
-                    if app not in cfg["apps"]:
-                        cfg["apps"].append(app)
-                    app["target_path"] = path_
-                self.save()
+        # Files from the folder scan: each becomes a tracked app that updates that exact file.
+        # Everything is validated first, so one bad item changes nothing.
+        plan, seen = [], set()
+        with _lock:
+            for item in body.get("items") or []:
+                path_ = validate_adopt_path(cfg, item.get("path"), item.get("app_id"))
+                if path_ in seen:
+                    raise ValueError("%s is listed twice" % os.path.basename(path_))
+                seen.add(path_)
+                if item.get("app_id"):
+                    app = self._app({"id": item["app_id"]})
+                else:
+                    app = new_app("", item.get("name", ""), src=resolve_source(item.get("src", "")))
+                    if any(same_source(a, app) for a in cfg["apps"]) or any(same_source(a, app) for a, _p in plan):
+                        raise ValueError("%s is already tracked" % display_repo(app))
+                plan.append((app, path_))
             for app, path_ in plan:
-                self.adopt(app, path_, body.get("rename", False))
-            return {"ok": True, "count": len(plan)}
-
-        if path == "/api/scan_ignore":
-            with _lock:
-                s = cfg["settings"]
-                if body.get("clear"):
-                    s["scan_ignored"] = []
-                else:
-                    keep = [p for p in (s.get("scan_ignored") or []) if os.path.exists(p)]
-                    s["scan_ignored"] = (keep + [p for p in body.get("paths") or [] if isinstance(p, str) and p not in keep])[-200:]
-                self.save()
-            return {"ok": True}
-
-        if path == "/api/add":
-            app = new_app(body.get("repo", ""), body.get("name", ""), body.get("pattern", ""),
-                          body.get("prerelease", False))
-            apply_options(app, body)
-            if body.get("rh_id"):
-                app["rh_id"] = str(body["rh_id"])[:120]
-            if body.get("qv_id"):
-                app["qv_id"] = str(body["qv_id"])[:120]
-            if body.get("rl_id"):
-                app["rl_id"] = str(body["rl_id"])[:120]
-            if body.get("br_src") or body.get("br_url"):
-                br_src, br_url = str(body.get("br_src") or ""), str(body.get("br_url") or "")
-                if br_src not in BR_SOURCES:
-                    raise ValueError("Unknown Browse source")
-                if not _br_same_site(BR_SOURCES[br_src]["site"], br_url):
-                    raise ValueError("A Browse link has to be an https page on that source's own site")
-                app["br_src"] = br_src
-                app["br_url"] = br_url[:300]
-            with _lock:
-                if any(same_source(a, app) for a in cfg["apps"]):
-                    raise ValueError("%s is already tracked" % display_repo(app))
-                adopt = validate_adopt_path(cfg, body["adopt_path"]) if body.get("adopt_path") else None
-                if adopt:
-                    app["target_path"] = adopt  # claim the file now so the folder scan stops offering it
-                cfg["apps"].append(app)
-                self.save()
-            if adopt:
-                self.adopt(app, adopt, body.get("rename", False))
-            else:
-                self.check(app)
-            return {"ok": True, "id": app["id"]}
-
-        if path == "/api/edit":
-            app = self._app(body)
-            with _lock:
-                if "name" in body and body["name"].strip():
-                    app["name"] = body["name"].strip()
-                apply_options(app, body)
-                adopt = validate_adopt_path(cfg, body["adopt_path"], app["id"]) if body.get("adopt_path") else None
-                if adopt:
-                    app["target_path"] = adopt
-                app["latest"] = None
-                self.save()
-            if adopt:
-                self.adopt(app, adopt, body.get("rename", False))
-            else:
-                self.check(app)
-            return {"ok": True}
-
-        if path == "/api/check":
-            targets = self._apps(body) if body.get("id") or body.get("ids") else list(cfg["apps"])
-            for a in targets:
-                self.check(a)
-            return {"ok": True}
-
-        if path == "/api/update":
-            if body.get("id"):
-                app = self._app(body)
-                inst = app.get("installed") or {}
-                if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app, honor_skip=False):
-                    # Installed and current: don't download the same release again.
-                    raise ValueError("%s is already up to date" % app["name"])
-                app.pop("skip", None)  # updating on purpose undoes "Skip this version"
-                targets = [app]
-            elif body.get("ids"):
-                targets = [a for a in self._apps(body) if has_update(a, honor_skip=False)]
-            else:
-                targets = [a for a in cfg["apps"] if has_update(a)]
-            for a in targets:
-                self.install(a)
-            return {"ok": True, "count": len(targets)}
-
-        if path == "/api/skip":
-            app = self._app(body)
-            with _lock:
-                la = (app.get("latest") or {}).get("asset")
-                if body.get("undo") or not la:
-                    app.pop("skip", None)
-                else:
-                    app["skip"] = {"asset_id": la["id"], "updated_at": la["updated_at"], "tag": app["latest"].get("tag", "")}
-                self.save()
-            return {"ok": True}
-
-        if path == "/api/steam_add":
-            app = self._app(body)
-            added = add_to_steam(app)
-            return {"ok": True, "added": added, "proton": bool((steam_target(app) or ("", "", False))[2])}
-
-        if path == "/api/launch_choices":
-            app = self._app(body)
-            folder = (app.get("installed") or {}).get("path") or ""
-            if not os.path.isdir(folder) or is_flatpak(app):
-                raise ValueError("%s is not installed as a folder" % app["name"])
-            lc = app.get("launch") or {}
-            return {"ok": True, "manual": bool(lc.get("manual")), "current": lc.get("file", ""),
-                    "choices": [{k: c[k] for k in ("file", "kind", "size")} for c in launch_candidates(folder, _app_wants(app))[:200]]}
-
-        if path == "/api/set_launch":
-            app = self._app(body)
-            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
-                raise ValueError("Wait for %s to finish first" % app["name"])
-            with _lock:
-                lc = set_launch_file(app, cfg["settings"], str(body.get("file") or ""))
-                self.save()
-            exe, start, proton = steam_target(app) or ("", "", False)
-            return {"ok": True, "launch": lc, "steam_exe": exe, "steam_dir": start, "proton": proton}
-
-        if path == "/api/rename":
-            app = self._app(body)
-            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
-                raise ValueError("Wait for %s to finish first" % app["name"])
-            with _lock:
-                new = rename_app_file(app, name=body.get("file") or None)
-                self.save()
-            return {"ok": True, "file": os.path.basename(new)}
-
-        if path == "/api/rename_all":
-            busy = {k for k, j in self.jobs.snapshot().items() if j.get("state") == "running"}
-            with _lock:
-                renamed, failed = rename_all([a for a in cfg["apps"] if a["id"] not in busy])
-                self.save()
-            return {"ok": True, "renamed": renamed, "failed": [{"name": n, "error": e} for n, e in failed]}
-
-        if path == "/api/clean_backups":
-            removed = freed = 0
-            with _lock:
-                for a in cfg["apps"]:
-                    p = (a.get("installed") or {}).get("path") or ""
-                    if p and os.path.isfile(p + ".old"):
-                        freed += os.path.getsize(p + ".old")
-                        os.remove(p + ".old")
-                        removed += 1
-            return {"ok": True, "removed": removed, "freed": freed}
-
-        if path == "/api/saves":
-            app = self._app(body)
-            st = cfg["settings"]
-            return {"save_dir": app.get("save_dir") or "", "save_short": short_home(app.get("save_dir") or ""),
-                    "exists": bool(app.get("save_dir") and os.path.isdir(app["save_dir"])),
-                    "folder": short_home(save_backup_dir(app, st)), "keep": SAVE_KEEP,
-                    "backups": list_save_backups(app, st),
-                    "suggestions": [] if body.get("no_suggest") else save_candidates(app)}
-
-        if path == "/api/saves_set":
-            app = self._app(body)
-            p = validate_save_dir(body["path"]) if (body.get("path") or "").strip() else ""
-            with _lock:
-                if p:
-                    app["save_dir"] = p
-                else:
-                    app.pop("save_dir", None)
-                self.save()
-            return {"ok": True, "save_dir": p}
-
-        if path in ("/api/saves_backup", "/api/saves_restore"):
-            app = self._app(body)
-            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
-                raise ValueError("Wait for %s to finish first" % app["name"])
-            with _lock:
-                if path == "/api/saves_backup":
-                    name = backup_saves(app, cfg["settings"])
-                    if not name:
-                        raise ValueError("The save folder doesn't exist yet. Play once, then back up")
-                    self.save()
-                    return {"ok": True, "name": name}
-                undo = restore_saves(app, cfg["settings"], body.get("name") or "")
-                self.save()
-            return {"ok": True, "undo": undo}
-
-        if path == "/api/saves_open":
-            d = save_backup_dir(self._app(body), cfg["settings"])
-            os.makedirs(d, exist_ok=True)
-            open_path(d)
-            return {"ok": True}
-
-        if path == "/api/rollback":
-            app = self._app(body)
-            if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
-                raise ValueError("Wait for %s to finish first" % app["name"])
-            rollback_app(app)
+                if app not in cfg["apps"]:
+                    cfg["apps"].append(app)
+                app["target_path"] = path_
             self.save()
-            return {"ok": True}
+        for app, path_ in plan:
+            self.adopt(app, path_, body.get("rename", False))
+        return {"ok": True, "count": len(plan)}
 
-        if path == "/api/uninstall":
-            targets = self._apps(body)
-            running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
-            if running:
-                raise ValueError("Wait for %s to finish first" % ", ".join(running))
-            for app in targets:  # before anything is deleted, so a refusal changes nothing
+    def api_scan_ignore(self, body):
+        cfg = self.cfg
+        with _lock:
+            s = cfg["settings"]
+            if body.get("clear"):
+                s["scan_ignored"] = []
+            else:
+                keep = [p for p in (s.get("scan_ignored") or []) if os.path.exists(p)]
+                s["scan_ignored"] = (keep + [p for p in body.get("paths") or [] if isinstance(p, str) and p not in keep])[-200:]
+            self.save()
+        return {"ok": True}
+
+    def api_add(self, body):
+        cfg = self.cfg
+        app = new_app(body.get("repo", ""), body.get("name", ""), body.get("pattern", ""),
+                      body.get("prerelease", False))
+        apply_options(app, body)
+        if body.get("rh_id"):
+            app["rh_id"] = str(body["rh_id"])[:120]
+        if body.get("qv_id"):
+            app["qv_id"] = str(body["qv_id"])[:120]
+        if body.get("rl_id"):
+            app["rl_id"] = str(body["rl_id"])[:120]
+        if body.get("br_src") or body.get("br_url"):
+            br_src, br_url = str(body.get("br_src") or ""), str(body.get("br_url") or "")
+            if br_src not in BR_SOURCES:
+                raise ValueError("Unknown Browse source")
+            if not _br_same_site(BR_SOURCES[br_src]["site"], br_url):
+                raise ValueError("A Browse link has to be an https page on that source's own site")
+            app["br_src"] = br_src
+            app["br_url"] = br_url[:300]
+        with _lock:
+            if any(same_source(a, app) for a in cfg["apps"]):
+                raise ValueError("%s is already tracked" % display_repo(app))
+            adopt = validate_adopt_path(cfg, body["adopt_path"]) if body.get("adopt_path") else None
+            if adopt:
+                app["target_path"] = adopt  # claim the file now so the folder scan stops offering it
+            cfg["apps"].append(app)
+            self.save()
+        if adopt:
+            self.adopt(app, adopt, body.get("rename", False))
+        else:
+            self.check(app)
+        return {"ok": True, "id": app["id"]}
+
+    def api_edit(self, body):
+        cfg = self.cfg
+        app = self._app(body)
+        with _lock:
+            if "name" in body and body["name"].strip():
+                app["name"] = body["name"].strip()
+            apply_options(app, body)
+            adopt = validate_adopt_path(cfg, body["adopt_path"], app["id"]) if body.get("adopt_path") else None
+            if adopt:
+                app["target_path"] = adopt
+            app["latest"] = None
+            self.save()
+        if adopt:
+            self.adopt(app, adopt, body.get("rename", False))
+        else:
+            self.check(app)
+        return {"ok": True}
+
+    def api_check(self, body):
+        cfg = self.cfg
+        targets = self._apps(body) if body.get("id") or body.get("ids") else list(cfg["apps"])
+        for a in targets:
+            self.check(a)
+        return {"ok": True}
+
+    def api_update(self, body):
+        cfg = self.cfg
+        if body.get("id"):
+            app = self._app(body)
+            inst = app.get("installed") or {}
+            if inst.get("path") and os.path.exists(inst["path"]) and not has_update(app, honor_skip=False):
+                # Installed and current: don't download the same release again.
+                raise ValueError("%s is already up to date" % app["name"])
+            app.pop("skip", None)  # updating on purpose undoes "Skip this version"
+            targets = [app]
+        elif body.get("ids"):
+            targets = [a for a in self._apps(body) if has_update(a, honor_skip=False)]
+        else:
+            targets = [a for a in cfg["apps"] if has_update(a)]
+        for a in targets:
+            self.install(a)
+        return {"ok": True, "count": len(targets)}
+
+    def api_skip(self, body):
+        app = self._app(body)
+        with _lock:
+            la = (app.get("latest") or {}).get("asset")
+            if body.get("undo") or not la:
+                app.pop("skip", None)
+            else:
+                app["skip"] = {"asset_id": la["id"], "updated_at": la["updated_at"], "tag": app["latest"].get("tag", "")}
+            self.save()
+        return {"ok": True}
+
+    def api_steam_add(self, body):
+        app = self._app(body)
+        added = add_to_steam(app)
+        return {"ok": True, "added": added, "proton": bool((steam_target(app) or ("", "", False))[2])}
+
+    def api_launch_choices(self, body):
+        app = self._app(body)
+        folder = (app.get("installed") or {}).get("path") or ""
+        if not os.path.isdir(folder) or is_flatpak(app):
+            raise ValueError("%s is not installed as a folder" % app["name"])
+        lc = app.get("launch") or {}
+        return {"ok": True, "manual": bool(lc.get("manual")), "current": lc.get("file", ""),
+                "choices": [{k: c[k] for k in ("file", "kind", "size")} for c in launch_candidates(folder, _app_wants(app))[:200]]}
+
+    def api_set_launch(self, body):
+        cfg = self.cfg
+        app = self._app(body)
+        if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+            raise ValueError("Wait for %s to finish first" % app["name"])
+        with _lock:
+            lc = set_launch_file(app, cfg["settings"], str(body.get("file") or ""))
+            self.save()
+        exe, start, proton = steam_target(app) or ("", "", False)
+        return {"ok": True, "launch": lc, "steam_exe": exe, "steam_dir": start, "proton": proton}
+
+    def api_rename(self, body):
+        app = self._app(body)
+        if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+            raise ValueError("Wait for %s to finish first" % app["name"])
+        with _lock:
+            new = rename_app_file(app, name=body.get("file") or None)
+            self.save()
+        return {"ok": True, "file": os.path.basename(new)}
+
+    def api_rename_all(self, body):
+        cfg = self.cfg
+        busy = {k for k, j in self.jobs.snapshot().items() if j.get("state") == "running"}
+        with _lock:
+            renamed, failed = rename_all([a for a in cfg["apps"] if a["id"] not in busy])
+            self.save()
+        return {"ok": True, "renamed": renamed, "failed": [{"name": n, "error": e} for n, e in failed]}
+
+    def api_clean_backups(self, body):
+        cfg = self.cfg
+        removed = freed = 0
+        with _lock:
+            for a in cfg["apps"]:
+                p = (a.get("installed") or {}).get("path") or ""
+                if p and os.path.isfile(p + ".old"):
+                    freed += os.path.getsize(p + ".old")
+                    os.remove(p + ".old")
+                    removed += 1
+        return {"ok": True, "removed": removed, "freed": freed}
+
+    def api_saves(self, body):
+        cfg = self.cfg
+        app = self._app(body)
+        st = cfg["settings"]
+        return {"save_dir": app.get("save_dir") or "", "save_short": short_home(app.get("save_dir") or ""),
+                "exists": bool(app.get("save_dir") and os.path.isdir(app["save_dir"])),
+                "folder": short_home(save_backup_dir(app, st)), "keep": SAVE_KEEP,
+                "backups": list_save_backups(app, st),
+                "suggestions": [] if body.get("no_suggest") else save_candidates(app)}
+
+    def api_saves_set(self, body):
+        app = self._app(body)
+        p = validate_save_dir(body["path"]) if (body.get("path") or "").strip() else ""
+        with _lock:
+            if p:
+                app["save_dir"] = p
+            else:
+                app.pop("save_dir", None)
+            self.save()
+        return {"ok": True, "save_dir": p}
+
+    def api_saves_backup(self, body):
+        return self._saves_job(body, False)
+
+    def api_saves_restore(self, body):
+        return self._saves_job(body, True)
+
+    def _saves_job(self, body, restore):
+        cfg = self.cfg
+        app = self._app(body)
+        if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+            raise ValueError("Wait for %s to finish first" % app["name"])
+        with _lock:
+            if not restore:
+                name = backup_saves(app, cfg["settings"])
+                if not name:
+                    raise ValueError("The save folder doesn't exist yet. Play once, then back up")
+                self.save()
+                return {"ok": True, "name": name}
+            undo = restore_saves(app, cfg["settings"], body.get("name") or "")
+            self.save()
+        return {"ok": True, "undo": undo}
+
+    def api_saves_open(self, body):
+        cfg = self.cfg
+        d = save_backup_dir(self._app(body), cfg["settings"])
+        os.makedirs(d, exist_ok=True)
+        open_path(d)
+        return {"ok": True}
+
+    def api_rollback(self, body):
+        app = self._app(body)
+        if (self.jobs.snapshot().get(app["id"]) or {}).get("state") == "running":
+            raise ValueError("Wait for %s to finish first" % app["name"])
+        rollback_app(app)
+        self.save()
+        return {"ok": True}
+
+    def api_uninstall(self, body):
+        targets = self._apps(body)
+        running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
+        if running:
+            raise ValueError("Wait for %s to finish first" % ", ".join(running))
+        for app in targets:  # before anything is deleted, so a refusal changes nothing
+            if not is_flatpak(app):
+                ensure_not_running(app)
+        with _lock:
+            for app in targets:
+                uninstall_app(app)
+            self.save()
+        return {"ok": True, "count": len(targets)}
+
+    def api_remove(self, body):
+        cfg = self.cfg
+        targets = self._apps(body)
+        running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
+        if running:
+            raise ValueError("Wait for %s to finish first" % ", ".join(running))
+        if body.get("delete_files"):
+            for app in targets:  # before anything is removed, so a refusal changes nothing
                 if not is_flatpak(app):
                     ensure_not_running(app)
-            with _lock:
-                for app in targets:
-                    uninstall_app(app)
-                self.save()
-            return {"ok": True, "count": len(targets)}
+        with _lock:
+            for app in targets:
+                remove_app(cfg, app, body.get("delete_files", False))
+            self.save()
+        return {"ok": True, "count": len(targets)}
 
-        if path == "/api/remove":
-            targets = self._apps(body)
-            running = [a["name"] for a in targets if (self.jobs.snapshot().get(a["id"]) or {}).get("state") == "running"]
-            if running:
-                raise ValueError("Wait for %s to finish first" % ", ".join(running))
-            if body.get("delete_files"):
-                for app in targets:  # before anything is removed, so a refusal changes nothing
-                    if not is_flatpak(app):
-                        ensure_not_running(app)
-            with _lock:
-                for app in targets:
-                    remove_app(cfg, app, body.get("delete_files", False))
-                self.save()
-            return {"ok": True, "count": len(targets)}
+    def api_category(self, body):
+        targets = self._apps(body)
+        with _lock:
+            for app in targets:
+                apply_options(app, {"category": body.get("category", "")})
+            self.save()
+        return {"ok": True, "count": len(targets)}
 
-        if path == "/api/category":
-            targets = self._apps(body)
-            with _lock:
-                for app in targets:
-                    apply_options(app, {"category": body.get("category", "")})
-                self.save()
-            return {"ok": True, "count": len(targets)}
+    def api_move(self, body):
+        cfg = self.cfg
+        app = self._app(body)
+        new = app.get("moved_to")
+        if not new:
+            raise ValueError("%s hasn't moved" % app["name"])
+        with _lock:
+            moved = dict(app, repo=new)
+            if any(a["id"] != app["id"] and same_source(a, moved) for a in cfg["apps"]):
+                raise ValueError("%s is already tracked" % display_repo(moved))
+            app["repo"] = new
+            app.pop("moved_to", None)
+            self.save()
+        return {"ok": True, "repo": display_repo(app)}
 
-        if path == "/api/move":
-            app = self._app(body)
-            new = app.get("moved_to")
-            if not new:
-                raise ValueError("%s hasn't moved" % app["name"])
-            with _lock:
-                moved = dict(app, repo=new)
-                if any(a["id"] != app["id"] and same_source(a, moved) for a in cfg["apps"]):
-                    raise ValueError("%s is already tracked" % display_repo(moved))
-                app["repo"] = new
-                app.pop("moved_to", None)
-                self.save()
-            return {"ok": True, "repo": display_repo(app)}
+    def api_recomphaven(self, body):
+        return recomphaven(bool(body.get("refresh")))
 
-        if path == "/api/recomphaven":
-            return recomphaven(bool(body.get("refresh")))
+    def api_quiver(self, body):
+        return quiver(bool(body.get("refresh")))
 
-        if path == "/api/quiver":
-            return quiver(bool(body.get("refresh")))
+    def api_recomplauncher(self, body):
+        return recomplauncher(bool(body.get("refresh")))
 
-        if path == "/api/recomplauncher":
-            return recomplauncher(bool(body.get("refresh")))
+    def api_browse(self, body):
+        return browse(bool(body.get("refresh")))
 
-        if path == "/api/browse":
-            return browse(bool(body.get("refresh")))
+    def api_browse_resolve(self, body):
+        return {"repo": browse_resolve(body.get("slug"))}
 
-        if path == "/api/browse_resolve":
-            return {"repo": browse_resolve(body.get("slug"))}
+    def api_github_search(self, body):
+        cfg = self.cfg
+        tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
+        return github_search(body.get("q"), self.gh_token(), tracked, str(body.get("sort") or "best"))
 
-        if path == "/api/github_search":
-            tracked = [a["repo"] for a in cfg["apps"] if a.get("provider") == "github"]
-            return github_search(body.get("q"), self.gh_token(), tracked, str(body.get("sort") or "best"))
+    def api_self_update_check(self, body):
+        cfg = self.cfg
+        info = self_update_check(self.gh_token(), bool(body.get("refresh")))
+        info["skipped"] = info["latest"] == cfg["settings"].get("self_update_skip")
+        return info
 
-        if path == "/api/self_update_check":
-            info = self_update_check(self.gh_token(), bool(body.get("refresh")))
-            info["skipped"] = info["latest"] == cfg["settings"].get("self_update_skip")
-            return info
+    def api_self_update_skip(self, body):
+        cfg = self.cfg
+        with _lock:
+            cfg["settings"]["self_update_skip"] = str(body.get("tag") or "")
+            self.save()
+        return {"ok": True}
 
-        if path == "/api/self_update_skip":
-            with _lock:
-                cfg["settings"]["self_update_skip"] = str(body.get("tag") or "")
-                self.save()
-            return {"ok": True}
+    def api_self_update(self, body):
+        def fn(job):
+            def prog(done, total):
+                if job["cancel"]:
+                    raise Cancelled()
+                job["progress"] = (done / total) if total else 0
+                job["done"] = done
+                job["total"] = total
+            job["message"] = "Installed %s. Restart SedotDeck to use it." % self_update(self.gh_token(), prog)
+        if not self.jobs.start("__self__", "Updating SedotDeck", fn):
+            raise ValueError("SedotDeck is already updating")
+        return {"ok": True}
 
-        if path == "/api/self_update":
-            def fn(job):
-                def prog(done, total):
-                    if job["cancel"]:
-                        raise Cancelled()
-                    job["progress"] = (done / total) if total else 0
-                    job["done"] = done
-                    job["total"] = total
-                job["message"] = "Installed %s. Restart SedotDeck to use it." % self_update(self.gh_token(), prog)
-            if not self.jobs.start("__self__", "Updating SedotDeck", fn):
-                raise ValueError("SedotDeck is already updating")
-            return {"ok": True}
+    def api_cancel(self, body):
+        return {"ok": self.jobs.cancel(str(body.get("id") or ""))}
 
-        if path == "/api/cancel":
-            return {"ok": self.jobs.cancel(str(body.get("id") or ""))}
+    def api_launch(self, body):
+        launch_app(self._app(body))
+        return {"ok": True}
 
-        if path == "/api/launch":
-            launch_app(self._app(body))
-            return {"ok": True}
+    def api_open_folder(self, body):
+        p = (self._app(body).get("installed") or {}).get("path") or ""
+        if not os.path.isdir(p):
+            raise ValueError("Not installed")
+        open_path(p)
+        return {"ok": True}
 
-        if path == "/api/open_folder":
-            p = (self._app(body).get("installed") or {}).get("path") or ""
-            if not os.path.isdir(p):
-                raise ValueError("Not installed")
-            open_path(p)
-            return {"ok": True}
+    def api_open(self, body):
+        cfg = self.cfg
+        d = os.path.expanduser(cfg["settings"]["install_dir"])
+        os.makedirs(d, exist_ok=True)
+        open_path(d)
+        return {"ok": True}
 
-        if path == "/api/open":
-            d = os.path.expanduser(cfg["settings"]["install_dir"])
-            os.makedirs(d, exist_ok=True)
-            open_path(d)
-            return {"ok": True}
+    def api_export(self, body):
+        cfg = self.cfg
+        with _lock:
+            return export_apps(cfg)
 
-        if path == "/api/export":
-            with _lock:
-                return export_apps(cfg)
+    def api_export_save(self, body):
+        cfg = self.cfg
+        # The desktop app's webview can't save blob downloads, so write the file here.
+        with _lock:
+            data = export_apps(cfg)
+        folder = Path.home() / "Downloads"
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = "sedotdeck-apps-" + data["exported_at"][:10]
+        dest, n = folder / (stem + ".json"), 2
+        while dest.exists():
+            dest, n = folder / ("%s-%d.json" % (stem, n)), n + 1
+        dest.write_text(json.dumps(data, indent=2))
+        return {"ok": True, "path": str(dest), "count": len(data["apps"])}
 
-        if path == "/api/export_save":
-            # The desktop app's webview can't save blob downloads, so write the file here.
-            with _lock:
-                data = export_apps(cfg)
-            folder = Path.home() / "Downloads"
-            folder.mkdir(parents=True, exist_ok=True)
-            stem = "sedotdeck-apps-" + data["exported_at"][:10]
-            dest, n = folder / (stem + ".json"), 2
-            while dest.exists():
-                dest, n = folder / ("%s-%d.json" % (stem, n)), n + 1
-            dest.write_text(json.dumps(data, indent=2))
-            return {"ok": True, "path": str(dest), "count": len(data["apps"])}
+    def api_open_url(self, body):
+        url = body.get("url", "")
+        if not isinstance(url, str) or not re.match(r"^https://[^\s/]+", url):
+            raise ValueError("Only https:// links can be opened")
+        open_path(url)
+        return {"ok": True}
 
-        if path == "/api/open_url":
-            url = body.get("url", "")
-            if not isinstance(url, str) or not re.match(r"^https://[^\s/]+", url):
-                raise ValueError("Only https:// links can be opened")
-            open_path(url)
-            return {"ok": True}
+    def api_import(self, body):
+        cfg = self.cfg
+        with _lock:
+            added, skipped = import_apps(cfg, body.get("data"))
+            self.save()
+        for a in added:
+            self.check(a)
+        return {"ok": True, "added": len(added), "skipped": skipped}
 
-        if path == "/api/import":
-            with _lock:
-                added, skipped = import_apps(cfg, body.get("data"))
-                self.save()
-            for a in added:
-                self.check(a)
-            return {"ok": True, "added": len(added), "skipped": skipped}
-
-        if path == "/api/settings":
-            with _lock:
-                s = cfg["settings"]
-                if body.get("install_dir"):
-                    s["install_dir"] = body["install_dir"].strip()
-                if "keep_backup" in body:
-                    s["keep_backup"] = bool(body["keep_backup"])
-                if "auto_rename" in body:
-                    s["auto_rename"] = bool(body["auto_rename"])
-                if body.get("theme") in THEMES:
-                    s["theme"] = body["theme"]
-                if body.get("sfx") in SFX_MODES:
-                    s["sfx"] = body["sfx"]
-                if body.get("clear_token"):
-                    s["github_token"] = ""
-                elif body.get("github_token"):
-                    s["github_token"] = body["github_token"].strip()
-                self.save()
-            return {"ok": True}
-
-        raise LookupError("unknown endpoint")
+    def api_settings(self, body):
+        cfg = self.cfg
+        with _lock:
+            s = cfg["settings"]
+            if body.get("install_dir"):
+                s["install_dir"] = body["install_dir"].strip()
+            if "keep_backup" in body:
+                s["keep_backup"] = bool(body["keep_backup"])
+            if "auto_rename" in body:
+                s["auto_rename"] = bool(body["auto_rename"])
+            if body.get("theme") in THEMES:
+                s["theme"] = body["theme"]
+            if body.get("sfx") in SFX_MODES:
+                s["sfx"] = body["sfx"]
+            if body.get("clear_token"):
+                s["github_token"] = ""
+            elif body.get("github_token"):
+                s["github_token"] = body["github_token"].strip()
+            self.save()
+        return {"ok": True}
 
     def _app(self, body):
         app = find_app(self.cfg, body.get("id", ""))

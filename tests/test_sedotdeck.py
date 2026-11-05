@@ -202,7 +202,6 @@ eq(dp.LAUNCHER_NAME in [c["file"] for c in dp.launch_candidates(fdir)], False, "
 eq(os.access(fl, os.X_OK), True, "launcher executable")
 eq(Path(fl).read_text(), "#!/bin/sh\ncd %s || exit 1\nexec ./FoldGame-1.0.x86_64 \"$@\"\n" % fdir, "launcher content")
 eq(sorted(fapp["installed"]["files"])[:2], ["FoldGame-1.0.x86_64", "data/a/old.txt"], "manifest recorded")
-eq(dp.find_main_exe(fdir, ["fold"]), os.path.join(fdir, "FoldGame-1.0.x86_64"), "main exe skips libs")
 
 # user save + rename + update with a new exe name
 os.makedirs(os.path.join(fdir, "saves")); Path(fdir, "saves", "slot1.sav").write_text("save")
