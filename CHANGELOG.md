@@ -6,29 +6,31 @@ What changed in each SedotDeck release, newest first. The section for a version 
 
 ## [0.1.0] - 2026-11-04
 
-SedotDeck 0.1.0 leaves alpha: each catalog in its own style, save backups before every update, a new look with sounds for the controller, plus themes, uninstall and downloads you can cancel.
+SedotDeck 0.1.0 leaves alpha: save backups before every update, uninstall, downloads you can cancel, and a redesign with themes and controller sounds.
 
-- Fewer tabs: My apps, Browse and Search GitHub. Browse shows the seven catalogs one at a time, each picked from a row of buttons with the site's own icon and drawn in its own site's colors, typefaces and card shape (light or dark where the site has both); Recomp Haven, Quiver and Recomp Launcher keep their own tiers and filters
-- My apps shows each app's box art when a catalog lists its repository. With fewer than eight apps, Steam Deck-tested projects (the most starred among the latest releases, one per series) and a way into each catalog sit under the list; an empty My apps starts with a box to paste a release link
-- Save backups: Saves… in the app menu (and `sedotdeck.py saves`) sets where a game keeps its saves, with suggestions named after the game. The folder is zipped before every update and on Back up now, the newest 10 kept in `~/Applications/Save backups`. Restore backs up the current saves first and moves them to the Trash, so it can be undone. If the backup fails, the update doesn't run
-- A new typeface, Bricolage Grotesque, with bolder headings; without a connection SedotDeck falls back to the system font. Main buttons, the start panels and apps with an update get a soft blue gradient
-- Sound effects for the controller: a tick per D-pad step, a knock at an edge, pips for A and B, a slide for LB/RB, and a short chord when an app is added, installed or its saves are backed up. Settings > Sound effects: With a controller (the default), Always or Off
-- Short animations: a tab or catalog rises in when it opens, newly loaded cards come in one after another, dialogs and the app menu grow in, toasts rise from the bottom, and poster cards lift under the pointer or d-pad. "Reduce motion" in the system settings turns them off
-- Search GitHub starts with your recent searches and the names of Deck-tested games from the catalogs (picked the same way), one click to search each; results show the owner's avatar and the repo's topics
-- The app menu is shorter and grouped: Category moved into Edit, the two rename items are one, per-app Check for updates is gone (the header button and the hourly check cover it), and catalog pages are a single "View on …"
-- Settings are grouped into General, Updates and Advanced (GitHub token, app list, storage); the Add dialog's options are grouped by which release and which file
-- When adopting a file you already have, "Rename to" shows the real new name (the AppImage's own name without the version)
-- Decky: one button that reads Update all (N) or Check for updates, and "What's new" moved into the app menu
-- The AppImage carries update information and each release has a `.zsync` file, so AppImageUpdate and similar tools can update SedotDeck
-- Settings has a Theme option: Dark (the default), Light, or Match system
-- A new AppImage keeps the name its project gives it, minus what changes between releases: the version, a date, a build number or a commit hash (`Savage_Wind-0.4.1-alpha.4-x86_64.AppImage` becomes `Savage_Wind-x86_64.AppImage`), instead of being named after the app. Apps you already have keep their file
-- Rename file… in the app menu sets any file name; updates and the Steam shortcut follow it. The one-click rename now suggests the AppImage's own name without the version
-- Settings: Auto rename (off by default) gives an AppImage its own name without the version after each update, and "Rename N files now" does it for every app at once
-- Decky: "What's new" shows an update's release notes before you install it, and the app menu shows the notes of the current release
-- Uninstall (app menu, desktop, Decky and `sedotdeck.py uninstall`) moves an app's files to the Trash but keeps it in My apps; Install puts it back under the same file name, so its Steam shortcut works again
-- Downloads can be cancelled: Cancel on the app card, Cancel download in the Decky panel, and in the SedotDeck update dialog. The installed version stays as it was and the partial file is deleted
-- Download folders left behind by a crash or power-off are cleaned up on the next install
-- SedotDeck's self-update installs only a download whose SHA-256 matches the one the release published; script installs now download `sedotdeck.py` from the release instead of the repository
+**What's new**
+- Save backups: a game's saves are zipped before every update (the newest 10 are kept), and if the backup fails the update doesn't run. Restore can be undone. Set it up under Saves… in the app menu
+- Uninstall moves an app's files to the Trash but keeps it in My apps; Install puts it back and its Steam shortcut works again
+- Downloads can be cancelled from the app card, the Decky panel or the update dialog
+- New AppImages keep their project's name minus the version (`Savage_Wind-0.4.1-alpha.4-x86_64.AppImage` becomes `Savage_Wind-x86_64.AppImage`). Rename file… sets any name, and Settings > Auto rename renames after each update
+- Theme setting: Dark (default), Light or Match system
+- Controller sound effects, on by default while you use a controller (Settings > Sound effects)
+
+**Redesign**
+- Three tabs: My apps, Browse and Search GitHub. Browse shows one catalog at a time, in that site's own colors and style
+- My apps shows box art, and suggests Deck-tested projects while your list is short
+- Search GitHub suggests your recent searches and Deck-tested games
+- A new typeface and short animations ("Reduce motion" turns them off)
+- A shorter app menu, and Settings grouped into General, Updates and Advanced
+
+**Decky**
+- One button: Update all (N) or Check for updates
+- "What's new" shows an update's release notes before you install it
+
+**Under the hood**
+- SedotDeck updates itself only when the download matches the release's SHA-256, and script installs download from the release
+- The AppImage carries update information and each release has a `.zsync`, so AppImageUpdate works
+- Download folders left behind by a crash are cleaned up on the next install
 
 ## [0.0.4-alpha] - 2026-11-03
 
