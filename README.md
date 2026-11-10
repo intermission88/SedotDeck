@@ -19,8 +19,6 @@
 
 Not sure which one? Start with the AppImage: it has everything. Add the Decky plugin if you want updates from Game Mode. Both read the same app list, so nothing gets added twice ([what each one does](#appimage-or-decky-plugin)).
 
-<img src="docs/screenshots/demo.gif" alt="Demo: My apps with box art and Deck-tested picks, adding one, then Browse going through all seven catalogs in their own look, the Saves dialog, and Search GitHub finding Halo: Combat Evolved projects" width="720">
-
 > [!IMPORTANT]
 > **Written by AI.** [Claude](https://claude.com/claude-code) writes the code; [intermission88](https://github.com/intermission88) decides what it does, reviews every change and tests it on a Steam Deck.
 
