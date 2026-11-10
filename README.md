@@ -1,24 +1,42 @@
-<div align="center">
+<h1>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="design/logo/kit/lockup-horizontal-on-dark.svg">
+  <img src="design/logo/kit/lockup-horizontal-on-light.svg" width="380" alt="SedotDeck">
+</picture>
+</h1>
 
-<img src="assets/icon.svg" width="96" height="96" alt="SedotDeck icon">
-
-# SedotDeck
-
-### Obtainium for Steam Deck
-
-**Add a recomp, PC port or emulator once. SedotDeck keeps it updated and keeps it in your Steam library.**
+**Obtainium for Steam Deck.** Add a recomp, PC port or emulator once. SedotDeck keeps it updated and keeps it in your Steam library.
 
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1a9fff?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
 ![Made with AI](https://img.shields.io/badge/Made%20with%20AI-Claude-d97757?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-23272e?style=flat-square)
 
-<img src="docs/screenshots/demo.gif" alt="Demo: My apps with box art and Deck-tested picks, adding one, then Browse going through all seven catalogs in their own look, the Saves dialog, and Search GitHub finding Halo: Combat Evolved projects" width="720">
+<p>
+  <a href="https://github.com/intermission88/SedotDeck/releases/latest/download/SedotDeck-x86_64.AppImage"><img src="docs/assets/get-appimage.svg" width="400" alt="Download the AppImage for Desktop Mode"></a>
+  <a href="https://github.com/intermission88/SedotDeck/releases/latest"><img src="docs/assets/get-decky.svg" width="400" alt="Get the Decky plugin for Game Mode"></a>
+</p>
 
-</div>
+Not sure which one? Start with the AppImage: it has everything. Add the Decky plugin if you want updates from Game Mode. Both read the same app list, so nothing gets added twice ([what each one does](#appimage-or-decky-plugin)).
+
+<img src="docs/screenshots/demo.gif" alt="Demo: My apps with box art and Deck-tested picks, adding one, then Browse going through all seven catalogs in their own look, the Saves dialog, and Search GitHub finding Halo: Combat Evolved projects" width="720">
 
 > [!IMPORTANT]
 > **Written by AI.** [Claude](https://claude.com/claude-code) writes the code; [intermission88](https://github.com/intermission88) decides what it does, reviews every change and tests it on a Steam Deck.
+
+## How it works
+
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/flow-phone-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/assets/flow-phone-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
+  <img src="docs/assets/flow-light.svg" width="880" alt="A new release on GitHub, GitLab, Codeberg, Gitea or Forgejo goes through SedotDeck, which picks the Linux file and backs up your saves, into your Steam library: same shortcut, new version.">
+</picture>
+
+1. **Open SedotDeck.** For the AppImage, mark `SedotDeck-x86_64.AppImage` as executable first (right-click → Properties → Permissions).
+2. **Add a game.** Press **Add app** and paste a repo link, or press **Add** on anything in **Browse**. Then **Install**.
+3. **Put it in Steam,** once: **⋯ → Add to Steam**.
+4. **Update all** whenever a new version is out. The Steam shortcut keeps working, because the path never changes.
 
 ## Features
 
@@ -30,14 +48,28 @@
 - **Made for the controller**: D-pad navigation with sound effects, and a Game Mode plugin for Decky.
 - **No `pip`, no `sudo`**: one Python file on SteamOS's own Python.
 
-## Install
+## AppImage or Decky plugin?
 
-Get it from [Releases](https://github.com/intermission88/SedotDeck/releases):
+|  | AppImage<br>(Desktop Mode) | Decky plugin<br>(Game Mode) |
+|:--|:--:|:--:|
+| **Install, Update all, Rollback, Uninstall** | ✓ | ✓ |
+| **Add an app by its link** | ✓ | ✓ |
+| **Browse the catalogs, Search GitHub** | ✓ | Not in the plugin |
+| **Add to Steam** | Close Steam first | ✓, Steam stays open |
+| **Pick a save folder, restore a backup** | ✓ | Not in the plugin |
+| **Save backup before each update,** once a save folder is set | ✓ | ✓ |
+| **Checks for updates** | When you open it | Every 6 hours, with a notification |
+| **Settings and GitHub token** | ✓ | Not in the plugin |
+| **Updates SedotDeck itself** | ✓ | Not in the plugin |
 
-- **AppImage** (Desktop Mode): mark `SedotDeck-x86_64.AppImage` as executable (right-click → Properties → Permissions), then open it.
-- **Decky plugin** (Game Mode): in [Decky](https://decky.xyz) settings, turn on Developer mode and use **Install Plugin from ZIP File**.
+The Decky plugin is the quick panel; the AppImage is where you set things up. Both use the same `~/.config/sedotdeck` and `~/Applications`, so an app added in one shows up in the other.
 
-Then press **Add app**, or **Add** in Browse, and **Install**. **⋯ → Add to Steam** once, and **Update all** from then on.
+**Installing the Decky plugin:** download `SedotDeck-decky-<version>.zip` from the [latest release](https://github.com/intermission88/SedotDeck/releases/latest). In [Decky](https://decky.xyz)'s settings, turn on Developer mode and use **Install Plugin from ZIP File**.
+
+## Help
+
+- **Found a bug?** [Open a bug report](https://github.com/intermission88/SedotDeck/issues/new?template=bug_report.yml). The form says which details to include.
+- **What changed?** Each version is in the [changelog](CHANGELOG.md) and the [release notes](https://github.com/intermission88/SedotDeck/releases).
 
 ## FAQ
 
