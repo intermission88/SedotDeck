@@ -1,4 +1,4 @@
-"""Builds the README's download buttons and flow diagram in docs/assets/.
+"""Builds the README's hero, download buttons and flow diagram in docs/assets/.
 
 Run `python3 docs/assets/build_readme_art.py` after changing this file; edit the script, not the SVGs.
 Colours come from design/logo/README.md. Shapes reuse the logo's monoline language: round-capped strokes,
@@ -116,6 +116,83 @@ def flow_stacked(theme):
     return svg(nw, 3 * nh + 2 * gap, FLOW_TITLE, body)
 
 
+# ---------------------------------------------------------------- hero
+
+SHOTS = HERE.parent / "screenshots"
+HERO_TITLE = ("SedotDeck. Add it once. It stays up to date. Obtainium for Steam Deck: recomps, PC ports and emulators, "
+              "updated and kept in your Steam library. 7 catalogs to browse and add from, 5 code hosts (GitHub, "
+              "GitLab and more), no sudo: one Python file. Screenshots of My apps and Browse.")
+# Facts from the README's own feature list; nothing here is a measurement.
+FACTS = [("7 catalogs", "to browse and add"), ("5 code hosts", "GitHub, GitLab and more"),
+         ("No sudo", "one Python file")]
+
+
+def lockup(theme, x, y, height):
+    svg_text = (KIT / f"lockup-horizontal-on-{theme}.svg").read_text()
+    inner = re.sub(r"^<svg[^>]*>|</svg>\s*$|<title>.*?</title>", "", svg_text.strip())
+    return f'<g transform="translate({x} {y}) scale({height / 256})">{inner}</g>'
+
+
+def shot(name, x, y, w, h, ring):
+    """A real screenshot, embedded (GitHub won't let an SVG image load other files), with corners clipped.
+    The ring in the page colour separates it from a screenshot behind it without a shadow."""
+    import base64
+    data = base64.b64encode((SHOTS / f"{name}.webp").read_bytes()).decode()
+    cid = f"clip-{name}"
+    return (f'<clipPath id="{cid}"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14"/></clipPath>'
+            f'<rect x="{x - 8}" y="{y - 8}" width="{w + 16}" height="{h + 16}" rx="20" fill="{ring}"/>'
+            f'<image href="data:image/webp;base64,{data}" x="{x}" y="{y}" width="{w}" height="{h}" '
+            f'clip-path="url(#{cid})" preserveAspectRatio="xMidYMid slice"/>')
+
+
+def headline(theme, x, y, size, gap):
+    """Three lines; straw blue lands on the promise, the one accent in the hero."""
+    t = THEMES[theme]
+    style = f'font-family="{FONT}" font-size="{size}" font-weight="800" letter-spacing="-2"'
+    lines = [("Add it once.", t["title"]), ("It stays", t["title"]), ("up to date.", t["flow"])]
+    return "".join(f'<text x="{x}" y="{y + i * gap}" {style} fill="{c}">{s}</text>' for i, (s, c) in enumerate(lines))
+
+
+def facts(theme, x, y, col, title_size, sub_size):
+    t = THEMES[theme]
+    out = ""
+    for i, (a, b) in enumerate(FACTS):
+        out += text(x + i * col, y, a, title_size, t["title"], 700)
+        out += text(x + i * col, y + sub_size + 14, b, sub_size, t["sub"])
+    return out
+
+
+def hero_wide(theme):
+    t = THEMES[theme]
+    w, h = 1600, 780
+    body = f'<rect width="{w}" height="{h}" rx="28" fill="{t["node"]}"/>'
+    body += lockup(theme, 80, 56, 76)
+    body += headline(theme, 84, 290, 92, 96)
+    body += text(88, 560, "Obtainium for Steam Deck: recomps, PC ports and", 28, t["sub"])
+    body += text(88, 600, "emulators, updated and kept in your Steam library.", 28, t["sub"])
+    body += facts(theme, 88, 690, 276, 36, 22)
+    body += shot("2-browse", 920, 64, 608, 380, t["node"])
+    body += shot("1-my-apps", 856, 318, 608, 380, t["node"])
+    body += text(1464, 740, "SedotDeck 0.1.0 at 1280×800", 20, t["sub"], 400, "end")
+    return svg(w, h, HERO_TITLE, body)
+
+
+def hero_phone(theme):
+    t = THEMES[theme]
+    w, h = 800, 1425
+    body = f'<rect width="{w}" height="{h}" rx="28" fill="{t["node"]}"/>'
+    body += lockup(theme, 52, 48, 84)
+    body += headline(theme, 56, 290, 96, 100)
+    body += text(60, 560, "Obtainium for Steam Deck: recomps,", 34, t["sub"])
+    body += text(60, 606, "PC ports and emulators, updated and", 34, t["sub"])
+    body += text(60, 652, "kept in your Steam library.", 34, t["sub"])
+    for i, (a, b) in enumerate(FACTS):  # one per row: three columns don't fit a phone
+        body += text(60, 740 + i * 62, a, 40, t["title"], 700)
+        body += text(340, 740 + i * 62, b, 28, t["sub"])
+    body += shot("1-my-apps", 60, 940, 680, 425, t["node"])
+    return svg(w, h, HERO_TITLE, body)
+
+
 def main():
     files = {
         "get-appimage.svg": button("Download the AppImage for Desktop Mode", DESKTOP_GLYPH,
@@ -126,6 +203,8 @@ def main():
     for theme in THEMES:
         files[f"flow-{theme}.svg"] = flow_wide(theme)
         files[f"flow-phone-{theme}.svg"] = flow_stacked(theme)
+        files[f"hero-{theme}.svg"] = hero_wide(theme)
+        files[f"hero-phone-{theme}.svg"] = hero_phone(theme)
     for name, content in files.items():
         (HERE / name).write_text(content)
         print("wrote", name)

@@ -1,11 +1,11 @@
 <h1>
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="design/logo/kit/lockup-horizontal-on-dark.svg">
-  <img src="design/logo/kit/lockup-horizontal-on-light.svg" width="380" alt="SedotDeck">
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/hero-phone-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/assets/hero-phone-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <img src="docs/assets/hero-light.svg" width="880" alt="SedotDeck. Add it once. It stays up to date. Obtainium for Steam Deck: recomps, PC ports and emulators, updated and kept in your Steam library. 7 catalogs to browse and add from, 5 code hosts, no sudo.">
 </picture>
 </h1>
-
-**Obtainium for Steam Deck.** Add a recomp, PC port or emulator once. SedotDeck keeps it updated and keeps it in your Steam library.
 
 ![Steam Deck](https://img.shields.io/badge/Steam%20Deck-ready-1a9fff?style=flat-square&logo=steamdeck&logoColor=white)
 ![SteamOS](https://img.shields.io/badge/SteamOS-no%20sudo-1a9fff?style=flat-square&logo=steam&logoColor=white)
